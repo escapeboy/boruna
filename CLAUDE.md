@@ -28,11 +28,19 @@ cargo test -p boruna-tooling       # diagnostics, repair, stdlib, templates test
 cargo test -p boruna-compiler test_record_spread
 cargo test -p boruna-tooling test_std_ui_runs
 
+# Build/test with real HTTP handler (optional feature)
+cargo build --workspace --features boruna-vm/http
+cargo test -p boruna-vm --features http
+cargo clippy --workspace --features boruna-vm/http -- -D warnings
+
 # Run a .ax source file
 cargo run --bin boruna -- run examples/hello.ax
 
 # Run with capability policy
 cargo run --bin boruna -- run app.ax --policy allow-all
+
+# Run with real HTTP (requires http feature)
+cargo run --features boruna-cli/http --bin boruna -- run app.ax --policy allow-all --live
 
 # Framework commands
 cargo run --bin boruna -- framework validate examples/framework/counter_app.ax

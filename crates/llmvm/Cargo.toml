@@ -4,8 +4,14 @@ description = "Boruna virtual machine and runtime"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+http = ["dep:ureq", "dep:url"]
+
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+ureq = { version = "2", optional = true }
+url = { version = "2", optional = true }

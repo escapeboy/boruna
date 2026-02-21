@@ -3,6 +3,10 @@ name = "boruna-orchestrator"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+http = ["boruna-vm/http"]
+
 [[bin]]
 name = "boruna-orch"
 path = "src/main.rs"

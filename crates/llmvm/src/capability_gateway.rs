@@ -22,6 +22,50 @@ impl Default for PolicyRule {
     }
 }
 
+/// Network-specific policy controls for HTTP capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetPolicy {
+    /// Allowed domains (e.g. ["api.example.com", "*.googleapis.com"]). Empty = all.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Allowed HTTP methods (e.g. ["GET", "POST"]). Empty = all.
+    #[serde(default)]
+    pub allowed_methods: Vec<String>,
+    /// Maximum response body size in bytes (default 10 MB).
+    #[serde(default = "default_max_response")]
+    pub max_response_bytes: usize,
+    /// Request timeout in milliseconds (default 30000).
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+    /// Whether to follow redirects (default true).
+    #[serde(default = "default_true")]
+    pub allow_redirects: bool,
+}
+
+fn default_max_response() -> usize {
+    10 * 1024 * 1024
+}
+
+fn default_timeout() -> u64 {
+    30_000
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for NetPolicy {
+    fn default() -> Self {
+        NetPolicy {
+            allowed_domains: Vec::new(),
+            allowed_methods: Vec::new(),
+            max_response_bytes: default_max_response(),
+            timeout_ms: default_timeout(),
+            allow_redirects: true,
+        }
+    }
+}
+
 /// Policy configuration for the capability gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
@@ -30,6 +74,9 @@ pub struct Policy {
     pub rules: BTreeMap<String, PolicyRule>,
     /// Default rule for capabilities not explicitly listed.
     pub default_allow: bool,
+    /// Network-specific policy controls (for NetFetch capability).
+    #[serde(default)]
+    pub net_policy: Option<NetPolicy>,
 }
 
 fn default_schema_version() -> u32 {
@@ -43,6 +90,7 @@ impl Policy {
             schema_version: 1,
             rules: BTreeMap::new(),
             default_allow: true,
+            net_policy: None,
         }
     }
 

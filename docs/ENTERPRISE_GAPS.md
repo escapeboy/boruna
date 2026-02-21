@@ -11,10 +11,9 @@ Known gaps between current capabilities and full enterprise platform requirement
 - **Minimal required change**: Add identity provider integration and role-based policy selection.
 - **Proposed direction**: JWT-based identity tokens passed at workflow start; roles resolved from token claims; approval gates verify identity against required role.
 
-### Real HTTP Handler
-- **What blocks us**: Only `MockHandler` exists for `NetFetch` capability. Cannot make actual HTTP requests.
-- **Minimal required change**: Implement a real HTTP handler behind the `CapabilityGateway`.
-- **Proposed direction**: Add `HttpHandler` that respects policy allowlists (domain, path, method) and records request/response in EventLog for replay.
+### ~~Real HTTP Handler~~ (Resolved)
+- **Status**: Implemented. `HttpHandler` in `crates/llmvm/src/http_handler.rs` behind `http` feature flag.
+- Uses `ureq` for synchronous HTTP. SSRF protection (private IP/localhost rejection). Domain and method allowlists via `NetPolicy` on `Policy`. Opt-in via `--live` CLI flag. Records through existing EventLog for replay.
 
 ### Real DB Handler
 - **What blocks us**: Only `MockHandler` exists for `DbQuery` capability.

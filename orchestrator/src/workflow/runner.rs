@@ -18,6 +18,8 @@ pub struct RunOptions {
     pub record: bool,
     /// Base directory for the workflow definition files.
     pub workflow_dir: String,
+    /// Use real HTTP handler instead of mock (requires `http` feature).
+    pub live: bool,
 }
 
 /// Executes a validated workflow definition step by step.
@@ -96,6 +98,7 @@ impl WorkflowRunner {
                         &options.workflow_dir,
                         &options.policy,
                         &mut data_store,
+                        options.live,
                     );
 
                     let duration_ms = step_start.elapsed().as_millis() as u64;
@@ -125,6 +128,7 @@ impl WorkflowRunner {
                                     &options.workflow_dir,
                                     &options.policy,
                                     &mut data_store,
+                                    options.live,
                                 );
                                 match retry_result {
                                     Ok(sr) => {
@@ -187,6 +191,7 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         data_store: &mut DataStore,
+        live: bool,
     ) -> Result<StepResult, WorkflowRunError> {
         // Read source file
         let source_path = Path::new(workflow_dir).join(source);
@@ -210,8 +215,26 @@ impl WorkflowRunner {
         // Build policy for this step
         let step_policy = Self::build_step_policy(policy, step_def);
 
-        // Create VM and run
-        let gateway = CapabilityGateway::new(step_policy);
+        // Create VM and run — use HttpHandler when live mode is enabled
+        let gateway = if live {
+            #[cfg(feature = "http")]
+            {
+                let net_policy = step_policy.net_policy.clone().unwrap_or_default();
+                CapabilityGateway::with_handler(
+                    step_policy,
+                    Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy)),
+                )
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                eprintln!(
+                    "warning: --live requires the `http` feature; falling back to mock handler"
+                );
+                CapabilityGateway::new(step_policy)
+            }
+        } else {
+            CapabilityGateway::new(step_policy)
+        };
         let mut vm = Vm::new(module, gateway);
 
         // Push input values onto the VM stack if available
@@ -344,6 +367,7 @@ mod tests {
             policy: Some(Policy::allow_all()),
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -365,6 +389,7 @@ mod tests {
             policy: Some(Policy::allow_all()),
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -411,6 +436,7 @@ mod tests {
             policy: Some(Policy::allow_all()),
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
         };
 
         // With allow_all, should succeed
@@ -485,6 +511,7 @@ mod tests {
             policy: Some(Policy::allow_all()),
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -512,6 +539,7 @@ mod tests {
             policy: Some(Policy::allow_all()),
             record: false,
             workflow_dir: "/tmp".into(),
+            live: false,
         };
         assert!(WorkflowRunner::run(&def, &options).is_err());
     }

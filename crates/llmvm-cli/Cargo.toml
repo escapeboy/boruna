@@ -11,6 +11,7 @@ path = "src/main.rs"
 [features]
 default = []
 serve = ["dep:axum", "dep:tokio"]
+http = ["boruna-vm/http"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }

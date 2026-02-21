@@ -47,6 +47,7 @@ fn test_run_llm_code_review_completes() {
     let options = RunOptions {
         policy: Some(boruna_vm::capability_gateway::Policy::allow_all()),
         record: false,
+        live: false,
         workflow_dir: "../examples/workflows/llm_code_review".into(),
     };
 
@@ -64,6 +65,7 @@ fn test_run_document_processing_completes() {
     let options = RunOptions {
         policy: Some(boruna_vm::capability_gateway::Policy::allow_all()),
         record: false,
+        live: false,
         workflow_dir: "../examples/workflows/document_processing".into(),
     };
 
@@ -82,6 +84,7 @@ fn test_run_customer_support_triage_pauses_at_approval() {
     let options = RunOptions {
         policy: Some(boruna_vm::capability_gateway::Policy::allow_all()),
         record: false,
+        live: false,
         workflow_dir: "../examples/workflows/customer_support_triage".into(),
     };
 
@@ -107,6 +110,7 @@ fn test_workflow_determinism_same_result() {
     let options = RunOptions {
         policy: Some(boruna_vm::capability_gateway::Policy::allow_all()),
         record: false,
+        live: false,
         workflow_dir: "../examples/workflows/llm_code_review".into(),
     };
 

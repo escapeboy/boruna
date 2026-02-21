@@ -51,6 +51,9 @@ enum Command {
         /// Record execution events to this file.
         #[arg(long)]
         record: Option<PathBuf>,
+        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        #[arg(long)]
+        live: bool,
     },
     /// Run with execution tracing enabled.
     Trace {
@@ -218,6 +221,9 @@ enum WorkflowCommand {
         /// Evidence output directory (defaults to <dir>/evidence/).
         #[arg(long)]
         evidence_dir: Option<PathBuf>,
+        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        #[arg(long)]
+        live: bool,
     },
 }
 
@@ -352,9 +358,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             policy,
             max_steps,
             record,
+            live,
         } => {
             let module = load_module(&file)?;
-            let gateway = make_gateway(&policy)?;
+            let gateway = make_gateway(&policy, live)?;
             let mut vm = Vm::new(module, gateway);
             vm.set_max_steps(max_steps);
 
@@ -1146,7 +1153,10 @@ fn load_module(path: &PathBuf) -> Result<Module, Box<dyn std::error::Error>> {
     }
 }
 
-fn make_gateway(policy_str: &str) -> Result<CapabilityGateway, Box<dyn std::error::Error>> {
+fn make_gateway(
+    policy_str: &str,
+    live: bool,
+) -> Result<CapabilityGateway, Box<dyn std::error::Error>> {
     let policy = match policy_str {
         "allow-all" => Policy::allow_all(),
         "deny-all" => Policy::deny_all(),
@@ -1155,6 +1165,22 @@ fn make_gateway(policy_str: &str) -> Result<CapabilityGateway, Box<dyn std::erro
             serde_json::from_str(&json)?
         }
     };
+
+    if live {
+        #[cfg(feature = "http")]
+        {
+            let net_policy = policy.net_policy.clone().unwrap_or_default();
+            return Ok(CapabilityGateway::with_handler(
+                policy,
+                Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy)),
+            ));
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            eprintln!("warning: --live requires the `http` feature; falling back to mock handler");
+        }
+    }
+
     Ok(CapabilityGateway::new(policy))
 }
 
@@ -1194,6 +1220,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             policy,
             record,
             evidence_dir,
+            live,
         } => {
             let def_path = dir.join("workflow.json");
             let json = fs::read_to_string(&def_path)
@@ -1214,6 +1241,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 policy: Some(policy_obj.clone()),
                 record,
                 workflow_dir: dir.display().to_string(),
+                live,
             };
 
             let result = WorkflowRunner::run(&def, &options).map_err(|e| format!("{e}"))?;
