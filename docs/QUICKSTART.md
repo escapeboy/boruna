@@ -42,6 +42,12 @@ boruna framework validate app.ax
 # Framework interactive test
 boruna framework test app.ax -m "increment:1,reset:0"
 
+# Run with real HTTP (requires http feature)
+cargo run --features boruna-cli/http --bin boruna -- run app.ax --policy allow-all --live
+
+# Run a workflow with real HTTP
+cargo run --features boruna-cli/http --bin boruna -- workflow run my-workflow/ --policy allow-all --live
+
 # Diagnostics
 boruna lang check app.ax --json
 
