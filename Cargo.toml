@@ -10,6 +10,7 @@ members = [
     "orchestrator",
     "packages",
     "tooling",
+    "crates/boruna-mcp",
 ]
 
 [workspace.package]
