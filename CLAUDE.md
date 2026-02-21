@@ -12,7 +12,7 @@ Boruna: a complete, deterministic, capability-safe programming language and fram
 # Build everything
 cargo build --workspace
 
-# Run all tests (440+ tests across 9 crates)
+# Run all tests (501+ tests across 9 crates)
 cargo test --workspace
 
 # Run tests for a single crate
@@ -45,7 +45,20 @@ cargo run --bin boruna -- lang repair file.ax
 # Templates
 cargo run --bin boruna -- template list
 cargo run --bin boruna -- template apply crud-admin --args "entity_name=products,fields=name|price" --validate
+
+# CI/CD — runs on every push/PR (GitHub Actions)
+# Clippy (zero warnings policy)
+cargo clippy --workspace -- -D warnings
+
+# Format check
+cargo fmt --all -- --check
 ```
+
+## Repository
+
+GitHub: https://github.com/escapeboy/boruna
+
+CI/CD runs three jobs on every push: `cargo test --workspace`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
 
 ## Architecture
 
@@ -111,3 +124,4 @@ All are pure-functional (no hidden side effects). Libraries needing capabilities
 - **Capability gating**: Side effects (network, db, fs) are declared and enforced. The VM's `CapabilityGateway` checks every capability call against the active `Policy`.
 - **Replay compatibility**: Execution can be recorded and replayed. `EventLog` captures capability results; `ReplayEngine` verifies determinism.
 - **Package content hashing**: Packages use SHA-256 content hashes for integrity verification.
+- **Path traversal prevention**: PatchBundle validates against `..` and absolute paths, with `canonicalize()` defense-in-depth. LLM cache and context store validate hex-only keys/hashes.
