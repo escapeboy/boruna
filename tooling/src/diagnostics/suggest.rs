@@ -9,22 +9,15 @@ pub fn enhance_compiler_diagnostic(
     source: &str,
     program: &Program,
 ) {
-    match diag.id.as_str() {
-        E003_UNDEFINED_VAR => {
-            enhance_undefined_var(diag, file, source, program);
-        }
-        _ => {}
+    if diag.id.as_str() == E003_UNDEFINED_VAR {
+        enhance_undefined_var(diag, file, source, program);
     }
 }
 
 /// For "undefined variable: X", suggest the closest defined name.
-fn enhance_undefined_var(
-    diag: &mut Diagnostic,
-    file: &str,
-    source: &str,
-    program: &Program,
-) {
-    let name = diag.message
+fn enhance_undefined_var(diag: &mut Diagnostic, file: &str, source: &str, program: &Program) {
+    let name = diag
+        .message
         .strip_prefix("undefined variable: ")
         .unwrap_or("")
         .to_string();
@@ -52,7 +45,15 @@ fn enhance_undefined_var(
     }
 
     // Also add builtins
-    for b in &["list_len", "list_get", "list_push", "parse_int", "try_parse_int", "str_contains", "str_starts_with"] {
+    for b in &[
+        "list_len",
+        "list_get",
+        "list_push",
+        "parse_int",
+        "try_parse_int",
+        "str_contains",
+        "str_starts_with",
+    ] {
         defined_owned.push(b.to_string());
     }
 
@@ -84,13 +85,21 @@ fn collect_locals_from_block(block: &Block, names: &mut Vec<String>) {
 
 fn collect_locals_from_expr(expr: &Expr, names: &mut Vec<String>) {
     match expr {
-        Expr::If { then_block, else_block, .. } => {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
             collect_locals_from_block(then_block, names);
-            if let Some(eb) = else_block { collect_locals_from_block(eb, names); }
+            if let Some(eb) = else_block {
+                collect_locals_from_block(eb, names);
+            }
         }
         Expr::Match { arms, .. } => {
             for arm in arms {
-                if let Pattern::Ident(n) = &arm.pattern { names.push(n.clone()); }
+                if let Pattern::Ident(n) = &arm.pattern {
+                    names.push(n.clone());
+                }
                 collect_locals_from_expr(&arm.body, names);
             }
         }
@@ -110,10 +119,8 @@ pub fn find_closest_name<'a>(target: &str, candidates: &[&'a str]) -> Option<&'a
             continue;
         }
         let dist = levenshtein(target, candidate);
-        if dist <= max_distance {
-            if best.map_or(true, |(_, d)| dist < d) {
-                best = Some((candidate, dist));
-            }
+        if dist <= max_distance && best.is_none_or(|(_, d)| dist < d) {
+            best = Some((candidate, dist));
         }
     }
 
@@ -144,7 +151,9 @@ pub fn suggest_rename_identifier(
         confidence: Confidence::Medium,
         rationale: format!(
             "'{}' is not defined; did you mean '{}'? (edit distance: {})",
-            old_name, new_name, levenshtein(old_name, new_name),
+            old_name,
+            new_name,
+            levenshtein(old_name, new_name),
         ),
         edits: vec![TextEdit {
             file: file.to_string(),
@@ -215,9 +224,10 @@ pub fn suggest_missing_match_arms(
     let mut new_arms = String::new();
     for missing_name in missing {
         // Check if the variant has a payload
-        let has_payload = variants.iter()
+        let has_payload = variants
+            .iter()
             .find(|(n, _)| n == *missing_name)
-            .map_or(false, |(_, payload)| payload.is_some());
+            .is_some_and(|(_, payload)| payload.is_some());
 
         if has_payload {
             new_arms.push_str(&format!(
@@ -271,7 +281,10 @@ pub fn suggest_remove_capabilities(
 
     Some(SuggestedPatch {
         id: format!("{}-remove-caps", E007_CAPABILITY_VIOLATION),
-        description: format!("remove capability annotation !{{{}}}", capabilities.join(", ")),
+        description: format!(
+            "remove capability annotation !{{{}}}",
+            capabilities.join(", ")
+        ),
         confidence: Confidence::High,
         rationale: "update() and view() must be pure functions with no capabilities".to_string(),
         edits: vec![TextEdit {
@@ -299,8 +312,11 @@ fn remove_capability_annotation(line: &str) -> String {
 /// Detect the indentation used for match arms.
 fn detect_arm_indent(source: &str, start_line: usize, end_line: usize) -> String {
     let lines: Vec<&str> = source.lines().collect();
-    for i in start_line..(end_line - 1).min(lines.len()) {
-        let line = lines[i];
+    for line in lines
+        .iter()
+        .take((end_line - 1).min(lines.len()))
+        .skip(start_line)
+    {
         if line.contains("=>") {
             let indent_len = line.len() - line.trim_start().len();
             return " ".repeat(indent_len);
@@ -313,8 +329,13 @@ fn detect_arm_indent(source: &str, start_line: usize, end_line: usize) -> String
 fn find_usage_line(source: &str, name: &str) -> Option<usize> {
     for (i, line) in source.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("//") { continue; }
-        if trimmed.starts_with("fn ") || trimmed.starts_with("type ") || trimmed.starts_with("enum ") {
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("fn ")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("enum ")
+        {
             continue;
         }
         if line.contains(name) {
@@ -356,8 +377,12 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
     let a_len = a.len();
     let b_len = b.len();
 
-    if a_len == 0 { return b_len; }
-    if b_len == 0 { return a_len; }
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
 
     let mut prev: Vec<usize> = (0..=b_len).collect();
     let mut curr = vec![0; b_len + 1];
@@ -366,9 +391,7 @@ pub fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i + 1;
         for (j, cb) in b.chars().enumerate() {
             let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j] + cost)
-                .min(prev[j + 1] + 1)
-                .min(curr[j] + 1);
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -394,12 +417,18 @@ mod tests {
         let candidates = &["count", "name", "value", "status"];
         assert_eq!(find_closest_name("countt", candidates), Some("count"));
         assert_eq!(find_closest_name("coun", candidates), Some("count"));
-        assert_eq!(find_closest_name("xyz_completely_different", candidates), None);
+        assert_eq!(
+            find_closest_name("xyz_completely_different", candidates),
+            None
+        );
     }
 
     #[test]
     fn test_replace_word() {
-        assert_eq!(replace_word("let x = countt + 1", "countt", "count"), "let x = count + 1");
+        assert_eq!(
+            replace_word("let x = countt + 1", "countt", "count"),
+            "let x = count + 1"
+        );
         assert_eq!(replace_word("foobar", "foo", "baz"), "foobar"); // not a word boundary
     }
 
@@ -427,11 +456,13 @@ fn update(state: State, action: Action) -> State {
         let variants = vec![
             ("Add".to_string(), None),
             ("Remove".to_string(), None),
-            ("Clear".to_string(), Some(TypeExpr::Named("String".to_string()))),
+            (
+                "Clear".to_string(),
+                Some(TypeExpr::Named("String".to_string())),
+            ),
         ];
-        let patch = suggest_missing_match_arms(
-            "test.ax", source, 2, 4, &["Clear", "Remove"], &variants,
-        );
+        let patch =
+            suggest_missing_match_arms("test.ax", source, 2, 4, &["Clear", "Remove"], &variants);
         assert!(patch.is_some());
         let p = patch.unwrap();
         assert!(p.edits[0].new_text.contains("Remove => { /* TODO */ }"));

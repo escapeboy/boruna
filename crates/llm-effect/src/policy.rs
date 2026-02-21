@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::normalize::LlmRequest;
 
 /// LLM-specific policy constraints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmPolicy {
     /// Total token budget across all LLM calls in a session (0 = unlimited).
     pub total_token_budget: u64,
@@ -15,18 +15,6 @@ pub struct LlmPolicy {
     pub max_context_bytes: u64,
     /// Allowed prompt IDs (empty = all allowed).
     pub prompt_allowlist: Vec<String>,
-}
-
-impl Default for LlmPolicy {
-    fn default() -> Self {
-        LlmPolicy {
-            total_token_budget: 0,
-            max_calls: 0,
-            allowed_models: Vec::new(),
-            max_context_bytes: 0,
-            prompt_allowlist: Vec::new(),
-        }
-    }
 }
 
 impl LlmPolicy {
@@ -64,20 +52,12 @@ pub fn check_policy(
     if !policy.prompt_allowlist.is_empty()
         && !policy.prompt_allowlist.iter().any(|p| p == &req.prompt_id)
     {
-        return Err(format!(
-            "prompt '{}' not in allowlist",
-            req.prompt_id
-        ));
+        return Err(format!("prompt '{}' not in allowlist", req.prompt_id));
     }
 
     // Check model allowlist
-    if !policy.allowed_models.is_empty()
-        && !policy.allowed_models.iter().any(|m| m == &req.model)
-    {
-        return Err(format!(
-            "model '{}' not in allowed models",
-            req.model
-        ));
+    if !policy.allowed_models.is_empty() && !policy.allowed_models.iter().any(|m| m == &req.model) {
+        return Err(format!("model '{}' not in allowed models", req.model));
     }
 
     // Check token budget
@@ -86,9 +66,7 @@ pub fn check_policy(
         if projected > policy.total_token_budget {
             return Err(format!(
                 "token budget exceeded: {} + {} > {}",
-                usage.total_tokens_requested,
-                req.max_output_tokens,
-                policy.total_token_budget
+                usage.total_tokens_requested, req.max_output_tokens, policy.total_token_budget
             ));
         }
     }
@@ -115,8 +93,8 @@ pub fn check_policy(
 #[cfg(test)]
 mod policy_tests {
     use super::*;
-    use std::collections::BTreeMap;
     use crate::normalize::CacheMode;
+    use std::collections::BTreeMap;
 
     fn make_request() -> LlmRequest {
         LlmRequest {
@@ -159,7 +137,10 @@ mod policy_tests {
             total_token_budget: 150,
             ..Default::default()
         };
-        let usage = LlmUsage { total_tokens_requested: 60, call_count: 1 };
+        let usage = LlmUsage {
+            total_tokens_requested: 60,
+            call_count: 1,
+        };
         // 60 + 100 = 160 > 150
         let result = check_policy(&req, &policy, &usage, 0);
         assert!(result.is_err());
@@ -172,7 +153,10 @@ mod policy_tests {
             max_calls: 2,
             ..Default::default()
         };
-        let usage = LlmUsage { total_tokens_requested: 0, call_count: 2 };
+        let usage = LlmUsage {
+            total_tokens_requested: 0,
+            call_count: 2,
+        };
         let result = check_policy(&req, &policy, &usage, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("max calls exceeded"));
@@ -188,7 +172,9 @@ mod policy_tests {
         let usage = LlmUsage::default();
         let result = check_policy(&req, &policy, &usage, 0);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("model 'default' not in allowed models"));
+        assert!(result
+            .unwrap_err()
+            .contains("model 'default' not in allowed models"));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use boruna_bytecode::*;
-    use crate::vm::Vm;
     use crate::capability_gateway::*;
     use crate::error::VmError;
     use crate::replay::*;
+    use crate::vm::Vm;
+    use boruna_bytecode::*;
 
     fn simple_module(code: Vec<Op>, constants: Vec<Value>) -> Module {
         let mut module = Module::new("test");
@@ -47,12 +47,7 @@ mod tests {
     #[test]
     fn test_subtraction() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Sub,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Sub, Op::Ret],
             vec![Value::Int(10), Value::Int(3)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(7));
@@ -61,12 +56,7 @@ mod tests {
     #[test]
     fn test_multiplication() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Mul,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Mul, Op::Ret],
             vec![Value::Int(6), Value::Int(7)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(42));
@@ -75,12 +65,7 @@ mod tests {
     #[test]
     fn test_division() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Div,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Div, Op::Ret],
             vec![Value::Int(10), Value::Int(3)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(3));
@@ -89,12 +74,7 @@ mod tests {
     #[test]
     fn test_division_by_zero() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Div,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Div, Op::Ret],
             vec![Value::Int(10), Value::Int(0)],
         );
         assert!(run_module(module).is_err());
@@ -103,12 +83,7 @@ mod tests {
     #[test]
     fn test_comparison() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Lt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Lt, Op::Ret],
             vec![Value::Int(3), Value::Int(10)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
@@ -145,7 +120,11 @@ mod tests {
                 Op::PushConst(2), // "yes"
                 Op::Ret,
             ],
-            vec![Value::Bool(true), Value::String("no".into()), Value::String("yes".into())],
+            vec![
+                Value::Bool(true),
+                Value::String("no".into()),
+                Value::String("yes".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::String("yes".into()));
     }
@@ -153,15 +132,16 @@ mod tests {
     #[test]
     fn test_string_concat() {
         let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Concat, Op::Ret],
             vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Concat,
-                Op::Ret,
+                Value::String("hello ".into()),
+                Value::String("world".into()),
             ],
-            vec![Value::String("hello ".into()), Value::String("world".into())],
         );
-        assert_eq!(run_module(module).unwrap(), Value::String("hello world".into()));
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("hello world".into())
+        );
     }
 
     #[test]
@@ -171,7 +151,7 @@ mod tests {
                 Op::PushConst(0), // "Alice"
                 Op::PushConst(1), // 30
                 Op::MakeRecord(0, 2),
-                Op::GetField(0),  // get first field
+                Op::GetField(0), // get first field
                 Op::Ret,
             ],
             vec![Value::String("Alice".into()), Value::Int(30)],
@@ -189,12 +169,7 @@ mod tests {
             name: "main".into(),
             arity: 0,
             locals: 0,
-            code: vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Call(1, 2),
-                Op::Ret,
-            ],
+            code: vec![Op::PushConst(0), Op::PushConst(1), Op::Call(1, 2), Op::Ret],
             capabilities: vec![],
             match_tables: vec![],
         });
@@ -204,12 +179,7 @@ mod tests {
             name: "add".into(),
             arity: 2,
             locals: 2,
-            code: vec![
-                Op::LoadLocal(0),
-                Op::LoadLocal(1),
-                Op::Add,
-                Op::Ret,
-            ],
+            code: vec![Op::LoadLocal(0), Op::LoadLocal(1), Op::Add, Op::Ret],
             capabilities: vec![],
             match_tables: vec![],
         });
@@ -220,11 +190,7 @@ mod tests {
     #[test]
     fn test_negation() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Neg,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::Neg, Op::Ret],
             vec![Value::Int(42)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(-42));
@@ -233,11 +199,7 @@ mod tests {
     #[test]
     fn test_logical_not() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Not,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::Not, Op::Ret],
             vec![Value::Bool(true)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(false));
@@ -259,10 +221,7 @@ mod tests {
 
     #[test]
     fn test_stack_underflow() {
-        let module = simple_module(
-            vec![Op::Pop, Op::Ret],
-            vec![],
-        );
+        let module = simple_module(vec![Op::Pop, Op::Ret], vec![]);
         assert!(run_module(module).is_err());
     }
 
@@ -270,11 +229,7 @@ mod tests {
     fn test_execution_limit() {
         // Infinite loop
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Pop,
-                Op::Jmp(0),
-            ],
+            vec![Op::PushConst(0), Op::Pop, Op::Jmp(0)],
             vec![Value::Int(0)],
         );
         let gateway = CapabilityGateway::new(Policy::allow_all());
@@ -318,12 +273,7 @@ mod tests {
     #[test]
     fn test_emit_ui() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Dup,
-                Op::EmitUi,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::Dup, Op::EmitUi, Op::Ret],
             vec![Value::String("hello ui".into())],
         );
         let gateway = CapabilityGateway::new(Policy::allow_all());
@@ -342,7 +292,11 @@ mod tests {
                 Op::PushConst(2),
                 Op::Ret,
             ],
-            vec![Value::Bool(true), Value::String("should not fail".into()), Value::Int(42)],
+            vec![
+                Value::Bool(true),
+                Value::String("should not fail".into()),
+                Value::Int(42),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(42));
     }
@@ -356,7 +310,11 @@ mod tests {
                 Op::PushConst(2),
                 Op::Ret,
             ],
-            vec![Value::Bool(false), Value::String("oops".into()), Value::Int(42)],
+            vec![
+                Value::Bool(false),
+                Value::String("oops".into()),
+                Value::Int(42),
+            ],
         );
         assert!(run_module(module).is_err());
     }
@@ -429,13 +387,7 @@ mod tests {
 
     #[test]
     fn test_trace_enabled() {
-        let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Ret,
-            ],
-            vec![Value::Int(1)],
-        );
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(1)]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
         vm.trace_enabled = true;
@@ -447,13 +399,7 @@ mod tests {
 
     #[test]
     fn test_make_list_empty() {
-        let module = simple_module(
-            vec![
-                Op::MakeList(0),
-                Op::Ret,
-            ],
-            vec![],
-        );
+        let module = simple_module(vec![Op::MakeList(0), Op::Ret], vec![]);
         assert_eq!(run_module(module).unwrap(), Value::List(vec![]));
     }
 
@@ -492,14 +438,7 @@ mod tests {
 
     #[test]
     fn test_list_len_empty() {
-        let module = simple_module(
-            vec![
-                Op::MakeList(0),
-                Op::ListLen,
-                Op::Ret,
-            ],
-            vec![],
-        );
+        let module = simple_module(vec![Op::MakeList(0), Op::ListLen, Op::Ret], vec![]);
         assert_eq!(run_module(module).unwrap(), Value::Int(0));
     }
 
@@ -615,11 +554,7 @@ mod tests {
     #[test]
     fn test_parse_int_valid() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::ParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::ParseInt, Op::Ret],
             vec![Value::String("42".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(42));
@@ -628,11 +563,7 @@ mod tests {
     #[test]
     fn test_parse_int_negative() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::ParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::ParseInt, Op::Ret],
             vec![Value::String("-7".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(-7));
@@ -641,11 +572,7 @@ mod tests {
     #[test]
     fn test_parse_int_invalid() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::ParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::ParseInt, Op::Ret],
             vec![Value::String("hello".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(0));
@@ -654,11 +581,7 @@ mod tests {
     #[test]
     fn test_parse_int_empty() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::ParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::ParseInt, Op::Ret],
             vec![Value::String("".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(0));
@@ -667,11 +590,7 @@ mod tests {
     #[test]
     fn test_parse_int_with_whitespace() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::ParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::ParseInt, Op::Ret],
             vec![Value::String("  123  ".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(123));
@@ -680,24 +599,19 @@ mod tests {
     #[test]
     fn test_try_parse_int_valid() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::TryParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::TryParseInt, Op::Ret],
             vec![Value::String("42".into())],
         );
-        assert_eq!(run_module(module).unwrap(), Value::Ok(Box::new(Value::Int(42))));
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Ok(Box::new(Value::Int(42)))
+        );
     }
 
     #[test]
     fn test_try_parse_int_invalid() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::TryParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::TryParseInt, Op::Ret],
             vec![Value::String("hello".into())],
         );
         match run_module(module).unwrap() {
@@ -709,11 +623,7 @@ mod tests {
     #[test]
     fn test_try_parse_int_empty() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::TryParseInt,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::TryParseInt, Op::Ret],
             vec![Value::String("".into())],
         );
         match run_module(module).unwrap() {
@@ -731,7 +641,10 @@ mod tests {
                 Op::StrContains,
                 Op::Ret,
             ],
-            vec![Value::String("hello world".into()), Value::String("world".into())],
+            vec![
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
     }
@@ -739,12 +652,7 @@ mod tests {
     #[test]
     fn test_str_contains_false() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::StrContains,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StrContains, Op::Ret],
             vec![Value::String("hello".into()), Value::String("xyz".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(false));
@@ -753,12 +661,7 @@ mod tests {
     #[test]
     fn test_str_contains_empty_needle() {
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::StrContains,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StrContains, Op::Ret],
             vec![Value::String("hello".into()), Value::String("".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
@@ -773,7 +676,10 @@ mod tests {
                 Op::StrStartsWith,
                 Op::Ret,
             ],
-            vec![Value::String("conflict:5".into()), Value::String("conflict".into())],
+            vec![
+                Value::String("conflict:5".into()),
+                Value::String("conflict".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
     }
@@ -802,7 +708,10 @@ mod tests {
         assert_eq!(log.version(), EVENT_LOG_VERSION);
 
         let json = log.to_json().unwrap();
-        assert!(json.contains("\"version\""), "JSON must include version field");
+        assert!(
+            json.contains("\"version\""),
+            "JSON must include version field"
+        );
     }
 
     #[test]
@@ -832,14 +741,20 @@ mod tests {
         let result = EventLog::from_json(future_json);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("unsupported"), "error should mention unsupported: {err}");
+        assert!(
+            err.contains("unsupported"),
+            "error should mention unsupported: {err}"
+        );
     }
 
     #[test]
     fn test_event_log_v1_format_stability() {
         // Golden test: lock the JSON format of EventLog v1
         let mut log = EventLog::new();
-        log.log_cap_call(&Capability::NetFetch, &[Value::String("https://example.com".into())]);
+        log.log_cap_call(
+            &Capability::NetFetch,
+            &[Value::String("https://example.com".into())],
+        );
         log.log_cap_result(&Capability::NetFetch, &Value::String("response".into()));
 
         let json = log.to_json().unwrap();
@@ -853,7 +768,10 @@ mod tests {
         // Must contain capability name
         assert!(json.contains("\"net.fetch\""), "must have capability name");
         // Must contain CapResult variant
-        assert!(json.contains("\"CapResult\""), "must have CapResult variant");
+        assert!(
+            json.contains("\"CapResult\""),
+            "must have CapResult variant"
+        );
 
         // Roundtrip must preserve exactly
         let restored = EventLog::from_json(&json).unwrap();
@@ -885,13 +803,7 @@ mod tests {
     #[test]
     fn test_execute_bounded_completes() {
         // Simple program finishes within budget
-        let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::Ret,
-            ],
-            vec![Value::Int(42)],
-        );
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(42)]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
         vm.set_entry_function(0).unwrap();
@@ -907,9 +819,9 @@ mod tests {
         // Create a loop: jump back to start
         let module = simple_module(
             vec![
-                Op::PushConst(0),  // push 1
-                Op::Pop,           // pop it
-                Op::Jmp(0),        // loop back to start
+                Op::PushConst(0), // push 1
+                Op::Pop,          // pop it
+                Op::Jmp(0),       // loop back to start
             ],
             vec![Value::Int(1)],
         );
@@ -928,12 +840,7 @@ mod tests {
     fn test_execute_bounded_backward_compat() {
         // run() still works identically
         let module = simple_module(
-            vec![
-                Op::PushConst(0),
-                Op::PushConst(1),
-                Op::Add,
-                Op::Ret,
-            ],
+            vec![Op::PushConst(0), Op::PushConst(1), Op::Add, Op::Ret],
             vec![Value::Int(10), Value::Int(32)],
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(42));
@@ -942,13 +849,7 @@ mod tests {
     #[test]
     fn test_receive_msg_blocks_when_empty() {
         // ReceiveMsg with empty mailbox in bounded mode returns Blocked
-        let module = simple_module(
-            vec![
-                Op::ReceiveMsg,
-                Op::Ret,
-            ],
-            vec![],
-        );
+        let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
         vm.set_entry_function(0).unwrap();
@@ -962,16 +863,13 @@ mod tests {
     fn test_receive_msg_pops_from_mailbox() {
         // ReceiveMsg returns message from mailbox
         use crate::actor::Message;
-        let module = simple_module(
-            vec![
-                Op::ReceiveMsg,
-                Op::Ret,
-            ],
-            vec![],
-        );
+        let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
-        vm.deliver_message(Message { from: 99, payload: Value::Int(777) });
+        vm.deliver_message(Message {
+            from: 99,
+            payload: Value::Int(777),
+        });
         vm.set_entry_function(0).unwrap();
         match vm.execute_bounded(100) {
             crate::vm::StepResult::Completed(val) => assert_eq!(val, Value::Int(777)),
@@ -982,13 +880,7 @@ mod tests {
     #[test]
     fn test_receive_msg_legacy_returns_unit() {
         // In legacy unbounded mode (run()), ReceiveMsg pushes Unit
-        let module = simple_module(
-            vec![
-                Op::ReceiveMsg,
-                Op::Ret,
-            ],
-            vec![],
-        );
+        let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
         assert_eq!(run_module(module).unwrap(), Value::Unit);
     }
 
@@ -1011,12 +903,12 @@ mod tests {
             arity: 0,
             locals: 2,
             code: vec![
-                Op::SpawnActor(0),   // spawn worker -> ActorId(0)
+                Op::SpawnActor(0), // spawn worker -> ActorId(0)
                 Op::StoreLocal(0),
-                Op::SpawnActor(0),   // spawn worker -> ActorId(1)
+                Op::SpawnActor(0), // spawn worker -> ActorId(1)
                 Op::StoreLocal(1),
-                Op::LoadLocal(0),    // push first
-                Op::LoadLocal(1),    // push second
+                Op::LoadLocal(0), // push first
+                Op::LoadLocal(1), // push second
                 // Build record with both IDs
                 Op::MakeRecord(0, 2),
                 Op::Ret,
@@ -1055,7 +947,7 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::SpawnActor(0),  // spawn worker
+                Op::SpawnActor(0), // spawn worker
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1075,10 +967,10 @@ mod tests {
         // SendMsg populates outgoing_messages
         let module = simple_module(
             vec![
-                Op::PushConst(0),  // target: ActorId(5)
-                Op::PushConst(1),  // payload: Int(42)
+                Op::PushConst(0), // target: ActorId(5)
+                Op::PushConst(1), // payload: Int(42)
                 Op::SendMsg,
-                Op::PushConst(2),  // return 0
+                Op::PushConst(2), // return 0
                 Op::Ret,
             ],
             vec![Value::ActorId(5), Value::Int(42), Value::Int(0)],
@@ -1097,8 +989,8 @@ mod tests {
         // Sending to non-ActorId produces TypeError
         let module = simple_module(
             vec![
-                Op::PushConst(0),  // target: Int(5) -- not ActorId!
-                Op::PushConst(1),  // payload
+                Op::PushConst(0), // target: Int(5) -- not ActorId!
+                Op::PushConst(1), // payload
                 Op::SendMsg,
                 Op::PushConst(0),
                 Op::Ret,
@@ -1119,9 +1011,9 @@ mod tests {
         use crate::actor::Message;
         let module = simple_module(
             vec![
-                Op::ReceiveMsg,     // first message
+                Op::ReceiveMsg, // first message
                 Op::StoreLocal(0),
-                Op::ReceiveMsg,     // second message
+                Op::ReceiveMsg, // second message
                 Op::StoreLocal(1),
                 Op::LoadLocal(0),
                 Op::LoadLocal(1),
@@ -1132,19 +1024,23 @@ mod tests {
         );
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
-        vm.deliver_message(Message { from: 0, payload: Value::Int(111) });
-        vm.deliver_message(Message { from: 0, payload: Value::Int(222) });
+        vm.deliver_message(Message {
+            from: 0,
+            payload: Value::Int(111),
+        });
+        vm.deliver_message(Message {
+            from: 0,
+            payload: Value::Int(222),
+        });
         vm.set_entry_function(0).unwrap();
         match vm.execute_bounded(100) {
-            crate::vm::StepResult::Completed(val) => {
-                match val {
-                    Value::Record { fields, .. } => {
-                        assert_eq!(fields[0], Value::Int(111));
-                        assert_eq!(fields[1], Value::Int(222));
-                    }
-                    _ => panic!("expected Record"),
+            crate::vm::StepResult::Completed(val) => match val {
+                Value::Record { fields, .. } => {
+                    assert_eq!(fields[0], Value::Int(111));
+                    assert_eq!(fields[1], Value::Int(222));
                 }
-            }
+                _ => panic!("expected Record"),
+            },
             other => panic!("expected Completed, got {:?}", other),
         }
     }
@@ -1155,7 +1051,7 @@ mod tests {
         use crate::actor::Message;
         let module = simple_module(
             vec![
-                Op::ReceiveMsg,  // will block first time
+                Op::ReceiveMsg, // will block first time
                 Op::Ret,
             ],
             vec![],
@@ -1171,7 +1067,10 @@ mod tests {
         }
 
         // Deliver a message
-        vm.deliver_message(Message { from: 0, payload: Value::Int(999) });
+        vm.deliver_message(Message {
+            from: 0,
+            payload: Value::Int(999),
+        });
 
         // Second attempt: completes
         match vm.execute_bounded(100) {
@@ -1248,8 +1147,8 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::ReceiveMsg,  // blocks until message arrives
-                Op::Ret,         // return payload
+                Op::ReceiveMsg, // blocks until message arrives
+                Op::Ret,        // return payload
             ],
             capabilities: vec![],
             match_tables: vec![],
@@ -1260,12 +1159,12 @@ mod tests {
             arity: 0,
             locals: 1,
             code: vec![
-                Op::SpawnActor(0),  // spawn worker -> ActorId
-                Op::StoreLocal(0),  // save child id
-                Op::LoadLocal(0),   // push target
-                Op::PushConst(0),   // payload: Int(77)
-                Op::SendMsg,        // send to child
-                Op::PushConst(1),   // return 0
+                Op::SpawnActor(0), // spawn worker -> ActorId
+                Op::StoreLocal(0), // save child id
+                Op::LoadLocal(0),  // push target
+                Op::PushConst(0),  // payload: Int(77)
+                Op::SendMsg,       // send to child
+                Op::PushConst(1),  // return 0
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1292,10 +1191,10 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::PushConst(0),   // target: ActorId(0) = parent
-                Op::PushConst(1),   // payload: Int(55)
+                Op::PushConst(0), // target: ActorId(0) = parent
+                Op::PushConst(1), // payload: Int(55)
                 Op::SendMsg,
-                Op::PushConst(2),   // return 0
+                Op::PushConst(2), // return 0
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1310,10 +1209,10 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::SpawnActor(0),  // spawn worker
-                Op::Pop,            // discard child ActorId
-                Op::ReceiveMsg,     // blocks until child's message arrives
-                Op::Ret,            // return received payload
+                Op::SpawnActor(0), // spawn worker
+                Op::Pop,           // discard child ActorId
+                Op::ReceiveMsg,    // blocks until child's message arrives
+                Op::Ret,           // return received payload
             ],
             capabilities: vec![],
             match_tables: vec![],
@@ -1345,12 +1244,7 @@ mod tests {
             name: "main".into(),
             arity: 0,
             locals: 0,
-            code: vec![
-                Op::SpawnActor(0),
-                Op::Pop,
-                Op::ReceiveMsg,
-                Op::Ret,
-            ],
+            code: vec![Op::SpawnActor(0), Op::Pop, Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
             match_tables: vec![],
         });
@@ -1377,11 +1271,11 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::ReceiveMsg,     // 0: receive
-                Op::PushConst(0),   // 1: target = ActorId(0) (parent)
-                Op::PushConst(1),   // 2: payload = Int(1)
-                Op::SendMsg,        // 3: send
-                Op::Jmp(0),        // 4: loop back
+                Op::ReceiveMsg,   // 0: receive
+                Op::PushConst(0), // 1: target = ActorId(0) (parent)
+                Op::PushConst(1), // 2: payload = Int(1)
+                Op::SendMsg,      // 3: send
+                Op::Jmp(0),       // 4: loop back
             ],
             capabilities: vec![],
             match_tables: vec![],
@@ -1394,15 +1288,15 @@ mod tests {
             arity: 0,
             locals: 1,
             code: vec![
-                Op::SpawnActor(0),  // 0: spawn worker
-                Op::StoreLocal(0),  // 1: save child id
-                Op::LoadLocal(0),   // 2: push child id
-                Op::PushConst(1),   // 3: payload = Int(1)
-                Op::SendMsg,        // 4: send initial message
-                Op::ReceiveMsg,     // 5: receive reply
-                Op::LoadLocal(0),   // 6: push child id
-                Op::PushConst(1),   // 7: payload
-                Op::SendMsg,        // 8: send again
+                Op::SpawnActor(0), // 0: spawn worker
+                Op::StoreLocal(0), // 1: save child id
+                Op::LoadLocal(0),  // 2: push child id
+                Op::PushConst(1),  // 3: payload = Int(1)
+                Op::SendMsg,       // 4: send initial message
+                Op::ReceiveMsg,    // 5: receive reply
+                Op::LoadLocal(0),  // 6: push child id
+                Op::PushConst(1),  // 7: payload
+                Op::SendMsg,       // 8: send again
                 Op::Jmp(5),        // 9: loop back to receive
             ],
             capabilities: vec![],
@@ -1437,10 +1331,15 @@ mod tests {
         let mut system = crate::actor::ActorSystem::new();
         system.spawn_root(module, gateway);
         // Inject a message from external (actor 99)
-        system.send(0, crate::actor::Message {
-            from: 99,
-            payload: Value::Int(123),
-        }).unwrap();
+        system
+            .send(
+                0,
+                crate::actor::Message {
+                    from: 99,
+                    payload: Value::Int(123),
+                },
+            )
+            .unwrap();
         let result = system.run().unwrap();
         assert_eq!(result, Value::Int(123));
     }
@@ -1456,10 +1355,10 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::PushConst(0),  // ActorId(0)
-                Op::PushConst(1),  // Int(1)
+                Op::PushConst(0), // ActorId(0)
+                Op::PushConst(1), // Int(1)
                 Op::SendMsg,
-                Op::PushConst(3),  // return 0
+                Op::PushConst(3), // return 0
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1471,33 +1370,33 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::PushConst(0),  // ActorId(0)
-                Op::PushConst(2),  // Int(2)
+                Op::PushConst(0), // ActorId(0)
+                Op::PushConst(2), // Int(2)
                 Op::SendMsg,
-                Op::PushConst(3),  // return 0
+                Op::PushConst(3), // return 0
                 Op::Ret,
             ],
             capabilities: vec![],
             match_tables: vec![],
         });
         module.constants.push(Value::ActorId(0)); // 0: parent id
-        module.constants.push(Value::Int(1));       // 1
-        module.constants.push(Value::Int(2));       // 2
-        module.constants.push(Value::Int(0));       // 3
-        // Function 2: main — spawns both workers, receives two messages
-        // Returns a list [first_msg, second_msg]
+        module.constants.push(Value::Int(1)); // 1
+        module.constants.push(Value::Int(2)); // 2
+        module.constants.push(Value::Int(0)); // 3
+                                              // Function 2: main — spawns both workers, receives two messages
+                                              // Returns a list [first_msg, second_msg]
         module.add_function(Function {
             name: "main".into(),
             arity: 0,
             locals: 2,
             code: vec![
-                Op::SpawnActor(0),   // spawn worker_a
+                Op::SpawnActor(0), // spawn worker_a
                 Op::Pop,
-                Op::SpawnActor(1),   // spawn worker_b
+                Op::SpawnActor(1), // spawn worker_b
                 Op::Pop,
-                Op::ReceiveMsg,      // first message
+                Op::ReceiveMsg, // first message
                 Op::StoreLocal(0),
-                Op::ReceiveMsg,      // second message
+                Op::ReceiveMsg, // second message
                 Op::StoreLocal(1),
                 Op::LoadLocal(0),
                 Op::LoadLocal(1),
@@ -1550,7 +1449,10 @@ mod tests {
         let log2 = EventLog::from_json(&json).unwrap();
         assert_eq!(log2.events().len(), 1);
         match &log2.events()[0] {
-            Event::SchedulerTick { round, active_actor } => {
+            Event::SchedulerTick {
+                round,
+                active_actor,
+            } => {
                 assert_eq!(*round, 5);
                 assert_eq!(*active_actor, 3);
             }
@@ -1572,7 +1474,9 @@ mod tests {
 
         match ReplayEngine::verify_full(&log, &log2) {
             ReplayResult::Identical => {} // expected
-            ReplayResult::Diverged { reason } => panic!("expected Identical, got Diverged: {}", reason),
+            ReplayResult::Diverged { reason } => {
+                panic!("expected Identical, got Diverged: {}", reason)
+            }
         }
     }
 
@@ -1618,10 +1522,10 @@ mod tests {
             arity: 0,
             locals: 0,
             code: vec![
-                Op::PushConst(0),  // ActorId(0)
-                Op::PushConst(1),  // Int(99)
+                Op::PushConst(0), // ActorId(0)
+                Op::PushConst(1), // Int(99)
                 Op::SendMsg,
-                Op::PushConst(2),  // return 0
+                Op::PushConst(2), // return 0
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1635,12 +1539,7 @@ mod tests {
             name: "main".into(),
             arity: 0,
             locals: 0,
-            code: vec![
-                Op::SpawnActor(0),
-                Op::Pop,
-                Op::ReceiveMsg,
-                Op::Ret,
-            ],
+            code: vec![Op::SpawnActor(0), Op::Pop, Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
             match_tables: vec![],
         });
@@ -1653,10 +1552,16 @@ mod tests {
 
         let events = system.event_log().events();
         // Should have: SchedulerTick(s), ActorSpawn, more SchedulerTick(s), MessageSend, MessageReceive
-        let has_scheduler_tick = events.iter().any(|e| matches!(e, Event::SchedulerTick { .. }));
+        let has_scheduler_tick = events
+            .iter()
+            .any(|e| matches!(e, Event::SchedulerTick { .. }));
         let has_actor_spawn = events.iter().any(|e| matches!(e, Event::ActorSpawn { .. }));
-        let has_message_send = events.iter().any(|e| matches!(e, Event::MessageSend { .. }));
-        let has_message_receive = events.iter().any(|e| matches!(e, Event::MessageReceive { .. }));
+        let has_message_send = events
+            .iter()
+            .any(|e| matches!(e, Event::MessageSend { .. }));
+        let has_message_receive = events
+            .iter()
+            .any(|e| matches!(e, Event::MessageReceive { .. }));
         assert!(has_scheduler_tick, "expected SchedulerTick events");
         assert!(has_actor_spawn, "expected ActorSpawn events");
         assert!(has_message_send, "expected MessageSend events");
@@ -1693,7 +1598,7 @@ mod tests {
             code: vec![
                 Op::SpawnActor(0),
                 Op::Pop,
-                Op::ReceiveMsg,  // receives error from crashed child
+                Op::ReceiveMsg, // receives error from crashed child
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1707,12 +1612,13 @@ mod tests {
         let result = system.run().unwrap();
         // Parent receives Err(String) from the crashed child
         match result {
-            Value::Err(inner) => {
-                match *inner {
-                    Value::String(s) => assert!(s.contains("division by zero"), "expected division by zero error, got: {s}"),
-                    other => panic!("expected Err(String), got Err({:?})", other),
-                }
-            }
+            Value::Err(inner) => match *inner {
+                Value::String(s) => assert!(
+                    s.contains("division by zero"),
+                    "expected division by zero error, got: {s}"
+                ),
+                other => panic!("expected Err(String), got Err({:?})", other),
+            },
             other => panic!("expected Err value, got {:?}", other),
         }
     }
@@ -1740,9 +1646,9 @@ mod tests {
             code: vec![
                 Op::SpawnActor(0), // spawn grandchild
                 Op::Pop,
-                Op::PushConst(0),  // 1
-                Op::PushConst(1),  // 0
-                Op::Div,           // crash!
+                Op::PushConst(0), // 1
+                Op::PushConst(1), // 0
+                Op::Div,          // crash!
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1758,7 +1664,7 @@ mod tests {
             code: vec![
                 Op::SpawnActor(1), // spawn child
                 Op::Pop,
-                Op::ReceiveMsg,    // receives error from crashed child
+                Op::ReceiveMsg, // receives error from crashed child
                 Op::Ret,
             ],
             capabilities: vec![],
@@ -1772,12 +1678,13 @@ mod tests {
         let result = system.run().unwrap();
         // Parent receives error notification from crashed child
         match result {
-            Value::Err(inner) => {
-                match *inner {
-                    Value::String(s) => assert!(s.contains("division by zero"), "expected division by zero, got: {s}"),
-                    other => panic!("expected Err(String), got Err({:?})", other),
-                }
-            }
+            Value::Err(inner) => match *inner {
+                Value::String(s) => assert!(
+                    s.contains("division by zero"),
+                    "expected division by zero, got: {s}"
+                ),
+                other => panic!("expected Err(String), got Err({:?})", other),
+            },
             other => panic!("expected Err from cascade, got {:?}", other),
         }
         // 2 actors total: root(0), child(1). Grandchild was never spawned
@@ -1788,7 +1695,10 @@ mod tests {
     #[test]
     fn test_deadlock_error_display() {
         let err = VmError::Deadlock;
-        assert_eq!(format!("{err}"), "deadlock: all actors blocked with no pending messages");
+        assert_eq!(
+            format!("{err}"),
+            "deadlock: all actors blocked with no pending messages"
+        );
     }
 
     #[test]

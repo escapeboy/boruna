@@ -16,12 +16,19 @@ pub struct LockEntry {
 
 impl LockTable {
     pub fn new() -> Self {
-        Self { locks: HashMap::new() }
+        Self {
+            locks: HashMap::new(),
+        }
     }
 
     /// Try to acquire locks for the given modules on behalf of a node.
     /// Returns Ok(()) if all locks acquired, Err with conflicting module and holder.
-    pub fn acquire(&mut self, node_id: &str, modules: &[String], timestamp: &str) -> Result<(), LockConflict> {
+    pub fn acquire(
+        &mut self,
+        node_id: &str,
+        modules: &[String],
+        timestamp: &str,
+    ) -> Result<(), LockConflict> {
         // Check for conflicts first
         for module in modules {
             if let Some(entry) = self.locks.get(module) {
@@ -37,11 +44,14 @@ impl LockTable {
 
         // No conflicts — acquire all
         for module in modules {
-            self.locks.insert(module.clone(), LockEntry {
-                module: module.clone(),
-                held_by: node_id.to_string(),
-                acquired_at: timestamp.to_string(),
-            });
+            self.locks.insert(
+                module.clone(),
+                LockEntry {
+                    module: module.clone(),
+                    held_by: node_id.to_string(),
+                    acquired_at: timestamp.to_string(),
+                },
+            );
         }
 
         Ok(())
@@ -115,7 +125,9 @@ mod tests {
     #[test]
     fn test_conflict_detection() {
         let mut table = LockTable::new();
-        table.acquire("WN-001", &["boruna-bytecode".into()], "now").unwrap();
+        table
+            .acquire("WN-001", &["boruna-bytecode".into()], "now")
+            .unwrap();
 
         let result = table.acquire("WN-002", &["boruna-bytecode".into()], "now");
         assert!(result.is_err());
@@ -127,7 +139,9 @@ mod tests {
     #[test]
     fn test_same_node_reacquire() {
         let mut table = LockTable::new();
-        table.acquire("WN-001", &["boruna-bytecode".into()], "now").unwrap();
+        table
+            .acquire("WN-001", &["boruna-bytecode".into()], "now")
+            .unwrap();
         // Same node can reacquire its own lock
         let result = table.acquire("WN-001", &["boruna-bytecode".into()], "now");
         assert!(result.is_ok());
@@ -136,11 +150,18 @@ mod tests {
     #[test]
     fn test_multiple_modules() {
         let mut table = LockTable::new();
-        table.acquire("WN-001", &["boruna-bytecode".into(), "boruna-vm".into()], "now").unwrap();
+        table
+            .acquire(
+                "WN-001",
+                &["boruna-bytecode".into(), "boruna-vm".into()],
+                "now",
+            )
+            .unwrap();
         assert_eq!(table.active_locks().len(), 2);
 
         // Conflict on one module
-        let conflicts = table.check_conflicts("WN-002", &["boruna-vm".into(), "boruna-compiler".into()]);
+        let conflicts =
+            table.check_conflicts("WN-002", &["boruna-vm".into(), "boruna-compiler".into()]);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].module, "boruna-vm");
     }
@@ -148,7 +169,9 @@ mod tests {
     #[test]
     fn test_force_release() {
         let mut table = LockTable::new();
-        table.acquire("WN-001", &["boruna-bytecode".into()], "now").unwrap();
+        table
+            .acquire("WN-001", &["boruna-bytecode".into()], "now")
+            .unwrap();
         table.force_release("boruna-bytecode");
         assert_eq!(table.active_locks().len(), 0);
     }
@@ -156,7 +179,9 @@ mod tests {
     #[test]
     fn test_no_conflict_different_modules() {
         let mut table = LockTable::new();
-        table.acquire("WN-001", &["boruna-bytecode".into()], "now").unwrap();
+        table
+            .acquire("WN-001", &["boruna-bytecode".into()], "now")
+            .unwrap();
         let result = table.acquire("WN-002", &["boruna-vm".into()], "now");
         assert!(result.is_ok());
         assert_eq!(table.active_locks().len(), 2);

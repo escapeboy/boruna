@@ -69,15 +69,11 @@ pub fn ui_tree_to_value(node: &UINode) -> Value {
     let mut fields = vec![Value::String(node.tag.clone())];
 
     // Props as a map-like record
-    let prop_values: Vec<Value> = node.props.iter()
-        .map(|(_, v)| v.clone())
-        .collect();
+    let prop_values: Vec<Value> = node.props.iter().map(|(_, v)| v.clone()).collect();
     fields.push(Value::List(prop_values));
 
     // Children
-    let child_values: Vec<Value> = node.children.iter()
-        .map(ui_tree_to_value)
-        .collect();
+    let child_values: Vec<Value> = node.children.iter().map(ui_tree_to_value).collect();
     fields.push(Value::List(child_values));
 
     Value::Record { type_id: 0, fields }

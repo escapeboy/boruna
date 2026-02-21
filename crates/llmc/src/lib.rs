@@ -1,11 +1,11 @@
-pub mod lexer;
 pub mod ast;
-pub mod parser;
-pub mod typeck;
 pub mod codegen;
 pub mod error;
+pub mod lexer;
+pub mod parser;
 #[cfg(test)]
 mod tests;
+pub mod typeck;
 
 pub use error::CompileError;
 

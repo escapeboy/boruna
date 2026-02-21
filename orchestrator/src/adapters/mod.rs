@@ -37,7 +37,9 @@ pub trait GateAdapter {
 pub struct CompileAdapter;
 
 impl GateAdapter for CompileAdapter {
-    fn name(&self) -> &str { "compile" }
+    fn name(&self) -> &str {
+        "compile"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -81,7 +83,9 @@ impl GateAdapter for CompileAdapter {
 pub struct TestAdapter;
 
 impl GateAdapter for TestAdapter {
-    fn name(&self) -> &str { "test" }
+    fn name(&self) -> &str {
+        "test"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -137,7 +141,9 @@ pub struct ReplayAdapter {
 }
 
 impl GateAdapter for ReplayAdapter {
-    fn name(&self) -> &str { "replay" }
+    fn name(&self) -> &str {
+        "replay"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         if self.expected_hashes.is_empty() {
@@ -156,7 +162,15 @@ impl GateAdapter for ReplayAdapter {
 
         for (file, expected) in &self.expected_hashes {
             let output = Command::new("cargo")
-                .args(["run", "-p", "llmvm-cli", "--", "framework", "trace-hash", file])
+                .args([
+                    "run",
+                    "-p",
+                    "llmvm-cli",
+                    "--",
+                    "framework",
+                    "trace-hash",
+                    file,
+                ])
                 .current_dir(ctx.workspace_root)
                 .output();
 
@@ -189,7 +203,11 @@ impl GateAdapter for ReplayAdapter {
 
         GateResult {
             gate: "replay".into(),
-            status: if all_pass { GateStatus::Pass } else { GateStatus::Fail },
+            status: if all_pass {
+                GateStatus::Pass
+            } else {
+                GateStatus::Fail
+            },
             duration_ms,
             output: format!("{} trace hash checks", self.expected_hashes.len()),
             details: serde_json::json!({"checks": results}),
@@ -203,7 +221,9 @@ pub struct DiagAdapter {
 }
 
 impl GateAdapter for DiagAdapter {
-    fn name(&self) -> &str { "diag" }
+    fn name(&self) -> &str {
+        "diag"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -248,7 +268,9 @@ impl GateAdapter for DiagAdapter {
 pub struct PackageVerifyAdapter;
 
 impl GateAdapter for PackageVerifyAdapter {
-    fn name(&self) -> &str { "package_verify" }
+    fn name(&self) -> &str {
+        "package_verify"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -292,7 +314,9 @@ impl GateAdapter for PackageVerifyAdapter {
 pub struct PackageResolveAdapter;
 
 impl GateAdapter for PackageResolveAdapter {
-    fn name(&self) -> &str { "package_resolve" }
+    fn name(&self) -> &str {
+        "package_resolve"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -337,7 +361,9 @@ impl GateAdapter for PackageResolveAdapter {
 pub struct LlmMockGateAdapter;
 
 impl GateAdapter for LlmMockGateAdapter {
-    fn name(&self) -> &str { "llm_mock_verify" }
+    fn name(&self) -> &str {
+        "llm_mock_verify"
+    }
 
     fn run(&self, ctx: &GateContext) -> GateResult {
         let start = Instant::now();
@@ -421,7 +447,9 @@ fn parse_test_counts(output: &str) -> (usize, usize, usize) {
             for part in line.split(';') {
                 let part = part.trim();
                 if part.contains("passed") {
-                    if let Some(n) = part.split_whitespace().next()
+                    if let Some(n) = part
+                        .split_whitespace()
+                        .next()
                         .and_then(|s| s.parse::<usize>().ok())
                     {
                         // Handle "test result: ok. N passed"

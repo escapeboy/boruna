@@ -21,25 +21,30 @@ impl Store {
                 .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
         }
 
-        Ok(Self { base_dir: base_dir.to_path_buf() })
+        Ok(Self {
+            base_dir: base_dir.to_path_buf(),
+        })
     }
 
     /// Save a work graph.
     pub fn save_graph(&self, graph: &WorkGraph) -> Result<(), String> {
-        let path = self.base_dir.join("graphs").join(format!("{}.json", graph.id));
-        let json = serde_json::to_string_pretty(graph)
-            .map_err(|e| format!("serialize error: {e}"))?;
-        fs::write(&path, json)
-            .map_err(|e| format!("write error: {e}"))
+        let path = self
+            .base_dir
+            .join("graphs")
+            .join(format!("{}.json", graph.id));
+        let json =
+            serde_json::to_string_pretty(graph).map_err(|e| format!("serialize error: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("write error: {e}"))
     }
 
     /// Load a work graph by ID.
     pub fn load_graph(&self, graph_id: &str) -> Result<WorkGraph, String> {
-        let path = self.base_dir.join("graphs").join(format!("{graph_id}.json"));
-        let data = fs::read_to_string(&path)
-            .map_err(|e| format!("read error: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("parse error: {e}"))
+        let path = self
+            .base_dir
+            .join("graphs")
+            .join(format!("{graph_id}.json"));
+        let data = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("parse error: {e}"))
     }
 
     /// List all graph IDs.
@@ -62,8 +67,12 @@ impl Store {
 
         for entry in fs::read_dir(&dir).map_err(|e| format!("read dir error: {e}"))? {
             let entry = entry.map_err(|e| format!("entry error: {e}"))?;
-            let meta = entry.metadata().map_err(|e| format!("metadata error: {e}"))?;
-            let modified = meta.modified().map_err(|e| format!("modified error: {e}"))?;
+            let meta = entry
+                .metadata()
+                .map_err(|e| format!("metadata error: {e}"))?;
+            let modified = meta
+                .modified()
+                .map_err(|e| format!("modified error: {e}"))?;
             if let Some(stem) = entry.path().file_stem() {
                 let id = stem.to_string_lossy().to_string();
                 match &latest {
@@ -82,10 +91,9 @@ impl Store {
     /// Save lock table.
     pub fn save_locks(&self, locks: &LockTable) -> Result<(), String> {
         let path = self.base_dir.join("locks").join("locks.json");
-        let json = serde_json::to_string_pretty(locks)
-            .map_err(|e| format!("serialize error: {e}"))?;
-        fs::write(&path, json)
-            .map_err(|e| format!("write error: {e}"))
+        let json =
+            serde_json::to_string_pretty(locks).map_err(|e| format!("serialize error: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("write error: {e}"))
     }
 
     /// Load lock table.
@@ -94,28 +102,33 @@ impl Store {
         if !path.exists() {
             return Ok(LockTable::new());
         }
-        let data = fs::read_to_string(&path)
-            .map_err(|e| format!("read error: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("parse error: {e}"))
+        let data = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("parse error: {e}"))
     }
 
     /// Save gate results for a node.
-    pub fn save_gate_result(&self, node_id: &str, result: &serde_json::Value) -> Result<(), String> {
-        let path = self.base_dir.join("gates").join(format!("{node_id}.gate.json"));
-        let json = serde_json::to_string_pretty(result)
-            .map_err(|e| format!("serialize error: {e}"))?;
-        fs::write(&path, json)
-            .map_err(|e| format!("write error: {e}"))
+    pub fn save_gate_result(
+        &self,
+        node_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<(), String> {
+        let path = self
+            .base_dir
+            .join("gates")
+            .join(format!("{node_id}.gate.json"));
+        let json =
+            serde_json::to_string_pretty(result).map_err(|e| format!("serialize error: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("write error: {e}"))
     }
 
     /// Load gate results for a node.
     pub fn load_gate_result(&self, node_id: &str) -> Result<serde_json::Value, String> {
-        let path = self.base_dir.join("gates").join(format!("{node_id}.gate.json"));
-        let data = fs::read_to_string(&path)
-            .map_err(|e| format!("read error: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("parse error: {e}"))
+        let path = self
+            .base_dir
+            .join("gates")
+            .join(format!("{node_id}.gate.json"));
+        let data = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("parse error: {e}"))
     }
 
     /// Path to the bundles directory.
@@ -164,8 +177,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
 
-        let g1 = WorkGraph { id: "G-001".into(), description: "a".into(), nodes: vec![] };
-        let g2 = WorkGraph { id: "G-002".into(), description: "b".into(), nodes: vec![] };
+        let g1 = WorkGraph {
+            id: "G-001".into(),
+            description: "a".into(),
+            nodes: vec![],
+        };
+        let g2 = WorkGraph {
+            id: "G-002".into(),
+            description: "b".into(),
+            nodes: vec![],
+        };
         store.save_graph(&g1).unwrap();
         store.save_graph(&g2).unwrap();
 
@@ -179,7 +200,9 @@ mod tests {
         let store = Store::new(dir.path()).unwrap();
 
         let mut locks = LockTable::new();
-        locks.acquire("WN-001", &["boruna-bytecode".into()], "now").unwrap();
+        locks
+            .acquire("WN-001", &["boruna-bytecode".into()], "now")
+            .unwrap();
 
         store.save_locks(&locks).unwrap();
         let loaded = store.load_locks().unwrap();

@@ -1,4 +1,4 @@
-pub mod spec;
-pub mod resolver;
-pub mod storage;
 pub mod cli;
+pub mod resolver;
+pub mod spec;
+pub mod storage;

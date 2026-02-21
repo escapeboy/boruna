@@ -94,7 +94,10 @@ impl Parser {
     }
 
     fn error(&self, msg: String) -> CompileError {
-        CompileError::Parse { line: self.current_line(), msg }
+        CompileError::Parse {
+            line: self.current_line(),
+            msg,
+        }
     }
 
     fn parse_program(&mut self) -> Result<Program, CompileError> {
@@ -110,7 +113,9 @@ impl Parser {
         let mut items = Vec::new();
         while self.peek().is_some() {
             self.skip_newlines();
-            if self.peek().is_none() { break; }
+            if self.peek().is_none() {
+                break;
+            }
             items.push(self.parse_item()?);
         }
 
@@ -139,7 +144,10 @@ impl Parser {
             Some(TokenKind::Import) => {
                 self.advance();
                 let name = self.expect_ident()?;
-                Ok(Item::Import(ImportDef { module: name, items: vec![] }))
+                Ok(Item::Import(ImportDef {
+                    module: name,
+                    items: vec![],
+                }))
             }
             other => Err(self.error(format!("expected item, got {:?}", other))),
         }
@@ -232,7 +240,9 @@ impl Parser {
                     if !fields.is_empty() {
                         self.expect(&TokenKind::Comma)?;
                         // Allow trailing comma
-                        if self.check(&TokenKind::RBrace) { break; }
+                        if self.check(&TokenKind::RBrace) {
+                            break;
+                        }
                     }
                     let fname = self.expect_ident()?;
                     self.expect(&TokenKind::Colon)?;
@@ -254,7 +264,9 @@ impl Parser {
                 while !self.check(&TokenKind::RBrace) {
                     if !variants.is_empty() {
                         self.expect(&TokenKind::Comma)?;
-                        if self.check(&TokenKind::RBrace) { break; }
+                        if self.check(&TokenKind::RBrace) {
+                            break;
+                        }
                     }
                     let vname = self.expect_ident()?;
                     let payload = if self.check(&TokenKind::LParen) {
@@ -310,7 +322,9 @@ impl Parser {
         let mut stmts = Vec::new();
         while !self.check(&TokenKind::RBrace) {
             self.skip_newlines();
-            if self.check(&TokenKind::RBrace) { break; }
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
             stmts.push(self.parse_stmt()?);
         }
         self.expect(&TokenKind::RBrace)?;
@@ -336,11 +350,19 @@ impl Parser {
                 };
                 self.expect(&TokenKind::Eq)?;
                 let value = self.parse_expr()?;
-                Ok(Stmt::Let { name, mutable, ty, value })
+                Ok(Stmt::Let {
+                    name,
+                    mutable,
+                    ty,
+                    value,
+                })
             }
             Some(TokenKind::Return) => {
                 self.advance();
-                let value = if self.check(&TokenKind::RBrace) || self.check(&TokenKind::Newline) || self.peek().is_none() {
+                let value = if self.check(&TokenKind::RBrace)
+                    || self.check(&TokenKind::Newline)
+                    || self.peek().is_none()
+                {
                     None
                 } else {
                     Some(self.parse_expr()?)
@@ -360,7 +382,10 @@ impl Parser {
                     self.advance();
                     if let Expr::Ident(name) = expr {
                         let value = self.parse_expr()?;
-                        Ok(Stmt::Assign { target: name, value })
+                        Ok(Stmt::Assign {
+                            target: name,
+                            value,
+                        })
                     } else {
                         Err(self.error("invalid assignment target".into()))
                     }
@@ -413,7 +438,11 @@ impl Parser {
             };
             self.advance();
             let right = self.parse_comparison()?;
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -430,7 +459,11 @@ impl Parser {
             };
             self.advance();
             let right = self.parse_concat()?;
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -459,7 +492,11 @@ impl Parser {
             };
             self.advance();
             let right = self.parse_multiplicative()?;
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -475,7 +512,11 @@ impl Parser {
             };
             self.advance();
             let right = self.parse_unary()?;
-            left = Expr::Binary { op, left: Box::new(left), right: Box::new(right) };
+            left = Expr::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -485,12 +526,18 @@ impl Parser {
             Some(TokenKind::Minus) => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnaryOp::Neg, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Neg,
+                    expr: Box::new(expr),
+                })
             }
             Some(TokenKind::Bang) => {
                 self.advance();
                 let expr = self.parse_unary()?;
-                Ok(Expr::Unary { op: UnaryOp::Not, expr: Box::new(expr) })
+                Ok(Expr::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(expr),
+                })
             }
             _ => self.parse_postfix(),
         }
@@ -509,11 +556,17 @@ impl Parser {
                     args.push(self.parse_expr()?);
                 }
                 self.expect(&TokenKind::RParen)?;
-                expr = Expr::Call { func: Box::new(expr), args };
+                expr = Expr::Call {
+                    func: Box::new(expr),
+                    args,
+                };
             } else if self.check(&TokenKind::Dot) {
                 self.advance();
                 let field = self.expect_ident()?;
-                expr = Expr::FieldAccess { object: Box::new(expr), field };
+                expr = Expr::FieldAccess {
+                    object: Box::new(expr),
+                    field,
+                };
             } else {
                 break;
             }
@@ -526,21 +579,36 @@ impl Parser {
             Some(TokenKind::IntLit(_)) => {
                 if let Some(TokenKind::IntLit(n)) = self.advance() {
                     Ok(Expr::IntLit(n))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
             Some(TokenKind::FloatLit(_)) => {
                 if let Some(TokenKind::FloatLit(n)) = self.advance() {
                     Ok(Expr::FloatLit(n))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
             Some(TokenKind::StringLit(_)) => {
                 if let Some(TokenKind::StringLit(s)) = self.advance() {
                     Ok(Expr::StringLit(s))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
-            Some(TokenKind::True) => { self.advance(); Ok(Expr::BoolLit(true)) }
-            Some(TokenKind::False) => { self.advance(); Ok(Expr::BoolLit(false)) }
-            Some(TokenKind::None) => { self.advance(); Ok(Expr::NoneLit) }
+            Some(TokenKind::True) => {
+                self.advance();
+                Ok(Expr::BoolLit(true))
+            }
+            Some(TokenKind::False) => {
+                self.advance();
+                Ok(Expr::BoolLit(false))
+            }
+            Some(TokenKind::None) => {
+                self.advance();
+                Ok(Expr::NoneLit)
+            }
             Some(TokenKind::Some) => {
                 self.advance();
                 self.expect(&TokenKind::LParen)?;
@@ -600,7 +668,9 @@ impl Parser {
                     if !items.is_empty() {
                         self.expect(&TokenKind::Comma)?;
                         // Allow trailing comma
-                        if self.check(&TokenKind::RBracket) { break; }
+                        if self.check(&TokenKind::RBracket) {
+                            break;
+                        }
                     }
                     items.push(self.parse_expr()?);
                 }
@@ -614,7 +684,7 @@ impl Parser {
             Some(TokenKind::Ident(name)) => {
                 self.advance();
                 // Check for record literal: TypeName { field: value, ... }
-                if name.chars().next().map_or(false, |c| c.is_uppercase())
+                if name.chars().next().is_some_and(|c| c.is_uppercase())
                     && self.check(&TokenKind::LBrace)
                 {
                     self.advance(); // {
@@ -631,7 +701,9 @@ impl Parser {
                     while !self.check(&TokenKind::RBrace) {
                         if !fields.is_empty() {
                             self.expect(&TokenKind::Comma)?;
-                            if self.check(&TokenKind::RBrace) { break; }
+                            if self.check(&TokenKind::RBrace) {
+                                break;
+                            }
                         }
                         let fname = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
@@ -639,7 +711,11 @@ impl Parser {
                         fields.push((fname, fval));
                     }
                     self.expect(&TokenKind::RBrace)?;
-                    Ok(Expr::Record { type_name: name, fields, spread })
+                    Ok(Expr::Record {
+                        type_name: name,
+                        fields,
+                        spread,
+                    })
                 } else {
                     Ok(Expr::Ident(name))
                 }
@@ -672,7 +748,9 @@ impl Parser {
         let mut arms = Vec::new();
         while !self.check(&TokenKind::RBrace) {
             self.skip_newlines();
-            if self.check(&TokenKind::RBrace) { break; }
+            if self.check(&TokenKind::RBrace) {
+                break;
+            }
             let pattern = self.parse_pattern()?;
             self.expect(&TokenKind::FatArrow)?;
             let body = self.parse_expr()?;
@@ -683,15 +761,30 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RBrace)?;
-        Ok(Expr::Match { value: Box::new(value), arms })
+        Ok(Expr::Match {
+            value: Box::new(value),
+            arms,
+        })
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
         match self.peek().cloned() {
-            Some(TokenKind::Underscore) => { self.advance(); Ok(Pattern::Wildcard) }
-            Some(TokenKind::True) => { self.advance(); Ok(Pattern::BoolLit(true)) }
-            Some(TokenKind::False) => { self.advance(); Ok(Pattern::BoolLit(false)) }
-            Some(TokenKind::None) => { self.advance(); Ok(Pattern::NonePat) }
+            Some(TokenKind::Underscore) => {
+                self.advance();
+                Ok(Pattern::Wildcard)
+            }
+            Some(TokenKind::True) => {
+                self.advance();
+                Ok(Pattern::BoolLit(true))
+            }
+            Some(TokenKind::False) => {
+                self.advance();
+                Ok(Pattern::BoolLit(false))
+            }
+            Some(TokenKind::None) => {
+                self.advance();
+                Ok(Pattern::NonePat)
+            }
             Some(TokenKind::Some) => {
                 self.advance();
                 self.expect(&TokenKind::LParen)?;
@@ -716,14 +809,20 @@ impl Parser {
             Some(TokenKind::IntLit(_)) => {
                 if let Some(TokenKind::IntLit(n)) = self.advance() {
                     Ok(Pattern::IntLit(n))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
             Some(TokenKind::StringLit(_)) => {
                 if let Some(TokenKind::StringLit(s)) = self.advance() {
                     Ok(Pattern::StringLit(s))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
-            Some(TokenKind::Ident(name)) if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+            Some(TokenKind::Ident(name))
+                if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
+            {
                 self.advance();
                 let payload = if self.check(&TokenKind::LParen) {
                     self.advance();
@@ -738,7 +837,9 @@ impl Parser {
             Some(TokenKind::Ident(_)) => {
                 if let Some(TokenKind::Ident(name)) = self.advance() {
                     Ok(Pattern::Ident(name))
-                } else { unreachable!() }
+                } else {
+                    unreachable!()
+                }
             }
             other => Err(self.error(format!("expected pattern, got {:?}", other))),
         }

@@ -1,8 +1,8 @@
 use boruna_compiler::CompileError;
 
-use super::*;
 use super::analyzer::Analyzer;
 use super::suggest;
+use super::*;
 
 /// Collects diagnostics by running the compiler and additional analysis passes.
 pub struct DiagnosticCollector<'a> {
@@ -60,12 +60,10 @@ impl<'a> DiagnosticCollector<'a> {
     fn compile_error_to_diagnostic(&self, err: &CompileError) -> Diagnostic {
         match err {
             CompileError::Lexer { line, col, msg } => {
-                Diagnostic::error(E001_LEXER, msg.clone())
-                    .at(self.file, *line, Some(*col))
+                Diagnostic::error(E001_LEXER, msg.clone()).at(self.file, *line, Some(*col))
             }
             CompileError::Parse { line, msg } => {
-                Diagnostic::error(E002_PARSE, msg.clone())
-                    .at(self.file, *line, None)
+                Diagnostic::error(E002_PARSE, msg.clone()).at(self.file, *line, None)
             }
             CompileError::Type(msg) => {
                 let (code, line) = classify_type_error(msg, self.source);
@@ -111,13 +109,14 @@ fn find_identifier_line(source: &str, name: &str) -> Option<usize> {
             continue;
         }
         // Skip type/fn definitions (the name is being defined, not used)
-        if trimmed.starts_with("fn ") || trimmed.starts_with("type ") || trimmed.starts_with("enum ") {
-            if trimmed.contains(&format!("fn {name}"))
+        if (trimmed.starts_with("fn ")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("enum "))
+            && (trimmed.contains(&format!("fn {name}"))
                 || trimmed.contains(&format!("type {name}"))
-                || trimmed.contains(&format!("enum {name}"))
-            {
-                continue;
-            }
+                || trimmed.contains(&format!("enum {name}")))
+        {
+            continue;
         }
         // Look for the identifier as a word
         if contains_word(trimmed, name) {

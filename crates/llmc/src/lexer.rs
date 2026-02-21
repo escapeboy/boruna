@@ -1,5 +1,5 @@
-use logos::Logos;
 use crate::error::CompileError;
+use logos::Logos;
 
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t]+")]
@@ -180,8 +180,15 @@ pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
                     line += 1;
                     line_start = span.end;
                     // Skip consecutive newlines but emit one
-                    if tokens.last().map_or(true, |t: &Token| t.kind != TokenKind::Newline) {
-                        tokens.push(Token { kind: TokenKind::Newline, line, col });
+                    if tokens
+                        .last()
+                        .is_none_or(|t: &Token| t.kind != TokenKind::Newline)
+                    {
+                        tokens.push(Token {
+                            kind: TokenKind::Newline,
+                            line,
+                            col,
+                        });
                     }
                 } else {
                     tokens.push(Token { kind, line, col });

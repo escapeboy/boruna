@@ -50,8 +50,11 @@ fn test_record_then_replay() {
             &cache_dir,
             LlmPolicy::allow_all(),
             ExecutionMode::Mock,
-        ).unwrap();
-        gw.prompt_registry_mut().register_prompt(&make_template("test.refactor")).unwrap();
+        )
+        .unwrap();
+        gw.prompt_registry_mut()
+            .register_prompt(&make_template("test.refactor"))
+            .unwrap();
 
         let req = make_request("test.refactor");
         let r1 = gw.execute(&req).unwrap();
@@ -66,7 +69,8 @@ fn test_record_then_replay() {
             &cache_dir,
             LlmPolicy::allow_all(),
             ExecutionMode::Replay,
-        ).unwrap();
+        )
+        .unwrap();
 
         let req = make_request("test.refactor");
         let r2 = gw.execute(&req).unwrap();
@@ -83,14 +87,20 @@ fn test_replay_miss_is_hard_error() {
         &dir.path().join("cache"),
         LlmPolicy::allow_all(),
         ExecutionMode::Replay,
-    ).unwrap();
-    gw.prompt_registry_mut().register_prompt(&make_template("test.x")).unwrap();
+    )
+    .unwrap();
+    gw.prompt_registry_mut()
+        .register_prompt(&make_template("test.x"))
+        .unwrap();
 
     let req = make_request("test.x");
     let result = gw.execute(&req);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("LlmReplayMiss"), "expected LlmReplayMiss, got: {err}");
+    assert!(
+        err.contains("LlmReplayMiss"),
+        "expected LlmReplayMiss, got: {err}"
+    );
 }
 
 // --- Schema validation ---
@@ -155,14 +165,22 @@ fn test_end_to_end_with_context() {
         &cache_dir,
         LlmPolicy::allow_all(),
         ExecutionMode::Mock,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Register prompt and schema
-    gw.prompt_registry_mut().register_prompt(&make_template("test.e2e")).unwrap();
-    gw.prompt_registry_mut().register_schema("json_object", r#"{"type":"object"}"#).unwrap();
+    gw.prompt_registry_mut()
+        .register_prompt(&make_template("test.e2e"))
+        .unwrap();
+    gw.prompt_registry_mut()
+        .register_schema("json_object", r#"{"type":"object"}"#)
+        .unwrap();
 
     // Store context
-    let ctx_hash = gw.context_store_mut().put("fn main() { println!(\"hello\"); }").unwrap();
+    let ctx_hash = gw
+        .context_store_mut()
+        .put("fn main() { println!(\"hello\"); }")
+        .unwrap();
 
     // Execute
     let mut req = make_request("test.e2e");
@@ -187,8 +205,11 @@ fn test_policy_blocks_over_budget_integration() {
             ..Default::default()
         },
         ExecutionMode::Mock,
-    ).unwrap();
-    gw.prompt_registry_mut().register_prompt(&make_template("test.budget")).unwrap();
+    )
+    .unwrap();
+    gw.prompt_registry_mut()
+        .register_prompt(&make_template("test.budget"))
+        .unwrap();
 
     let mut req = make_request("test.budget");
     req.max_output_tokens = 256; // exceeds 100 budget

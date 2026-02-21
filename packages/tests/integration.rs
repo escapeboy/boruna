@@ -1,11 +1,16 @@
-use boruna_pkg::spec::*;
 use boruna_pkg::resolver::*;
+use boruna_pkg::spec::*;
 use boruna_pkg::storage::*;
 use std::collections::BTreeMap;
 
 // === Helpers ===
 
-fn make_manifest(name: &str, version: &str, deps: &[(&str, &str)], caps: &[&str]) -> PackageManifest {
+fn make_manifest(
+    name: &str,
+    version: &str,
+    deps: &[(&str, &str)],
+    caps: &[&str],
+) -> PackageManifest {
     let mut dependencies = BTreeMap::new();
     for (n, v) in deps {
         dependencies.insert(n.to_string(), v.to_string());
@@ -27,13 +32,20 @@ fn setup_registry() -> (tempfile::TempDir, Registry) {
     (dir, reg)
 }
 
-fn publish_to_registry(reg: &Registry, name: &str, version: &str, deps: &[(&str, &str)], caps: &[&str]) {
+fn publish_to_registry(
+    reg: &Registry,
+    name: &str,
+    version: &str,
+    deps: &[(&str, &str)],
+    caps: &[&str],
+) {
     let src = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(src.path().join("src")).unwrap();
     std::fs::write(
         src.path().join("src/core.ax"),
         &format!("// {name} v{version}\nfn main() -> Int {{ 42 }}\n"),
-    ).unwrap();
+    )
+    .unwrap();
     let manifest = make_manifest(name, version, deps, caps);
     manifest.save(&src.path().join("package.ax.json")).unwrap();
     reg.publish(src.path()).unwrap();
@@ -71,8 +83,16 @@ fn test_resolve_transitive_deps() {
     assert_eq!(result.packages.len(), 2);
 
     // C must be installed before B
-    let pos_c = result.install_order.iter().position(|x| x == "pkg.c@0.1.0").unwrap();
-    let pos_b = result.install_order.iter().position(|x| x == "pkg.b@0.2.0").unwrap();
+    let pos_c = result
+        .install_order
+        .iter()
+        .position(|x| x == "pkg.c@0.1.0")
+        .unwrap();
+    let pos_b = result
+        .install_order
+        .iter()
+        .position(|x| x == "pkg.b@0.2.0")
+        .unwrap();
     assert!(pos_c < pos_b);
 }
 
@@ -84,10 +104,12 @@ fn test_resolve_diamond() {
     publish_to_registry(&reg, "pkg.b", "0.1.0", &[("pkg.a", "0.1.0")], &[]);
     publish_to_registry(&reg, "pkg.c", "0.1.0", &[("pkg.a", "0.1.0")], &[]);
 
-    let root = make_manifest("app", "1.0.0", &[
-        ("pkg.b", "0.1.0"),
-        ("pkg.c", "0.1.0"),
-    ], &[]);
+    let root = make_manifest(
+        "app",
+        "1.0.0",
+        &[("pkg.b", "0.1.0"), ("pkg.c", "0.1.0")],
+        &[],
+    );
     let result = resolve(&root, &reg).unwrap();
     assert_eq!(result.packages.len(), 3); // a, b, c (a is shared)
 }
@@ -100,10 +122,12 @@ fn test_resolve_version_conflict_fails() {
     publish_to_registry(&reg, "pkg.b", "0.1.0", &[("pkg.shared", "0.2.0")], &[]);
 
     // Root wants shared@0.1.0, but b wants shared@0.2.0
-    let root = make_manifest("app", "1.0.0", &[
-        ("pkg.shared", "0.1.0"),
-        ("pkg.b", "0.1.0"),
-    ], &[]);
+    let root = make_manifest(
+        "app",
+        "1.0.0",
+        &[("pkg.shared", "0.1.0"), ("pkg.b", "0.1.0")],
+        &[],
+    );
     let err = resolve(&root, &reg).unwrap_err();
     assert!(err.contains("version conflict"));
 }
@@ -123,10 +147,12 @@ fn test_lockfile_deterministic() {
     publish_to_registry(&reg, "pkg.a", "0.1.0", &[], &[]);
     publish_to_registry(&reg, "pkg.b", "0.1.0", &[], &[]);
 
-    let root = make_manifest("app", "1.0.0", &[
-        ("pkg.a", "0.1.0"),
-        ("pkg.b", "0.1.0"),
-    ], &[]);
+    let root = make_manifest(
+        "app",
+        "1.0.0",
+        &[("pkg.a", "0.1.0"), ("pkg.b", "0.1.0")],
+        &[],
+    );
 
     let r1 = resolve(&root, &reg).unwrap();
     let l1 = generate_lockfile(&r1, &reg).unwrap();
@@ -191,10 +217,12 @@ fn test_capability_aggregation() {
     publish_to_registry(&reg, "pkg.a", "0.1.0", &[], &["net.fetch"]);
     publish_to_registry(&reg, "pkg.b", "0.1.0", &[], &["db.query", "time.now"]);
 
-    let root = make_manifest("app", "1.0.0", &[
-        ("pkg.a", "0.1.0"),
-        ("pkg.b", "0.1.0"),
-    ], &[]);
+    let root = make_manifest(
+        "app",
+        "1.0.0",
+        &[("pkg.a", "0.1.0"), ("pkg.b", "0.1.0")],
+        &[],
+    );
     let result = resolve(&root, &reg).unwrap();
     let caps = aggregate_capabilities(&result);
     assert_eq!(caps, vec!["db.query", "net.fetch", "time.now"]);
@@ -305,7 +333,9 @@ fn test_full_workflow() {
     // 2. Create an app that depends on it
     let app_dir = tempfile::tempdir().unwrap();
     let manifest = make_manifest("my.app", "1.0.0", &[("std.math", "0.1.0")], &[]);
-    manifest.save(&app_dir.path().join("package.ax.json")).unwrap();
+    manifest
+        .save(&app_dir.path().join("package.ax.json"))
+        .unwrap();
 
     // 3. Resolve
     boruna_pkg::cli::cmd_resolve(app_dir.path(), reg_dir.path()).unwrap();
@@ -330,7 +360,9 @@ fn test_full_workflow_with_policy_violation() {
     // Create app with restricted policy
     let app_dir = tempfile::tempdir().unwrap();
     let manifest = make_manifest("my.app", "1.0.0", &[("lib.io", "0.1.0")], &[]);
-    manifest.save(&app_dir.path().join("package.ax.json")).unwrap();
+    manifest
+        .save(&app_dir.path().join("package.ax.json"))
+        .unwrap();
 
     // Write policy that forbids fs.write
     let policy = CapabilityPolicy {

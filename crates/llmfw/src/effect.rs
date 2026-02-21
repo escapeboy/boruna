@@ -27,7 +27,7 @@ pub enum EffectKind {
 }
 
 impl EffectKind {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s {
             "http_request" => Some(EffectKind::HttpRequest),
             "db_query" => Some(EffectKind::DbQuery),
@@ -79,7 +79,9 @@ fn as_list(value: &Value) -> Option<&[Value]> {
     match value {
         Value::List(items) => Some(items),
         // List literals compile to Record with type_id 0xFFFF
-        Value::Record { type_id, fields, .. } if *type_id == 0xFFFF => Some(fields),
+        Value::Record {
+            type_id, fields, ..
+        } if *type_id == 0xFFFF => Some(fields),
         _ => None,
     }
 }
@@ -94,24 +96,29 @@ pub fn parse_effects(effects_value: &Value) -> Vec<Effect> {
         None => return Vec::new(),
     };
 
-    items.iter().filter_map(|item| {
-        match item {
+    items
+        .iter()
+        .filter_map(|item| match item {
             Value::Record { fields, .. } if fields.len() >= 3 => {
                 let kind_str = match &fields[0] {
                     Value::String(s) => s.as_str(),
                     _ => return None,
                 };
-                let kind = EffectKind::from_str(kind_str)?;
+                let kind = EffectKind::parse_str(kind_str)?;
                 let payload = fields[1].clone();
                 let callback_tag = match &fields[2] {
                     Value::String(s) => s.clone(),
                     _ => String::new(),
                 };
-                Some(Effect { kind, payload, callback_tag })
+                Some(Effect {
+                    kind,
+                    payload,
+                    callback_tag,
+                })
             }
             _ => None,
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Parse the UpdateResult from the VM return value.

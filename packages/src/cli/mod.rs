@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::spec::{CapabilityPolicy, PackageManifest};
 use crate::resolver;
+use crate::spec::{CapabilityPolicy, PackageManifest};
 use crate::storage::Registry;
 
 /// Initialize a new package manifest in the given directory.
@@ -12,11 +12,11 @@ pub fn cmd_init(dir: &Path) -> Result<(), String> {
         return Err("package.ax.json already exists".into());
     }
 
-    let name = dir.file_name()
+    let name = dir
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "my.package".into())
-        .replace('-', ".")
-        .replace('_', ".")
+        .replace(['-', '_'], ".")
         .to_lowercase();
 
     let manifest = PackageManifest {
@@ -33,8 +33,7 @@ pub fn cmd_init(dir: &Path) -> Result<(), String> {
 
     // Create src directory
     let src_dir = dir.join("src");
-    std::fs::create_dir_all(&src_dir)
-        .map_err(|e| format!("create src dir: {e}"))?;
+    std::fs::create_dir_all(&src_dir).map_err(|e| format!("create src dir: {e}"))?;
 
     println!("initialized package: {}", manifest.name);
     Ok(())
@@ -103,10 +102,10 @@ pub fn cmd_install(dir: &Path, registry_path: &Path) -> Result<(), String> {
     // Check capability policy
     let policy_path = dir.join("policy.ax.json");
     if policy_path.exists() {
-        let data = std::fs::read_to_string(&policy_path)
-            .map_err(|e| format!("read policy: {e}"))?;
-        let policy: CapabilityPolicy = serde_json::from_str(&data)
-            .map_err(|e| format!("parse policy: {e}"))?;
+        let data =
+            std::fs::read_to_string(&policy_path).map_err(|e| format!("read policy: {e}"))?;
+        let policy: CapabilityPolicy =
+            serde_json::from_str(&data).map_err(|e| format!("parse policy: {e}"))?;
         policy.validate()?;
 
         let caps = resolver::aggregate_capabilities(&result);

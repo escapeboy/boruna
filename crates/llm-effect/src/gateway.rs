@@ -109,9 +109,13 @@ impl LlmGateway {
         policy::check_policy(req, &self.policy, &self.usage, context_bytes)?;
 
         // 3. Get prompt and schema hashes for cache key
-        let prompt_hash = self.prompt_registry.prompt_hash(&req.prompt_id)
+        let prompt_hash = self
+            .prompt_registry
+            .prompt_hash(&req.prompt_id)
             .unwrap_or_default();
-        let schema_hash = self.prompt_registry.schema_hash(&req.output_schema_id)
+        let schema_hash = self
+            .prompt_registry
+            .schema_hash(&req.output_schema_id)
             .unwrap_or_default();
 
         // 4. Compute cache key
@@ -182,9 +186,8 @@ impl LlmGateway {
     fn compute_context_bytes(&self, req: &LlmRequest) -> Result<u64, String> {
         let mut total = 0u64;
         for hash in &req.context_refs {
-            match self.context_store.get(hash) {
-                Ok(content) => total += content.len() as u64,
-                Err(_) => {} // Missing context refs are ignored (may be optional)
+            if let Ok(content) = self.context_store.get(hash) {
+                total += content.len() as u64;
             }
         }
         Ok(total)
@@ -202,22 +205,23 @@ impl LlmGateway {
     /// For MVP: just checks it's a Map (json_object) or contains patch fields.
     pub fn validate_output(result: &Value, schema_id: &str) -> Result<(), String> {
         match schema_id {
-            "patch_bundle" => {
-                match result {
-                    Value::Map(m) => {
-                        if !m.contains_key("patches") {
-                            return Err("patch_bundle: missing 'patches' field".into());
-                        }
-                        Ok(())
+            "patch_bundle" => match result {
+                Value::Map(m) => {
+                    if !m.contains_key("patches") {
+                        return Err("patch_bundle: missing 'patches' field".into());
                     }
-                    _ => Err("patch_bundle: expected Map".into()),
+                    Ok(())
                 }
-            }
+                _ => Err("patch_bundle: expected Map".into()),
+            },
             _ => {
                 // Generic json_object: must be a Map
                 match result {
                     Value::Map(_) => Ok(()),
-                    _ => Err(format!("schema {schema_id}: expected Map, got {}", result.type_name())),
+                    _ => Err(format!(
+                        "schema {schema_id}: expected Map, got {}",
+                        result.type_name()
+                    )),
                 }
             }
         }
@@ -275,19 +279,22 @@ mod gateway_tests {
             &cache_dir,
             LlmPolicy::allow_all(),
             mode,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Register a test prompt
-        gw.prompt_registry_mut().register_prompt(&PromptTemplate {
-            id: "test.prompt".into(),
-            version: "1.0.0".into(),
-            template: "Hello {{name}}".into(),
-            parameters: vec!["name".into()],
-            default_model: "default".into(),
-            default_max_tokens: 512,
-            default_temperature: 0,
-            default_schema_id: "json_object".into(),
-        }).unwrap();
+        gw.prompt_registry_mut()
+            .register_prompt(&PromptTemplate {
+                id: "test.prompt".into(),
+                version: "1.0.0".into(),
+                template: "Hello {{name}}".into(),
+                parameters: vec!["name".into()],
+                default_model: "default".into(),
+                default_max_tokens: 512,
+                default_temperature: 0,
+                default_schema_id: "json_object".into(),
+            })
+            .unwrap();
 
         (dir, gw)
     }
@@ -392,18 +399,21 @@ mod gateway_tests {
             &cache_dir,
             policy,
             ExecutionMode::Mock,
-        ).unwrap();
+        )
+        .unwrap();
 
-        gw.prompt_registry_mut().register_prompt(&PromptTemplate {
-            id: "test.prompt".into(),
-            version: "1.0.0".into(),
-            template: "Test".into(),
-            parameters: vec![],
-            default_model: "default".into(),
-            default_max_tokens: 512,
-            default_temperature: 0,
-            default_schema_id: "json_object".into(),
-        }).unwrap();
+        gw.prompt_registry_mut()
+            .register_prompt(&PromptTemplate {
+                id: "test.prompt".into(),
+                version: "1.0.0".into(),
+                template: "Test".into(),
+                parameters: vec![],
+                default_model: "default".into(),
+                default_max_tokens: 512,
+                default_temperature: 0,
+                default_schema_id: "json_object".into(),
+            })
+            .unwrap();
 
         let mut req = make_request();
         req.cache_mode = CacheMode::Off; // Disable cache so second call isn't a cache hit

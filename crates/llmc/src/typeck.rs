@@ -35,10 +35,7 @@ impl TypeChecker {
         functions.insert("str_contains".to_string(), 2);
         functions.insert("str_starts_with".to_string(), 2);
 
-        TypeChecker {
-            types,
-            functions,
-        }
+        TypeChecker { types, functions }
     }
 
     fn check_program(&mut self, program: &Program) -> Result<(), CompileError> {
@@ -130,7 +127,11 @@ impl TypeChecker {
                 }
             }
             Expr::FieldAccess { object, .. } => self.check_expr(object, locals)?,
-            Expr::If { condition, then_block, else_block } => {
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.check_expr(condition, locals)?;
                 let mut inner = locals.clone();
                 self.check_block(then_block, &mut inner)?;
@@ -160,8 +161,11 @@ impl TypeChecker {
                     self.check_expr(item, locals)?;
                 }
             }
-            Expr::SomeExpr(e) | Expr::OkExpr(e) | Expr::ErrExpr(e)
-            | Expr::Spawn(e) | Expr::Emit(e) => {
+            Expr::SomeExpr(e)
+            | Expr::OkExpr(e)
+            | Expr::ErrExpr(e)
+            | Expr::Spawn(e)
+            | Expr::Emit(e) => {
                 self.check_expr(e, locals)?;
             }
             Expr::Send { target, message } => {
@@ -177,10 +181,15 @@ impl TypeChecker {
         Ok(())
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn collect_pattern_bindings(&self, pattern: &Pattern, locals: &mut HashSet<String>) {
         match pattern {
-            Pattern::Ident(name) => { locals.insert(name.clone()); }
-            Pattern::SomePat(inner) | Pattern::OkPat(inner) | Pattern::ErrPat(inner)
+            Pattern::Ident(name) => {
+                locals.insert(name.clone());
+            }
+            Pattern::SomePat(inner)
+            | Pattern::OkPat(inner)
+            | Pattern::ErrPat(inner)
             | Pattern::EnumVariant(_, Some(inner)) => {
                 self.collect_pattern_bindings(inner, locals);
             }

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
-use boruna_bytecode::module::{Function, MatchArm as BcMatchArm, Module, TypeDef as BcTypeDef, TypeKind as BcTypeKind};
+use boruna_bytecode::capability::Capability;
+use boruna_bytecode::module::{
+    Function, MatchArm as BcMatchArm, Module, TypeDef as BcTypeDef, TypeKind as BcTypeKind,
+};
 use boruna_bytecode::opcode::Op;
 use boruna_bytecode::value::Value;
-use boruna_bytecode::capability::Capability;
 
 use crate::ast::*;
 use crate::error::CompileError;
@@ -47,17 +49,22 @@ impl Emitter {
                     let idx = self.module.types.len() as u32;
                     let kind = match &t.kind {
                         TypeDefKind::Record(fields) => BcTypeKind::Record {
-                            fields: fields.iter()
+                            fields: fields
+                                .iter()
                                 .map(|(n, ty)| (n.clone(), type_expr_to_string(ty)))
                                 .collect(),
                         },
                         TypeDefKind::Enum(variants) => BcTypeKind::Enum {
-                            variants: variants.iter()
+                            variants: variants
+                                .iter()
                                 .map(|(n, ty)| (n.clone(), ty.as_ref().map(type_expr_to_string)))
                                 .collect(),
                         },
                     };
-                    self.module.types.push(BcTypeDef { name: t.name.clone(), kind });
+                    self.module.types.push(BcTypeDef {
+                        name: t.name.clone(),
+                        kind,
+                    });
                     self.type_map.insert(t.name.clone(), idx);
                 }
                 Item::Function(f) => {
@@ -153,7 +160,9 @@ impl Emitter {
                 if let Some(&idx) = fe.locals.get(target) {
                     fe.code.push(Op::StoreLocal(idx));
                 } else {
-                    return Err(CompileError::Codegen(format!("undefined variable: {target}")));
+                    return Err(CompileError::Codegen(format!(
+                        "undefined variable: {target}"
+                    )));
                 }
             }
             Stmt::Expr(e) => {
@@ -311,7 +320,11 @@ impl Emitter {
                 let field_idx = self.resolve_field(field);
                 fe.code.push(Op::GetField(field_idx));
             }
-            Expr::If { condition, then_block, else_block } => {
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.emit_expr(condition, fe)?;
                 let else_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
@@ -332,7 +345,9 @@ impl Emitter {
                 }
             }
             Expr::Match { value, arms } => {
-                let has_string_patterns = arms.iter().any(|a| matches!(&a.pattern, Pattern::StringLit(_)));
+                let has_string_patterns = arms
+                    .iter()
+                    .any(|a| matches!(&a.pattern, Pattern::StringLit(_)));
 
                 if has_string_patterns {
                     // String match: compile as if-else chain with Eq comparisons.
@@ -460,7 +475,11 @@ impl Emitter {
                     fe.match_tables.push(bc_arms);
                 }
             }
-            Expr::Record { type_name, fields, spread } => {
+            Expr::Record {
+                type_name,
+                fields,
+                spread,
+            } => {
                 let type_id = self.type_map.get(type_name).copied().unwrap_or(0);
                 if let Some(base_expr) = spread {
                     // Record spread: State { ..base, field_a: val }
@@ -509,10 +528,10 @@ impl Emitter {
                 let idx = self.module.add_const(Value::Bool(true)); // marker
                 fe.code.push(Op::PushConst(idx));
                 fe.code.push(Op::Pop); // discard marker
-                // The value is already on stack; wrap it
-                // Use a dedicated approach: push the value, then make it Some
-                // Since our Value type has Some variant, we emit a special pattern:
-                // Actually, let's just emit it as-is and use MakeEnum with a special type
+                                       // The value is already on stack; wrap it
+                                       // Use a dedicated approach: push the value, then make it Some
+                                       // Since our Value type has Some variant, we emit a special pattern:
+                                       // Actually, let's just emit it as-is and use MakeEnum with a special type
                 fe.code.push(Op::MakeEnum(0xFFFE, 1)); // variant 1 = Some
             }
             Expr::OkExpr(inner) => {
@@ -531,7 +550,9 @@ impl Emitter {
                         return Err(CompileError::Codegen(format!("unknown function: {name}")));
                     }
                 } else {
-                    return Err(CompileError::Codegen("spawn requires a function name".into()));
+                    return Err(CompileError::Codegen(
+                        "spawn requires a function name".into(),
+                    ));
                 }
             }
             Expr::Send { target, message } => {
@@ -544,8 +565,8 @@ impl Emitter {
             }
             Expr::Emit(tree) => {
                 self.emit_expr(tree, fe)?;
-                fe.code.push(Op::Dup);     // keep value for the expression result
-                fe.code.push(Op::EmitUi);  // pops the duplicate
+                fe.code.push(Op::Dup); // keep value for the expression result
+                fe.code.push(Op::EmitUi); // pops the duplicate
             }
             Expr::Block(block) => {
                 self.emit_block(block, fe)?;
@@ -606,7 +627,9 @@ fn pattern_to_tag(pattern: &Pattern) -> i32 {
 fn has_binding(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Ident(_) => true,
-        Pattern::SomePat(inner) | Pattern::OkPat(inner) | Pattern::ErrPat(inner)
+        Pattern::SomePat(inner)
+        | Pattern::OkPat(inner)
+        | Pattern::ErrPat(inner)
         | Pattern::EnumVariant(_, Some(inner)) => has_binding(inner),
         _ => false,
     }
@@ -621,7 +644,9 @@ fn store_pattern_binding(arm: &MatchArm, fe: &mut FnEmitter) {
                 fe.next_local += 1;
                 fe.code.push(Op::StoreLocal(idx));
             }
-            Pattern::SomePat(inner) | Pattern::OkPat(inner) | Pattern::ErrPat(inner)
+            Pattern::SomePat(inner)
+            | Pattern::OkPat(inner)
+            | Pattern::ErrPat(inner)
             | Pattern::EnumVariant(_, Some(inner)) => {
                 store_inner(inner, fe);
             }
@@ -637,12 +662,24 @@ fn type_expr_to_string(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(n) => n.clone(),
         TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(inner)),
-        TypeExpr::Result(ok, err) => format!("Result<{}, {}>", type_expr_to_string(ok), type_expr_to_string(err)),
+        TypeExpr::Result(ok, err) => format!(
+            "Result<{}, {}>",
+            type_expr_to_string(ok),
+            type_expr_to_string(err)
+        ),
         TypeExpr::List(inner) => format!("List<{}>", type_expr_to_string(inner)),
-        TypeExpr::Map(k, v) => format!("Map<{}, {}>", type_expr_to_string(k), type_expr_to_string(v)),
+        TypeExpr::Map(k, v) => format!(
+            "Map<{}, {}>",
+            type_expr_to_string(k),
+            type_expr_to_string(v)
+        ),
         TypeExpr::Fn(params, ret) => {
             let params_str: Vec<_> = params.iter().map(type_expr_to_string).collect();
-            format!("Fn({}) -> {}", params_str.join(", "), type_expr_to_string(ret))
+            format!(
+                "Fn({}) -> {}",
+                params_str.join(", "),
+                type_expr_to_string(ret)
+            )
         }
     }
 }

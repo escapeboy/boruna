@@ -12,8 +12,7 @@ impl ContextStore {
     /// Open (or create) a context store at `base_dir`.
     pub fn open(base_dir: &Path) -> Result<Self, String> {
         let blobs_dir = base_dir.join("blobs");
-        fs::create_dir_all(&blobs_dir)
-            .map_err(|e| format!("cannot create blobs dir: {e}"))?;
+        fs::create_dir_all(&blobs_dir).map_err(|e| format!("cannot create blobs dir: {e}"))?;
         Ok(ContextStore { blobs_dir })
     }
 
@@ -21,16 +20,14 @@ impl ContextStore {
     pub fn put(&self, content: &str) -> Result<String, String> {
         let hash = sha256_hex(content);
         let path = self.blobs_dir.join(&hash);
-        fs::write(&path, content)
-            .map_err(|e| format!("write error: {e}"))?;
+        fs::write(&path, content).map_err(|e| format!("write error: {e}"))?;
         Ok(hash)
     }
 
     /// Retrieve content by hash.
     pub fn get(&self, hash: &str) -> Result<String, String> {
         let path = self.blobs_dir.join(hash);
-        fs::read_to_string(&path)
-            .map_err(|e| format!("blob not found ({hash}): {e}"))
+        fs::read_to_string(&path).map_err(|e| format!("blob not found ({hash}): {e}"))
     }
 
     /// Check if a blob exists.
@@ -63,8 +60,7 @@ impl ContextStore {
     /// List all blob hashes in the store.
     pub fn list(&self) -> Result<Vec<String>, String> {
         let mut hashes = Vec::new();
-        let entries = fs::read_dir(&self.blobs_dir)
-            .map_err(|e| format!("read dir error: {e}"))?;
+        let entries = fs::read_dir(&self.blobs_dir).map_err(|e| format!("read dir error: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("entry error: {e}"))?;
             if let Some(name) = entry.file_name().to_str() {
@@ -78,11 +74,12 @@ impl ContextStore {
     /// Total size of all blobs in bytes.
     pub fn total_size(&self) -> Result<u64, String> {
         let mut total = 0u64;
-        let entries = fs::read_dir(&self.blobs_dir)
-            .map_err(|e| format!("read dir error: {e}"))?;
+        let entries = fs::read_dir(&self.blobs_dir).map_err(|e| format!("read dir error: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("entry error: {e}"))?;
-            let meta = entry.metadata().map_err(|e| format!("metadata error: {e}"))?;
+            let meta = entry
+                .metadata()
+                .map_err(|e| format!("metadata error: {e}"))?;
             total += meta.len();
         }
         Ok(total)

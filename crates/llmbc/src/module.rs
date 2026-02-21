@@ -39,8 +39,12 @@ pub struct TypeDef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeKind {
-    Record { fields: Vec<(String, String)> },
-    Enum { variants: Vec<(String, Option<String>)> },
+    Record {
+        fields: Vec<(String, String)>,
+    },
+    Enum {
+        variants: Vec<(String, Option<String>)>,
+    },
 }
 
 /// A function in the bytecode module.
@@ -99,8 +103,8 @@ impl Module {
         // Version
         buf.extend_from_slice(&self.version.to_le_bytes());
         // JSON payload (simple binary format: magic + version + length + json)
-        let json = serde_json::to_vec(self)
-            .map_err(|e| BytecodeError::Serialization(e.to_string()))?;
+        let json =
+            serde_json::to_vec(self).map_err(|e| BytecodeError::Serialization(e.to_string()))?;
         let len = json.len() as u32;
         buf.extend_from_slice(&len.to_le_bytes());
         buf.extend_from_slice(&json);

@@ -54,18 +54,15 @@ pub struct ExpectedChecks {
 impl PatchBundle {
     /// Load a patch bundle from a JSON file.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let data = fs::read_to_string(path)
-            .map_err(|e| format!("failed to read bundle: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("invalid bundle JSON: {e}"))
+        let data = fs::read_to_string(path).map_err(|e| format!("failed to read bundle: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("invalid bundle JSON: {e}"))
     }
 
     /// Save the bundle to a JSON file.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize bundle: {e}"))?;
-        fs::write(path, json)
-            .map_err(|e| format!("failed to write bundle: {e}"))
+        fs::write(path, json).map_err(|e| format!("failed to write bundle: {e}"))
     }
 
     /// Validate the bundle format.
@@ -167,10 +164,8 @@ impl PatchBundle {
                 });
 
                 // Replace lines
-                let new_hunk_lines: Vec<String> = hunk.new_text
-                    .lines()
-                    .map(|s| s.to_string())
-                    .collect();
+                let new_hunk_lines: Vec<String> =
+                    hunk.new_text.lines().map(|s| s.to_string()).collect();
                 new_lines.splice(start..start + old_count, new_hunk_lines);
             }
 

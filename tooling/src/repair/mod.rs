@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::diagnostics::{Confidence, DiagnosticSet, SuggestedPatch, TextEdit};
 use crate::diagnostics::collector::DiagnosticCollector;
+use crate::diagnostics::{Confidence, DiagnosticSet, SuggestedPatch, TextEdit};
 
 /// Strategy for selecting which patches to apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,10 +59,10 @@ impl RepairTool {
         };
 
         // Collect all applicable patches
-        let patches: Vec<(&str, &SuggestedPatch)> = diagnostics.diagnostics.iter()
-            .flat_map(|d| {
-                d.suggested_patches.iter().map(move |p| (d.id.as_str(), p))
-            })
+        let patches: Vec<(&str, &SuggestedPatch)> = diagnostics
+            .diagnostics
+            .iter()
+            .flat_map(|d| d.suggested_patches.iter().map(move |p| (d.id.as_str(), p)))
             .collect();
 
         if patches.is_empty() {
@@ -72,7 +72,7 @@ impl RepairTool {
 
         // Select patches based on strategy
         let selected = match strategy {
-            RepairStrategy::Best => select_best(&diagnostics),
+            RepairStrategy::Best => select_best(diagnostics),
             RepairStrategy::ById => {
                 if let Some(id) = specific_id {
                     select_by_id(&patches, id)
@@ -80,7 +80,7 @@ impl RepairTool {
                     Vec::new()
                 }
             }
-            RepairStrategy::All => select_all(&diagnostics),
+            RepairStrategy::All => select_all(diagnostics),
         };
 
         if selected.is_empty() {
@@ -147,7 +147,9 @@ impl RepairTool {
 fn select_best(diagnostics: &DiagnosticSet) -> Vec<(String, SuggestedPatch)> {
     let mut selected = Vec::new();
     for d in &diagnostics.diagnostics {
-        if let Some(best) = d.suggested_patches.iter()
+        if let Some(best) = d
+            .suggested_patches
+            .iter()
             .max_by_key(|p| match p.confidence {
                 Confidence::High => 3,
                 Confidence::Medium => 2,
@@ -165,7 +167,8 @@ fn select_by_id<'a>(
     patches: &[(&'a str, &'a SuggestedPatch)],
     target_id: &str,
 ) -> Vec<(String, SuggestedPatch)> {
-    patches.iter()
+    patches
+        .iter()
         .filter(|(_, p)| p.id == target_id)
         .map(|(diag_id, p)| (diag_id.to_string(), (*p).clone()))
         .collect()
@@ -198,7 +201,11 @@ fn apply_patch(source: &str, edits: &[TextEdit]) -> Result<String, String> {
 
     for edit in sorted_edits {
         if edit.start_line == 0 || edit.start_line > lines.len() {
-            return Err(format!("edit line {} out of range (1-{})", edit.start_line, lines.len()));
+            return Err(format!(
+                "edit line {} out of range (1-{})",
+                edit.start_line,
+                lines.len()
+            ));
         }
 
         let idx = edit.start_line - 1; // 0-indexed
@@ -270,7 +277,8 @@ fn main() -> Int {
 }
 ";
         let ds = DiagnosticCollector::new("test.ax", source).collect();
-        let (repaired, result) = RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
+        let (repaired, result) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
         // Should have attempted a fix
         assert!(!result.applied.is_empty() || !result.skipped.is_empty());
         // The repaired source should be different if a patch was applied
@@ -305,8 +313,11 @@ fn main() -> Int {
 
         let source = "fn init() -> State {\n    State { countt: 0 }\n}\n";
         let (repaired, result) = RepairTool::repair(
-            "test.ax", source, &ds,
-            RepairStrategy::ById, Some("E006-rename-countt"),
+            "test.ax",
+            source,
+            &ds,
+            RepairStrategy::ById,
+            Some("E006-rename-countt"),
         );
         assert_eq!(result.applied.len(), 1);
         assert!(repaired.contains("count: 0"));

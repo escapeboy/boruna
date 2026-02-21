@@ -8,12 +8,21 @@ use crate::error::FrameworkError;
 fn extract_string_list(value: &Value) -> Vec<String> {
     let items = match value {
         Value::List(items) => items.as_slice(),
-        Value::Record { type_id, fields, .. } if *type_id == 0xFFFF => fields.as_slice(),
+        Value::Record {
+            type_id, fields, ..
+        } if *type_id == 0xFFFF => fields.as_slice(),
         _ => return Vec::new(),
     };
-    items.iter().filter_map(|v| {
-        if let Value::String(s) = v { Some(s.clone()) } else { None }
-    }).collect()
+    items
+        .iter()
+        .filter_map(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Application policy set — declares allowed capabilities and resource limits.
@@ -76,7 +85,11 @@ impl PolicySet {
                     Some(Value::Int(n)) => *n as u64,
                     _ => 10_000_000,
                 };
-                PolicySet { capabilities, max_effects_per_cycle: max_effects, max_steps }
+                PolicySet {
+                    capabilities,
+                    max_effects_per_cycle: max_effects,
+                    max_steps,
+                }
             }
             _ => PolicySet::default(),
         }
@@ -99,7 +112,8 @@ impl PolicySet {
         if self.max_effects_per_cycle > 0 && effects.len() as u64 > self.max_effects_per_cycle {
             return Err(FrameworkError::PolicyViolation(format!(
                 "too many effects: {} exceeds limit of {}",
-                effects.len(), self.max_effects_per_cycle
+                effects.len(),
+                self.max_effects_per_cycle
             )));
         }
         for effect in effects {
@@ -114,7 +128,8 @@ impl PolicySet {
             "capabilities": self.capabilities,
             "max_effects_per_cycle": self.max_effects_per_cycle,
             "max_steps": self.max_steps,
-        })).unwrap_or_default()
+        }))
+        .unwrap_or_default()
     }
 }
 
@@ -122,15 +137,22 @@ impl PolicySet {
 pub fn error_to_json(err: &FrameworkError) -> String {
     let (kind, detail) = match err {
         FrameworkError::PolicyViolation(msg) => ("policy_violation", msg.clone()),
-        FrameworkError::PurityViolation { name } => ("purity_violation", format!("function: {name}")),
+        FrameworkError::PurityViolation { name } => {
+            ("purity_violation", format!("function: {name}"))
+        }
         FrameworkError::MissingFunction(name) => ("missing_function", name.clone()),
         FrameworkError::Validation(msg) => ("validation", msg.clone()),
         FrameworkError::Effect(msg) => ("effect_error", msg.clone()),
         FrameworkError::State(msg) => ("state_error", msg.clone()),
         FrameworkError::MaxCyclesExceeded(n) => ("max_cycles_exceeded", format!("{n}")),
-        FrameworkError::WrongArity { name, expected, got } => {
-            ("wrong_arity", format!("{name}: expected {expected}, got {got}"))
-        }
+        FrameworkError::WrongArity {
+            name,
+            expected,
+            got,
+        } => (
+            "wrong_arity",
+            format!("{name}: expected {expected}, got {got}"),
+        ),
         FrameworkError::MissingType(t) => ("missing_type", t.clone()),
         FrameworkError::Compile(e) => ("compile_error", format!("{e}")),
         FrameworkError::Runtime(e) => ("runtime_error", format!("{e}")),
@@ -138,5 +160,6 @@ pub fn error_to_json(err: &FrameworkError) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "error": kind,
         "detail": detail,
-    })).unwrap_or_default()
+    }))
+    .unwrap_or_default()
 }

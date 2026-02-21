@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use sha2::{Digest, Sha256};
 use serde_json;
+use sha2::{Digest, Sha256};
 
 use boruna_bytecode::Value;
 
@@ -27,7 +27,7 @@ pub enum CacheMode {
 }
 
 impl CacheMode {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "read" => CacheMode::Read,
             "write" => CacheMode::Write,
@@ -63,18 +63,13 @@ pub fn parse_llm_request(payload: &Value) -> Result<LlmRequest, String> {
         _ => return Err("LlmCall payload must be a Map".into()),
     };
 
-    let prompt_id = get_string(map, "prompt_id")
-        .ok_or("missing prompt_id")?;
-    let model = get_string(map, "model")
-        .unwrap_or_else(|| "default".into());
-    let max_output_tokens = get_int(map, "max_output_tokens")
-        .unwrap_or(1024) as u64;
-    let temperature = get_int(map, "temperature")
-        .unwrap_or(0) as u64;
-    let output_schema_id = get_string(map, "output_schema_id")
-        .unwrap_or_else(|| "json_object".into());
-    let cache_mode_str = get_string(map, "cache_mode")
-        .unwrap_or_else(|| "readwrite".into());
+    let prompt_id = get_string(map, "prompt_id").ok_or("missing prompt_id")?;
+    let model = get_string(map, "model").unwrap_or_else(|| "default".into());
+    let max_output_tokens = get_int(map, "max_output_tokens").unwrap_or(1024) as u64;
+    let temperature = get_int(map, "temperature").unwrap_or(0) as u64;
+    let output_schema_id =
+        get_string(map, "output_schema_id").unwrap_or_else(|| "json_object".into());
+    let cache_mode_str = get_string(map, "cache_mode").unwrap_or_else(|| "readwrite".into());
 
     let args = match map.get("args") {
         Some(Value::Map(m)) => m.clone(),
@@ -82,11 +77,16 @@ pub fn parse_llm_request(payload: &Value) -> Result<LlmRequest, String> {
     };
 
     let context_refs = match map.get("context_refs") {
-        Some(Value::List(items)) => {
-            items.iter().filter_map(|v| {
-                if let Value::String(s) = v { Some(s.clone()) } else { None }
-            }).collect()
-        }
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|v| {
+                if let Value::String(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect(),
         _ => Vec::new(),
     };
 
@@ -98,7 +98,7 @@ pub fn parse_llm_request(payload: &Value) -> Result<LlmRequest, String> {
         max_output_tokens,
         temperature,
         output_schema_id,
-        cache_mode: CacheMode::from_str(&cache_mode_str),
+        cache_mode: CacheMode::parse(&cache_mode_str),
     })
 }
 
@@ -120,7 +120,13 @@ fn get_int(map: &BTreeMap<String, Value>, key: &str) -> Option<i64> {
 pub fn canonical_json(value: &Value) -> String {
     match value {
         Value::Unit => "null".into(),
-        Value::Bool(b) => if *b { "true".into() } else { "false".into() },
+        Value::Bool(b) => {
+            if *b {
+                "true".into()
+            } else {
+                "false".into()
+            }
+        }
         Value::Int(n) => n.to_string(),
         Value::Float(f) => format!("{f}"),
         Value::String(s) => serde_json::to_string(s).unwrap_or_default(),
@@ -132,8 +138,15 @@ pub fn canonical_json(value: &Value) -> String {
         }
         Value::Map(m) => {
             // BTreeMap is already sorted
-            let pairs: Vec<String> = m.iter()
-                .map(|(k, v)| format!("{}:{}", serde_json::to_string(k).unwrap_or_default(), canonical_json(v)))
+            let pairs: Vec<String> = m
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap_or_default(),
+                        canonical_json(v)
+                    )
+                })
                 .collect();
             format!("{{{}}}", pairs.join(","))
         }
@@ -145,7 +158,9 @@ pub fn canonical_json(value: &Value) -> String {
             let parts: Vec<String> = fields.iter().map(canonical_json).collect();
             format!("[{}]", parts.join(","))
         }
-        Value::Enum { variant, payload, .. } => {
+        Value::Enum {
+            variant, payload, ..
+        } => {
             format!("{{\"v\":{},\"p\":{}}}", variant, canonical_json(payload))
         }
         Value::ActorId(id) => id.to_string(),
@@ -288,7 +303,10 @@ mod normalize_tests {
         map.insert("model".into(), Value::String("fast".into()));
         map.insert("max_output_tokens".into(), Value::Int(256));
         map.insert("temperature".into(), Value::Int(0));
-        map.insert("output_schema_id".into(), Value::String("patch_bundle".into()));
+        map.insert(
+            "output_schema_id".into(),
+            Value::String("patch_bundle".into()),
+        );
         map.insert("cache_mode".into(), Value::String("readwrite".into()));
 
         let req = parse_llm_request(&Value::Map(map)).unwrap();

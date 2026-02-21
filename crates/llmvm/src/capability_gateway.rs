@@ -15,25 +15,19 @@ pub struct PolicyRule {
 
 impl Default for PolicyRule {
     fn default() -> Self {
-        PolicyRule { allow: true, budget: 0 }
+        PolicyRule {
+            allow: true,
+            budget: 0,
+        }
     }
 }
 
 /// Policy configuration for the capability gateway.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
     pub rules: HashMap<String, PolicyRule>,
     /// Default rule for capabilities not explicitly listed.
     pub default_allow: bool,
-}
-
-impl Default for Policy {
-    fn default() -> Self {
-        Policy {
-            rules: HashMap::new(),
-            default_allow: false,
-        }
-    }
 }
 
 impl Policy {
@@ -52,13 +46,25 @@ impl Policy {
 
     /// Allow a specific capability with an optional budget.
     pub fn allow(&mut self, cap: &Capability, budget: u64) -> &mut Self {
-        self.rules.insert(cap.name().to_string(), PolicyRule { allow: true, budget });
+        self.rules.insert(
+            cap.name().to_string(),
+            PolicyRule {
+                allow: true,
+                budget,
+            },
+        );
         self
     }
 
     /// Deny a specific capability.
     pub fn deny(&mut self, cap: &Capability) -> &mut Self {
-        self.rules.insert(cap.name().to_string(), PolicyRule { allow: false, budget: 0 });
+        self.rules.insert(
+            cap.name().to_string(),
+            PolicyRule {
+                allow: false,
+                budget: 0,
+            },
+        );
         self
     }
 }
@@ -86,7 +92,9 @@ impl CapabilityHandler for MockHandler {
             Capability::Random => Ok(Value::Float(0.42)),
             Capability::NetFetch => {
                 let url = args.first().map(|v| format!("{v}")).unwrap_or_default();
-                Ok(Value::String(format!("{{\"mock\": true, \"url\": \"{url}\"}}")))
+                Ok(Value::String(format!(
+                    "{{\"mock\": true, \"url\": \"{url}\"}}"
+                )))
             }
             Capability::FsRead => {
                 let path = args.first().map(|v| format!("{v}")).unwrap_or_default();
@@ -188,7 +196,9 @@ impl CapabilityGateway {
         log.log_cap_call(cap, args);
 
         // Invoke handler
-        let result = self.handler.handle(cap, args)
+        let result = self
+            .handler
+            .handle(cap, args)
             .map_err(|e| VmError::AssertionFailed(format!("capability error: {e}")))?;
 
         // Log the result

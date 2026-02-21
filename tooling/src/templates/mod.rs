@@ -45,8 +45,8 @@ pub fn list_templates(templates_dir: &Path) -> Result<Vec<TemplateManifest>, Str
     if !templates_dir.exists() {
         return Ok(templates);
     }
-    let entries = std::fs::read_dir(templates_dir)
-        .map_err(|e| format!("read templates dir: {e}"))?;
+    let entries =
+        std::fs::read_dir(templates_dir).map_err(|e| format!("read templates dir: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read entry: {e}"))?;
         let path = entry.path();
@@ -73,8 +73,7 @@ pub fn load_template(templates_dir: &Path, name: &str) -> Result<TemplateManifes
     }
     let data = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("read template manifest: {e}"))?;
-    serde_json::from_str(&data)
-        .map_err(|e| format!("parse template manifest: {e}"))
+    serde_json::from_str(&data).map_err(|e| format!("parse template manifest: {e}"))
 }
 
 /// Apply a template with given arguments.
@@ -95,10 +94,10 @@ pub fn apply_template(
     // Read template file
     let template_path = templates_dir.join(name).join("app.ax.template");
     if !template_path.exists() {
-        return Err(format!("template file not found: app.ax.template"));
+        return Err("template file not found: app.ax.template".to_string());
     }
-    let template = std::fs::read_to_string(&template_path)
-        .map_err(|e| format!("read template: {e}"))?;
+    let template =
+        std::fs::read_to_string(&template_path).map_err(|e| format!("read template: {e}"))?;
 
     // Substitute variables
     let source = substitute(&template, args);
@@ -113,10 +112,7 @@ pub fn apply_template(
 }
 
 /// Apply a template from a template string (no filesystem).
-pub fn apply_template_string(
-    template: &str,
-    args: &BTreeMap<String, String>,
-) -> String {
+pub fn apply_template_string(template: &str, args: &BTreeMap<String, String>) -> String {
     substitute(template, args)
 }
 
@@ -213,23 +209,28 @@ mod tests {
             capabilities: vec!["db.query".into()],
             args: {
                 let mut m = BTreeMap::new();
-                m.insert("entity".into(), ArgSpec {
-                    arg_type: "string".into(),
-                    required: true,
-                    description: "Entity name".into(),
-                    default: None,
-                });
+                m.insert(
+                    "entity".into(),
+                    ArgSpec {
+                        arg_type: "string".into(),
+                        required: true,
+                        description: "Entity name".into(),
+                        default: None,
+                    },
+                );
                 m
             },
         };
         std::fs::write(
             t_dir.join("template.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(
             t_dir.join("app.ax.template"),
             "// App for {{entity}}\nfn main() -> Int { 0 }\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut args = BTreeMap::new();
         args.insert("entity".into(), "products".into());
@@ -254,19 +255,23 @@ mod tests {
             capabilities: vec![],
             args: {
                 let mut m = BTreeMap::new();
-                m.insert("name".into(), ArgSpec {
-                    arg_type: "string".into(),
-                    required: true,
-                    description: "Required".into(),
-                    default: None,
-                });
+                m.insert(
+                    "name".into(),
+                    ArgSpec {
+                        arg_type: "string".into(),
+                        required: true,
+                        description: "Required".into(),
+                        default: None,
+                    },
+                );
                 m
             },
         };
         std::fs::write(
             t_dir.join("template.json"),
             serde_json::to_string_pretty(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(t_dir.join("app.ax.template"), "hello").unwrap();
 
         let args = BTreeMap::new();

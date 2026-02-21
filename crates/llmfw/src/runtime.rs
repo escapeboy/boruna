@@ -18,17 +18,17 @@ pub struct AppMessage {
 
 impl AppMessage {
     pub fn new(tag: impl Into<String>, payload: Value) -> Self {
-        AppMessage { tag: tag.into(), payload }
+        AppMessage {
+            tag: tag.into(),
+            payload,
+        }
     }
 
     /// Convert to a VM Value (Record with fields [tag, payload]).
     pub fn to_value(&self) -> Value {
         Value::Record {
             type_id: 0,
-            fields: vec![
-                Value::String(self.tag.clone()),
-                self.payload.clone(),
-            ],
+            fields: vec![Value::String(self.tag.clone()), self.payload.clone()],
         }
     }
 }
@@ -125,7 +125,10 @@ impl AppRuntime {
     /// Send a message to the application.
     /// Runs: update(state, msg) → execute effects → view(new_state)
     /// Returns: (new_state, effects, ui_tree)
-    pub fn send(&mut self, msg: AppMessage) -> Result<(Value, Vec<Effect>, Option<Value>), FrameworkError> {
+    pub fn send(
+        &mut self,
+        msg: AppMessage,
+    ) -> Result<(Value, Vec<Effect>, Option<Value>), FrameworkError> {
         if self.state_machine.cycle() >= self.max_cycles {
             return Err(FrameworkError::MaxCyclesExceeded(self.max_cycles));
         }
@@ -143,10 +146,11 @@ impl AppRuntime {
         )?;
 
         // Parse the UpdateResult
-        let (new_state, effects) = parse_update_result(&update_result)
-            .ok_or_else(|| FrameworkError::Effect(
-                "update() must return a Record with [state, effects] fields".into()
-            ))?;
+        let (new_state, effects) = parse_update_result(&update_result).ok_or_else(|| {
+            FrameworkError::Effect(
+                "update() must return a Record with [state, effects] fields".into(),
+            )
+        })?;
 
         // Validate effects against policy
         self.policy.check_batch(&effects)?;
@@ -223,10 +227,15 @@ impl AppRuntime {
         args: Vec<Value>,
         pure: bool,
     ) -> Result<Value, FrameworkError> {
-        let &func_idx = fn_map.get(name)
+        let &func_idx = fn_map
+            .get(name)
             .ok_or_else(|| FrameworkError::MissingFunction(name.into()))?;
 
-        let policy = if pure { Policy::deny_all() } else { Policy::allow_all() };
+        let policy = if pure {
+            Policy::deny_all()
+        } else {
+            Policy::allow_all()
+        };
 
         if args.is_empty() {
             let gateway = CapabilityGateway::new(policy);
@@ -234,7 +243,11 @@ impl AppRuntime {
             module_copy.entry = func_idx;
             let mut vm = Vm::new(module_copy, gateway);
             vm.run().map_err(|e| {
-                if pure { Self::wrap_purity_error(name, e) } else { FrameworkError::Runtime(e) }
+                if pure {
+                    Self::wrap_purity_error(name, e)
+                } else {
+                    FrameworkError::Runtime(e)
+                }
             })
         } else {
             let mut wrapper = module.clone();
@@ -262,7 +275,11 @@ impl AppRuntime {
             let gateway = CapabilityGateway::new(policy);
             let mut vm = Vm::new(wrapper, gateway);
             vm.run().map_err(|e| {
-                if pure { Self::wrap_purity_error(name, e) } else { FrameworkError::Runtime(e) }
+                if pure {
+                    Self::wrap_purity_error(name, e)
+                } else {
+                    FrameworkError::Runtime(e)
+                }
             })
         }
     }
@@ -270,7 +287,8 @@ impl AppRuntime {
     /// Convert a VM capability-denied error into a PurityViolation.
     fn wrap_purity_error(name: &str, err: boruna_vm::VmError) -> FrameworkError {
         match &err {
-            boruna_vm::VmError::CapabilityDenied(_) | boruna_vm::VmError::CapabilityBudgetExceeded(_) => {
+            boruna_vm::VmError::CapabilityDenied(_)
+            | boruna_vm::VmError::CapabilityBudgetExceeded(_) => {
                 FrameworkError::PurityViolation { name: name.into() }
             }
             _ => FrameworkError::Runtime(err),

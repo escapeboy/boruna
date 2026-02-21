@@ -10,8 +10,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn new(base_dir: &Path) -> Result<Self, String> {
-        std::fs::create_dir_all(base_dir)
-            .map_err(|e| format!("create registry dir: {e}"))?;
+        std::fs::create_dir_all(base_dir).map_err(|e| format!("create registry dir: {e}"))?;
         Ok(Registry {
             base_dir: base_dir.to_path_buf(),
         })
@@ -45,8 +44,8 @@ impl Registry {
             return Ok(vec![]);
         }
         let mut versions = Vec::new();
-        let entries = std::fs::read_dir(&pkg_dir)
-            .map_err(|e| format!("list versions for {name}: {e}"))?;
+        let entries =
+            std::fs::read_dir(&pkg_dir).map_err(|e| format!("list versions for {name}: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("read entry: {e}"))?;
             if entry.path().is_dir() {
@@ -103,8 +102,7 @@ impl Registry {
         let hash = compute_content_hash(&target_dir, &dep_hashes)?;
 
         // Write hash
-        std::fs::write(target_dir.join("HASH"), &hash)
-            .map_err(|e| format!("write HASH: {e}"))?;
+        std::fs::write(target_dir.join("HASH"), &hash).map_err(|e| format!("write HASH: {e}"))?;
 
         // Update manifest with integrity and save
         manifest.integrity = Some(hash.clone());
@@ -167,8 +165,8 @@ fn collect_dep_hashes(
         let dep_dir = registry.package_dir(dep_name, dep_ver);
         let hash_file = dep_dir.join("HASH");
         if hash_file.exists() {
-            let hash = std::fs::read_to_string(&hash_file)
-                .map_err(|e| format!("read dep hash: {e}"))?;
+            let hash =
+                std::fs::read_to_string(&hash_file).map_err(|e| format!("read dep hash: {e}"))?;
             dep_hashes.insert(dep_name.clone(), hash.trim().to_string());
         }
     }
@@ -189,22 +187,20 @@ fn compile_modules(manifest: &PackageManifest, pkg_dir: &Path) -> Result<(), Str
         let module = boruna_compiler::compile(module_name, &source)
             .map_err(|e| format!("compile {module_name}: {e}"))?;
 
-        let bc = module.to_json()
+        let bc = module
+            .to_json()
             .map_err(|e| format!("serialize {module_name}: {e}"))?;
 
         let bc_path = pkg_dir.join("bytecode").join(format!("{module_name}.axbc"));
-        std::fs::write(&bc_path, bc)
-            .map_err(|e| format!("write bytecode {module_name}: {e}"))?;
+        std::fs::write(&bc_path, bc).map_err(|e| format!("write bytecode {module_name}: {e}"))?;
     }
     Ok(())
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| format!("create dir {}: {e}", dst.display()))?;
+    std::fs::create_dir_all(dst).map_err(|e| format!("create dir {}: {e}", dst.display()))?;
 
-    let entries = std::fs::read_dir(src)
-        .map_err(|e| format!("read dir {}: {e}", src.display()))?;
+    let entries = std::fs::read_dir(src).map_err(|e| format!("read dir {}: {e}", src.display()))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("read entry: {e}"))?;
@@ -223,12 +219,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 
 /// Collect dotted package names by scanning directory structure.
 fn collect_packages(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("read dir: {e}"))?;
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read dir: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read entry: {e}"))?;
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
 
         // If this dir contains a version subdir with package.ax.json, it's a package
@@ -288,9 +285,12 @@ mod tests {
         std::fs::write(
             src_dir.path().join("src/core.ax"),
             "fn main() -> Int { 42 }\n",
-        ).unwrap();
+        )
+        .unwrap();
         let manifest = make_manifest("test.pkg", "0.1.0");
-        manifest.save(&src_dir.path().join("package.ax.json")).unwrap();
+        manifest
+            .save(&src_dir.path().join("package.ax.json"))
+            .unwrap();
 
         let hash = reg.publish(src_dir.path()).unwrap();
         assert!(hash.starts_with("sha256:"));
@@ -317,7 +317,11 @@ mod tests {
         for ver in &["0.1.0", "0.2.0"] {
             let src_dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(src_dir.path().join("src")).unwrap();
-            std::fs::write(src_dir.path().join("src/core.ax"), "fn main() -> Int { 42 }\n").unwrap();
+            std::fs::write(
+                src_dir.path().join("src/core.ax"),
+                "fn main() -> Int { 42 }\n",
+            )
+            .unwrap();
             let manifest = PackageManifest {
                 name: "test.pkg".into(),
                 version: ver.to_string(),
@@ -327,7 +331,9 @@ mod tests {
                 exposed_modules: vec!["core".into()],
                 integrity: None,
             };
-            manifest.save(&src_dir.path().join("package.ax.json")).unwrap();
+            manifest
+                .save(&src_dir.path().join("package.ax.json"))
+                .unwrap();
             reg.publish(src_dir.path()).unwrap();
         }
 
@@ -342,9 +348,15 @@ mod tests {
 
         let src_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(src_dir.path().join("src")).unwrap();
-        std::fs::write(src_dir.path().join("src/core.ax"), "fn main() -> Int { 42 }\n").unwrap();
+        std::fs::write(
+            src_dir.path().join("src/core.ax"),
+            "fn main() -> Int { 42 }\n",
+        )
+        .unwrap();
         let manifest = make_manifest("test.pkg", "0.1.0");
-        manifest.save(&src_dir.path().join("package.ax.json")).unwrap();
+        manifest
+            .save(&src_dir.path().join("package.ax.json"))
+            .unwrap();
 
         reg.publish(src_dir.path()).unwrap();
         let err = reg.publish(src_dir.path()).unwrap_err();
@@ -358,9 +370,15 @@ mod tests {
 
         let src_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(src_dir.path().join("src")).unwrap();
-        std::fs::write(src_dir.path().join("src/core.ax"), "fn main() -> Int { 42 }\n").unwrap();
+        std::fs::write(
+            src_dir.path().join("src/core.ax"),
+            "fn main() -> Int { 42 }\n",
+        )
+        .unwrap();
         let manifest = make_manifest("test.pkg", "0.1.0");
-        manifest.save(&src_dir.path().join("package.ax.json")).unwrap();
+        manifest
+            .save(&src_dir.path().join("package.ax.json"))
+            .unwrap();
 
         reg.publish(src_dir.path()).unwrap();
         let result = reg.verify_all();

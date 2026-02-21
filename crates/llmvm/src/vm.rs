@@ -174,7 +174,10 @@ impl Vm {
 
     /// Set up a function call.
     fn call_function(&mut self, func_idx: u32, args: Vec<Value>) -> Result<(), VmError> {
-        let func = self.module.functions.get(func_idx as usize)
+        let func = self
+            .module
+            .functions
+            .get(func_idx as usize)
             .ok_or(VmError::InvalidFunction(func_idx))?;
 
         if self.call_stack.len() >= MAX_CALL_DEPTH {
@@ -249,7 +252,10 @@ impl Vm {
 
             match op {
                 Op::PushConst(idx) => {
-                    let val = self.module.constants.get(idx as usize)
+                    let val = self
+                        .module
+                        .constants
+                        .get(idx as usize)
                         .ok_or(VmError::InvalidConstant(idx))?
                         .clone();
                     self.push(val)?;
@@ -263,7 +269,9 @@ impl Vm {
                     self.set_local(idx, val)?;
                 }
                 Op::LoadGlobal(idx) => {
-                    let val = self.globals.get(idx as usize)
+                    let val = self
+                        .globals
+                        .get(idx as usize)
                         .ok_or(VmError::InvalidGlobal(idx))?
                         .clone();
                     self.push(val)?;
@@ -307,7 +315,8 @@ impl Vm {
                 Op::Match(table_idx) => {
                     let val = self.pop()?;
                     let table = self.module.functions[func_idx as usize]
-                        .match_tables.get(table_idx as usize)
+                        .match_tables
+                        .get(table_idx as usize)
                         .ok_or(VmError::MatchExhausted)?
                         .clone();
 
@@ -362,17 +371,22 @@ impl Vm {
                     let val = self.pop()?;
                     match val {
                         Value::Record { fields, .. } => {
-                            let field = fields.into_iter().nth(idx as usize)
-                                .ok_or(VmError::TypeError {
-                                    expected: "valid field index",
-                                    got: "out of bounds",
-                                })?;
+                            let field =
+                                fields
+                                    .into_iter()
+                                    .nth(idx as usize)
+                                    .ok_or(VmError::TypeError {
+                                        expected: "valid field index",
+                                        got: "out of bounds",
+                                    })?;
                             self.push(field)?;
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "Record",
-                            got: val.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Record",
+                                got: val.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::SpawnActor(func_idx) => {
@@ -388,10 +402,12 @@ impl Vm {
                         Value::ActorId(id) => {
                             self.outgoing_messages.push((id, payload));
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "ActorId",
-                            got: target.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "ActorId",
+                                got: target.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::ReceiveMsg => {
@@ -409,19 +425,23 @@ impl Vm {
                 Op::Assert(err_const) => {
                     let val = self.pop()?;
                     if !val.is_truthy() {
-                        let msg = self.module.constants.get(err_const as usize)
+                        let msg = self
+                            .module
+                            .constants
+                            .get(err_const as usize)
                             .map(|v| format!("{v}"))
                             .unwrap_or_else(|| "assertion failed".into());
                         return Err(VmError::AssertionFailed(msg));
                     }
                 }
                 Op::CapCall(cap_id, arg_count) => {
-                    let cap = Capability::from_id(cap_id)
-                        .ok_or(VmError::UnknownCapability(cap_id))?;
+                    let cap =
+                        Capability::from_id(cap_id).ok_or(VmError::UnknownCapability(cap_id))?;
 
                     // Check function capabilities
                     let has_cap = self.module.functions[func_idx as usize]
-                        .capabilities.contains(&cap);
+                        .capabilities
+                        .contains(&cap);
                     if !has_cap {
                         return Err(VmError::CapabilityDenied(cap));
                     }
@@ -442,7 +462,11 @@ impl Vm {
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x + y as f64)),
                     (a, b) => Err(VmError::TypeError {
                         expected: "numeric",
-                        got: if matches!(a, Value::Int(_) | Value::Float(_)) { b.type_name() } else { a.type_name() },
+                        got: if matches!(a, Value::Int(_) | Value::Float(_)) {
+                            b.type_name()
+                        } else {
+                            a.type_name()
+                        },
                     }),
                 })?,
                 Op::Sub => self.binary_op(|a, b| match (a, b) {
@@ -452,7 +476,11 @@ impl Vm {
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x - y as f64)),
                     (a, b) => Err(VmError::TypeError {
                         expected: "numeric",
-                        got: if matches!(a, Value::Int(_) | Value::Float(_)) { b.type_name() } else { a.type_name() },
+                        got: if matches!(a, Value::Int(_) | Value::Float(_)) {
+                            b.type_name()
+                        } else {
+                            a.type_name()
+                        },
                     }),
                 })?,
                 Op::Mul => self.binary_op(|a, b| match (a, b) {
@@ -462,7 +490,11 @@ impl Vm {
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x * y as f64)),
                     (a, b) => Err(VmError::TypeError {
                         expected: "numeric",
-                        got: if matches!(a, Value::Int(_) | Value::Float(_)) { b.type_name() } else { a.type_name() },
+                        got: if matches!(a, Value::Int(_) | Value::Float(_)) {
+                            b.type_name()
+                        } else {
+                            a.type_name()
+                        },
                     }),
                 })?,
                 Op::Div => self.binary_op(|a, b| {
@@ -478,18 +510,28 @@ impl Vm {
                         (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x / y as f64)),
                         (a, b) => Err(VmError::TypeError {
                             expected: "numeric",
-                            got: if matches!(a, Value::Int(_) | Value::Float(_)) { b.type_name() } else { a.type_name() },
+                            got: if matches!(a, Value::Int(_) | Value::Float(_)) {
+                                b.type_name()
+                            } else {
+                                a.type_name()
+                            },
                         }),
                     }
                 })?,
                 Op::Mod => self.binary_op(|a, b| match (a, b) {
                     (Value::Int(x), Value::Int(y)) => {
-                        if y == 0 { return Err(VmError::DivisionByZero); }
+                        if y == 0 {
+                            return Err(VmError::DivisionByZero);
+                        }
                         Ok(Value::Int(x % y))
                     }
                     (a, b) => Err(VmError::TypeError {
                         expected: "Int",
-                        got: if matches!(a, Value::Int(_)) { b.type_name() } else { a.type_name() },
+                        got: if matches!(a, Value::Int(_)) {
+                            b.type_name()
+                        } else {
+                            a.type_name()
+                        },
                     }),
                 })?,
                 Op::Neg => {
@@ -497,7 +539,12 @@ impl Vm {
                     match val {
                         Value::Int(n) => self.push(Value::Int(-n))?,
                         Value::Float(n) => self.push(Value::Float(-n))?,
-                        _ => return Err(VmError::TypeError { expected: "numeric", got: val.type_name() }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "numeric",
+                                got: val.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::Eq => self.binary_op(|a, b| Ok(Value::Bool(a == b)))?,
@@ -510,16 +557,24 @@ impl Vm {
                     let val = self.pop()?;
                     self.push(Value::Bool(!val.is_truthy()))?;
                 }
-                Op::And => self.binary_op(|a, b| Ok(Value::Bool(a.is_truthy() && b.is_truthy())))?,
+                Op::And => {
+                    self.binary_op(|a, b| Ok(Value::Bool(a.is_truthy() && b.is_truthy())))?
+                }
                 Op::Or => self.binary_op(|a, b| Ok(Value::Bool(a.is_truthy() || b.is_truthy())))?,
                 Op::Concat => self.binary_op(|a, b| match (a, b) {
                     (Value::String(x), Value::String(y)) => Ok(Value::String(format!("{x}{y}"))),
                     (a, b) => Err(VmError::TypeError {
                         expected: "String",
-                        got: if matches!(a, Value::String(_)) { b.type_name() } else { a.type_name() },
+                        got: if matches!(a, Value::String(_)) {
+                            b.type_name()
+                        } else {
+                            a.type_name()
+                        },
                     }),
                 })?,
-                Op::Pop => { self.pop()?; }
+                Op::Pop => {
+                    self.pop()?;
+                }
                 Op::Dup => {
                     let val = self.stack.last().ok_or(VmError::StackUnderflow)?.clone();
                     self.push(val)?;
@@ -543,13 +598,19 @@ impl Vm {
                         Value::List(items) => {
                             self.push(Value::Int(items.len() as i64))?;
                         }
-                        Value::Record { type_id, fields, .. } if type_id == 0xFFFF => {
+                        Value::Record {
+                            type_id: 0xFFFF,
+                            fields,
+                            ..
+                        } => {
                             self.push(Value::Int(fields.len() as i64))?;
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "List",
-                            got: val.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::ListGet => {
@@ -557,28 +618,42 @@ impl Vm {
                     let list = self.pop()?;
                     let idx = match &index {
                         Value::Int(n) => *n,
-                        _ => return Err(VmError::TypeError {
-                            expected: "Int",
-                            got: index.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Int",
+                                got: index.type_name(),
+                            })
+                        }
                     };
                     match list {
                         Value::List(items) => {
                             if idx < 0 || idx as usize >= items.len() {
-                                return Err(VmError::IndexOutOfBounds { index: idx, length: items.len() });
+                                return Err(VmError::IndexOutOfBounds {
+                                    index: idx,
+                                    length: items.len(),
+                                });
                             }
                             self.push(items[idx as usize].clone())?;
                         }
-                        Value::Record { type_id, fields, .. } if type_id == 0xFFFF => {
+                        Value::Record {
+                            type_id: 0xFFFF,
+                            fields,
+                            ..
+                        } => {
                             if idx < 0 || idx as usize >= fields.len() {
-                                return Err(VmError::IndexOutOfBounds { index: idx, length: fields.len() });
+                                return Err(VmError::IndexOutOfBounds {
+                                    index: idx,
+                                    length: fields.len(),
+                                });
                             }
                             self.push(fields[idx as usize].clone())?;
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "List",
-                            got: list.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: list.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::ListPush => {
@@ -589,14 +664,20 @@ impl Vm {
                             items.push(value);
                             self.push(Value::List(items))?;
                         }
-                        Value::Record { type_id, mut fields, .. } if type_id == 0xFFFF => {
+                        Value::Record {
+                            type_id: 0xFFFF,
+                            mut fields,
+                            ..
+                        } => {
                             fields.push(value);
                             self.push(Value::List(fields))?;
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "List",
-                            got: list.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: list.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::ParseInt => {
@@ -606,27 +687,29 @@ impl Vm {
                             let n = s.trim().parse::<i64>().unwrap_or(0);
                             self.push(Value::Int(n))?;
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: val.type_name(),
-                        }),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::TryParseInt => {
                     let val = self.pop()?;
                     match val {
-                        Value::String(s) => {
-                            match s.trim().parse::<i64>() {
-                                Result::Ok(n) => self.push(Value::Ok(Box::new(Value::Int(n))))?,
-                                Result::Err(_) => self.push(Value::Err(Box::new(Value::String(
-                                    format!("invalid integer: {s}")
-                                ))))?,
-                            }
+                        Value::String(s) => match s.trim().parse::<i64>() {
+                            Result::Ok(n) => self.push(Value::Ok(Box::new(Value::Int(n))))?,
+                            Result::Err(_) => self.push(Value::Err(Box::new(Value::String(
+                                format!("invalid integer: {s}"),
+                            ))))?,
+                        },
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
                         }
-                        _ => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: val.type_name(),
-                        }),
                     }
                 }
                 Op::StrContains => {
@@ -636,14 +719,18 @@ impl Vm {
                         (Value::String(h), Value::String(n)) => {
                             self.push(Value::Bool(h.contains(&*n)))?;
                         }
-                        (Value::String(_), b) => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: b.type_name(),
-                        }),
-                        (a, _) => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: a.type_name(),
-                        }),
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::StrStartsWith => {
@@ -653,14 +740,18 @@ impl Vm {
                         (Value::String(s), Value::String(p)) => {
                             self.push(Value::Bool(s.starts_with(&*p)))?;
                         }
-                        (Value::String(_), b) => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: b.type_name(),
-                        }),
-                        (a, _) => return Err(VmError::TypeError {
-                            expected: "String",
-                            got: a.type_name(),
-                        }),
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
                     }
                 }
                 Op::Nop => {}
@@ -685,7 +776,10 @@ impl Vm {
 
     fn get_local(&self, idx: u32) -> Result<&Value, VmError> {
         let frame = self.call_stack.last().ok_or(VmError::StackUnderflow)?;
-        frame.locals.get(idx as usize).ok_or(VmError::InvalidLocal(idx))
+        frame
+            .locals
+            .get(idx as usize)
+            .ok_or(VmError::InvalidLocal(idx))
     }
 
     fn set_local(&mut self, idx: u32, val: Value) -> Result<(), VmError> {
@@ -697,7 +791,10 @@ impl Vm {
         Ok(())
     }
 
-    fn binary_op(&mut self, f: impl FnOnce(Value, Value) -> Result<Value, VmError>) -> Result<(), VmError> {
+    fn binary_op(
+        &mut self,
+        f: impl FnOnce(Value, Value) -> Result<Value, VmError>,
+    ) -> Result<(), VmError> {
         let b = self.pop()?;
         let a = self.pop()?;
         let result = f(a, b)?;
@@ -709,12 +806,16 @@ impl Vm {
         let a = self.pop()?;
         let ord = match (&a, &b) {
             (Value::Int(x), Value::Int(y)) => x.cmp(y),
-            (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+            (Value::Float(x), Value::Float(y)) => {
+                x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+            }
             (Value::String(x), Value::String(y)) => x.cmp(y),
-            _ => return Err(VmError::TypeError {
-                expected: "comparable",
-                got: a.type_name(),
-            }),
+            _ => {
+                return Err(VmError::TypeError {
+                    expected: "comparable",
+                    got: a.type_name(),
+                })
+            }
         };
         self.push(Value::Bool(f(ord)))
     }

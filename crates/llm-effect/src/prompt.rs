@@ -60,8 +60,7 @@ pub struct PromptRegistry {
 impl PromptRegistry {
     /// Open (or create) a prompt registry at `base_dir`.
     pub fn open(base_dir: &Path) -> Result<Self, String> {
-        fs::create_dir_all(base_dir)
-            .map_err(|e| format!("cannot create prompt dir: {e}"))?;
+        fs::create_dir_all(base_dir).map_err(|e| format!("cannot create prompt dir: {e}"))?;
         fs::create_dir_all(base_dir.join("schemas"))
             .map_err(|e| format!("cannot create schemas dir: {e}"))?;
 
@@ -69,8 +68,7 @@ impl PromptRegistry {
         let manifest = if manifest_path.exists() {
             let data = fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("cannot read registry.json: {e}"))?;
-            serde_json::from_str(&data)
-                .map_err(|e| format!("invalid registry.json: {e}"))?
+            serde_json::from_str(&data).map_err(|e| format!("invalid registry.json: {e}"))?
         } else {
             RegistryManifest::default()
         };
@@ -91,35 +89,44 @@ impl PromptRegistry {
 
     /// Register a prompt template.
     pub fn register_prompt(&mut self, template: &PromptTemplate) -> Result<String, String> {
-        let json = serde_json::to_string_pretty(template)
-            .map_err(|e| format!("serialize error: {e}"))?;
+        let json =
+            serde_json::to_string_pretty(template).map_err(|e| format!("serialize error: {e}"))?;
         let hash = content_hash(&json);
 
         let filename = format!("{}.prompt.json", template.id);
-        fs::write(self.base_dir.join(&filename), &json)
-            .map_err(|e| format!("write error: {e}"))?;
+        fs::write(self.base_dir.join(&filename), &json).map_err(|e| format!("write error: {e}"))?;
 
-        self.manifest.prompts.insert(template.id.clone(), PromptEntry {
-            file: filename,
-            content_hash: hash.clone(),
-            version: template.version.clone(),
-        });
+        self.manifest.prompts.insert(
+            template.id.clone(),
+            PromptEntry {
+                file: filename,
+                content_hash: hash.clone(),
+                version: template.version.clone(),
+            },
+        );
 
         self.save()?;
         Ok(hash)
     }
 
     /// Register an output schema.
-    pub fn register_schema(&mut self, schema_id: &str, schema_json: &str) -> Result<String, String> {
+    pub fn register_schema(
+        &mut self,
+        schema_id: &str,
+        schema_json: &str,
+    ) -> Result<String, String> {
         let hash = content_hash(schema_json);
         let filename = format!("schemas/{schema_id}.json");
         fs::write(self.base_dir.join(&filename), schema_json)
             .map_err(|e| format!("write error: {e}"))?;
 
-        self.manifest.schemas.insert(schema_id.to_string(), SchemaEntry {
-            file: filename,
-            content_hash: hash.clone(),
-        });
+        self.manifest.schemas.insert(
+            schema_id.to_string(),
+            SchemaEntry {
+                file: filename,
+                content_hash: hash.clone(),
+            },
+        );
 
         self.save()?;
         Ok(hash)
@@ -127,32 +134,40 @@ impl PromptRegistry {
 
     /// Load a prompt template by ID.
     pub fn load_prompt(&self, prompt_id: &str) -> Result<PromptTemplate, String> {
-        let entry = self.manifest.prompts.get(prompt_id)
+        let entry = self
+            .manifest
+            .prompts
+            .get(prompt_id)
             .ok_or_else(|| format!("prompt not found: {prompt_id}"))?;
         let data = fs::read_to_string(self.base_dir.join(&entry.file))
             .map_err(|e| format!("read error: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("invalid prompt JSON: {e}"))
+        serde_json::from_str(&data).map_err(|e| format!("invalid prompt JSON: {e}"))
     }
 
     /// Load an output schema by ID. Returns raw JSON string.
     pub fn load_schema(&self, schema_id: &str) -> Result<String, String> {
-        let entry = self.manifest.schemas.get(schema_id)
+        let entry = self
+            .manifest
+            .schemas
+            .get(schema_id)
             .ok_or_else(|| format!("schema not found: {schema_id}"))?;
-        fs::read_to_string(self.base_dir.join(&entry.file))
-            .map_err(|e| format!("read error: {e}"))
+        fs::read_to_string(self.base_dir.join(&entry.file)).map_err(|e| format!("read error: {e}"))
     }
 
     /// Get the content hash for a prompt.
     pub fn prompt_hash(&self, prompt_id: &str) -> Result<String, String> {
-        self.manifest.prompts.get(prompt_id)
+        self.manifest
+            .prompts
+            .get(prompt_id)
             .map(|e| e.content_hash.clone())
             .ok_or_else(|| format!("prompt not found: {prompt_id}"))
     }
 
     /// Get the content hash for a schema.
     pub fn schema_hash(&self, schema_id: &str) -> Result<String, String> {
-        self.manifest.schemas.get(schema_id)
+        self.manifest
+            .schemas
+            .get(schema_id)
             .map(|e| e.content_hash.clone())
             .ok_or_else(|| format!("schema not found: {schema_id}"))
     }
@@ -193,7 +208,11 @@ impl PromptRegistry {
             }
         }
 
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Compile a prompt template with arguments.

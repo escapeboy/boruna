@@ -25,10 +25,7 @@ pub enum Value {
     /// Result<T, E> — Err(value)
     Err(Box<Value>),
     /// Record { type_id, fields }
-    Record {
-        type_id: u32,
-        fields: Vec<Value>,
-    },
+    Record { type_id: u32, fields: Vec<Value> },
     /// Enum variant { type_id, variant, payload }
     Enum {
         type_id: u32,
@@ -102,18 +99,26 @@ impl fmt::Display for Value {
             Value::Record { type_id, fields } => {
                 write!(f, "Record#{type_id}{{")?;
                 for (i, field) in fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{field}")?;
                 }
                 write!(f, "}}")
             }
-            Value::Enum { type_id, variant, payload } => {
+            Value::Enum {
+                type_id,
+                variant,
+                payload,
+            } => {
                 write!(f, "Enum#{type_id}::{variant}({payload})")
             }
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{item}")?;
                 }
                 write!(f, "]")
@@ -121,7 +126,9 @@ impl fmt::Display for Value {
             Value::Map(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")

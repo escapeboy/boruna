@@ -1,8 +1,8 @@
 use boruna_bytecode::Value;
 
 use crate::effect::Effect;
-use crate::executor::EffectExecutor;
 use crate::error::FrameworkError;
+use crate::executor::EffectExecutor;
 use crate::runtime::{AppMessage, AppRuntime, CycleRecord};
 
 /// Test harness for framework applications.
@@ -67,10 +67,9 @@ impl TestHarness {
     ) -> Result<(), FrameworkError> {
         match self.runtime.state() {
             Value::Record { fields, .. } => {
-                let actual = fields.get(field_index)
-                    .ok_or_else(|| FrameworkError::State(
-                        format!("field index {field_index} out of bounds")
-                    ))?;
+                let actual = fields.get(field_index).ok_or_else(|| {
+                    FrameworkError::State(format!("field index {field_index} out of bounds"))
+                })?;
                 if actual != expected {
                     Err(FrameworkError::State(format!(
                         "field[{field_index}]: expected {expected}, got {actual}"
@@ -80,23 +79,20 @@ impl TestHarness {
                 }
             }
             other => Err(FrameworkError::State(format!(
-                "expected Record state, got {}", other.type_name()
+                "expected Record state, got {}",
+                other.type_name()
             ))),
         }
     }
 
     /// Assert that the last cycle produced effects of the given kinds.
-    pub fn assert_effects(
-        &self,
-        expected_kinds: &[&str],
-    ) -> Result<(), FrameworkError> {
+    pub fn assert_effects(&self, expected_kinds: &[&str]) -> Result<(), FrameworkError> {
         let log = self.runtime.cycle_log();
-        let last = log.last()
+        let last = log
+            .last()
             .ok_or_else(|| FrameworkError::State("no cycles recorded".into()))?;
 
-        let actual_kinds: Vec<&str> = last.effects.iter()
-            .map(|e| e.kind.as_str())
-            .collect();
+        let actual_kinds: Vec<&str> = last.effects.iter().map(|e| e.kind.as_str()).collect();
 
         if actual_kinds.len() != expected_kinds.len() {
             return Err(FrameworkError::State(format!(
@@ -180,10 +176,7 @@ impl TestHarness {
 }
 
 /// Convenience: run a sequence and get final state in one call.
-pub fn simulate_messages(
-    source: &str,
-    messages: Vec<AppMessage>,
-) -> Result<Value, FrameworkError> {
+pub fn simulate_messages(source: &str, messages: Vec<AppMessage>) -> Result<Value, FrameworkError> {
     let mut harness = TestHarness::from_source(source)?;
     harness.simulate(messages)
 }

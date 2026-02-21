@@ -48,6 +48,12 @@ pub struct ActorSystem {
     event_log: EventLog,
 }
 
+impl Default for ActorSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActorSystem {
     pub fn new() -> Self {
         ActorSystem {
@@ -114,7 +120,9 @@ impl ActorSystem {
 
         for round in 0..self.max_rounds {
             // Build run queue: all runnable actor indices
-            let run_queue: Vec<usize> = self.actors.iter()
+            let run_queue: Vec<usize> = self
+                .actors
+                .iter()
                 .enumerate()
                 .filter(|(_, a)| a.status == ActorStatus::Runnable)
                 .map(|(i, _)| i)
@@ -145,7 +153,9 @@ impl ActorSystem {
                 // Set next_spawn_id so child IDs are deterministic
                 self.actors[actor_idx].vm.next_spawn_id = self.next_id;
 
-                let step_result = self.actors[actor_idx].vm.execute_bounded(self.budget_per_round);
+                let step_result = self.actors[actor_idx]
+                    .vm
+                    .execute_bounded(self.budget_per_round);
 
                 match step_result {
                     StepResult::Completed(val) => {
@@ -193,15 +203,18 @@ impl ActorSystem {
                     let child_id = self.next_id;
                     self.next_id += 1;
                     let module = self.actors[actor_idx].vm.module().clone();
-                    let func_name = module.functions.get(req.func_idx as usize)
+                    let func_name = module
+                        .functions
+                        .get(req.func_idx as usize)
                         .map(|f| f.name.as_str())
                         .unwrap_or("unknown");
                     self.event_log.log_actor_spawn(child_id, func_name);
-                    let policy = self.policy.clone().unwrap_or_else(Policy::default);
+                    let policy = self.policy.clone().unwrap_or_default();
                     let gateway = CapabilityGateway::new(policy);
                     let mut child_vm = Vm::new(module, gateway);
                     child_vm.set_actor_id(child_id);
-                    child_vm.set_entry_function(req.func_idx)
+                    child_vm
+                        .set_entry_function(req.func_idx)
                         .expect("invalid function index in spawn request");
                     self.actors.push(Actor {
                         id: child_id,
@@ -236,11 +249,16 @@ impl ActorSystem {
     /// Deliver pending messages sorted by (target_id, sender_id) for determinism.
     fn deliver_messages(&mut self) {
         // Sort for deterministic delivery order
-        self.pending_messages.sort_by_key(|&(from, to, _)| (to, from));
+        self.pending_messages
+            .sort_by_key(|&(from, to, _)| (to, from));
         let messages: Vec<_> = self.pending_messages.drain(..).collect();
         for (from, to, payload) in messages {
             self.event_log.log_message_send(from, to, &payload);
-            if let Some(actor) = self.actors.iter_mut().find(|a| a.id == to && a.status != ActorStatus::Failed) {
+            if let Some(actor) = self
+                .actors
+                .iter_mut()
+                .find(|a| a.id == to && a.status != ActorStatus::Failed)
+            {
                 self.event_log.log_message_receive(to, &payload);
                 actor.vm.deliver_message(Message { from, payload });
             }
@@ -284,7 +302,8 @@ impl ActorSystem {
 
     /// Get UI output from the root actor.
     pub fn root_ui_output(&self) -> Vec<Value> {
-        self.actors.first()
+        self.actors
+            .first()
             .map(|a| a.vm.ui_output.clone())
             .unwrap_or_default()
     }

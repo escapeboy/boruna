@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use boruna_bytecode::Value;
     use crate::effect::EffectKind;
-    use crate::runtime::{AppMessage, AppRuntime};
-    use crate::validate::AppValidator;
-    use crate::testing::TestHarness;
     use crate::policy::PolicySet;
+    use crate::runtime::{AppMessage, AppRuntime};
     use crate::state::StateMachine;
+    use crate::testing::TestHarness;
+    use crate::validate::AppValidator;
+    use boruna_bytecode::Value;
 
     /// Minimal counter app source code.
     const COUNTER_APP: &str = r#"
@@ -208,9 +208,13 @@ fn policies() -> PolicySet {
         let mut runtime = AppRuntime::new(module).unwrap();
 
         for _ in 0..5 {
-            runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+            runtime
+                .send(AppMessage::new("increment", Value::Int(0)))
+                .unwrap();
         }
-        runtime.send(AppMessage::new("decrement", Value::Int(0))).unwrap();
+        runtime
+            .send(AppMessage::new("decrement", Value::Int(0)))
+            .unwrap();
 
         match runtime.state() {
             Value::Record { fields, .. } => {
@@ -382,7 +386,10 @@ fn policies() -> PolicySet {
         assert!(policy.check_effect(&denied).is_err());
         let err = policy.check_effect(&denied).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("db.query"), "denial error should name the capability: {msg}");
+        assert!(
+            msg.contains("db.query"),
+            "denial error should name the capability: {msg}"
+        );
     }
 
     #[test]
@@ -417,7 +424,9 @@ fn policies() -> PolicySet {
         // Exactly at limit — should pass
         assert!(policy.check_batch(&[make_effect(), make_effect()]).is_ok());
         // Over limit — should fail
-        assert!(policy.check_batch(&[make_effect(), make_effect(), make_effect()]).is_err());
+        assert!(policy
+            .check_batch(&[make_effect(), make_effect(), make_effect()])
+            .is_err());
     }
 
     #[test]
@@ -429,7 +438,10 @@ fn policies() -> PolicySet {
         };
         let json = policy.to_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["capabilities"], serde_json::json!(["net.fetch", "time.now"]));
+        assert_eq!(
+            parsed["capabilities"],
+            serde_json::json!(["net.fetch", "time.now"])
+        );
         assert_eq!(parsed["max_effects_per_cycle"], 5);
         assert_eq!(parsed["max_steps"], 100000);
     }
@@ -437,7 +449,7 @@ fn policies() -> PolicySet {
     #[test]
     fn test_policy_violation_json_diagnostic() {
         let err = crate::error::FrameworkError::PolicyViolation(
-            "effect DbQuery requires capability 'db.query'".into()
+            "effect DbQuery requires capability 'db.query'".into(),
         );
         let json = crate::policy::error_to_json(&err);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -471,8 +483,14 @@ fn policies() -> PolicySet {
     #[test]
     fn test_policy_default_is_restrictive() {
         let policy = PolicySet::default();
-        assert!(policy.capabilities.is_empty(), "default should have no capabilities");
-        assert_eq!(policy.max_effects_per_cycle, 0, "default should have unlimited effects");
+        assert!(
+            policy.capabilities.is_empty(),
+            "default should have no capabilities"
+        );
+        assert_eq!(
+            policy.max_effects_per_cycle, 0,
+            "default should have unlimited effects"
+        );
     }
 
     // --- Test Harness Tests ---
@@ -508,7 +526,9 @@ fn policies() -> PolicySet {
     #[test]
     fn test_harness_assert_state_field() {
         let mut harness = TestHarness::from_source(COUNTER_APP).unwrap();
-        harness.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        harness
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         assert!(harness.assert_state_field(0, &Value::Int(1)).is_ok());
         assert!(harness.assert_state_field(0, &Value::Int(99)).is_err());
     }
@@ -516,7 +536,9 @@ fn policies() -> PolicySet {
     #[test]
     fn test_harness_assert_effects() {
         let mut harness = TestHarness::from_source(EFFECT_APP).unwrap();
-        harness.send(AppMessage::new("fetch", Value::String(String::new()))).unwrap();
+        harness
+            .send(AppMessage::new("fetch", Value::String(String::new())))
+            .unwrap();
         assert!(harness.assert_effects(&["http_request"]).is_ok());
     }
 
@@ -542,8 +564,12 @@ fn policies() -> PolicySet {
     #[test]
     fn test_harness_cycle_log() {
         let mut harness = TestHarness::from_source(COUNTER_APP).unwrap();
-        harness.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        harness.send(AppMessage::new("decrement", Value::Int(0))).unwrap();
+        harness
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        harness
+            .send(AppMessage::new("decrement", Value::Int(0)))
+            .unwrap();
         assert_eq!(harness.cycle_log().len(), 2);
         assert_eq!(harness.cycle_log()[0].cycle, 1);
         assert_eq!(harness.cycle_log()[1].cycle, 2);
@@ -566,8 +592,8 @@ fn policies() -> PolicySet {
 
     #[test]
     fn test_ui_tree_to_value() {
-        let node = crate::ui::UINode::new("div")
-            .with_prop("class", Value::String("container".into()));
+        let node =
+            crate::ui::UINode::new("div").with_prop("class", Value::String("container".into()));
         let val = crate::ui::ui_tree_to_value(&node);
         match val {
             Value::Record { fields, .. } => {
@@ -603,8 +629,12 @@ fn policies() -> PolicySet {
     #[test]
     fn test_replay_diverges() {
         let mut harness = TestHarness::from_source(COUNTER_APP).unwrap();
-        harness.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        harness.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        harness
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        harness
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
 
         // Replay with different messages
         let replay_messages = vec![
@@ -629,19 +659,25 @@ fn policies() -> PolicySet {
         }
 
         // Send messages
-        let (s1, _, _) = runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        let (s1, _, _) = runtime
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         match &s1 {
             Value::Record { fields, .. } => assert_eq!(fields[0], Value::Int(1)),
             _ => panic!("bad state after increment"),
         }
 
-        let (s2, _, _) = runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        let (s2, _, _) = runtime
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         match &s2 {
             Value::Record { fields, .. } => assert_eq!(fields[0], Value::Int(2)),
             _ => panic!("bad state after second increment"),
         }
 
-        let (s3, _, _) = runtime.send(AppMessage::new("decrement", Value::Int(0))).unwrap();
+        let (s3, _, _) = runtime
+            .send(AppMessage::new("decrement", Value::Int(0)))
+            .unwrap();
         match &s3 {
             Value::Record { fields, .. } => assert_eq!(fields[0], Value::Int(1)),
             _ => panic!("bad state after decrement"),
@@ -679,8 +715,15 @@ fn policies() -> PolicySet {
                 r.message.payload,
                 r.state_before,
                 r.state_after,
-                r.effects.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>().join(","),
-                r.ui_tree.as_ref().map(|v| format!("{v}")).unwrap_or("none".into()),
+                r.effects
+                    .iter()
+                    .map(|e| e.kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                r.ui_tree
+                    .as_ref()
+                    .map(|v| format!("{v}"))
+                    .unwrap_or("none".into()),
             ));
         }
         parts.join("|")
@@ -776,7 +819,10 @@ fn view(state: State) -> UINode {
         }
 
         assert_eq!(h1.state(), h2.state());
-        assert_eq!(cycle_fingerprint(h1.cycle_log()), cycle_fingerprint(h2.cycle_log()));
+        assert_eq!(
+            cycle_fingerprint(h1.cycle_log()),
+            cycle_fingerprint(h2.cycle_log())
+        );
     }
 
     #[test]
@@ -854,13 +900,17 @@ fn view(state: State) -> UINode {
     fn test_golden_snapshot_stability() {
         // Same messages must produce the exact same JSON snapshot string.
         let mut h1 = TestHarness::from_source(COUNTER_APP).unwrap();
-        h1.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        h1.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        h1.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        h1.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         let snap1 = h1.snapshot();
 
         let mut h2 = TestHarness::from_source(COUNTER_APP).unwrap();
-        h2.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        h2.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        h2.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        h2.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         let snap2 = h2.snapshot();
 
         assert_eq!(snap1, snap2, "JSON snapshots must be bitwise identical");
@@ -873,7 +923,7 @@ fn view(state: State) -> UINode {
         // Construct a module where update() has a CapCall instruction.
         // Even though the function declares the capability, the framework's
         // deny-all policy during update() must reject it.
-        use boruna_bytecode::{Function, Module, Op, Capability};
+        use boruna_bytecode::{Capability, Function, Module, Op};
 
         let mut module = Module::new("purity_test");
 
@@ -903,8 +953,8 @@ fn view(state: State) -> UINode {
                 Op::CapCall(Capability::TimeNow.id(), 0),
                 // Then build result (never reached if enforcement works)
                 Op::Pop,
-                Op::LoadLocal(0), // state
-                Op::PushConst(1), // empty list
+                Op::LoadLocal(0),     // state
+                Op::PushConst(1),     // empty list
                 Op::MakeRecord(1, 2), // UpdateResult
                 Op::Ret,
             ],
@@ -948,7 +998,7 @@ fn view(state: State) -> UINode {
 
     #[test]
     fn test_purity_view_denies_capabilities() {
-        use boruna_bytecode::{Function, Module, Op, Capability};
+        use boruna_bytecode::{Capability, Function, Module, Op};
 
         let mut module = Module::new("purity_view_test");
 
@@ -956,11 +1006,7 @@ fn view(state: State) -> UINode {
             name: "init".into(),
             arity: 0,
             locals: 0,
-            code: vec![
-                Op::PushConst(0),
-                Op::MakeRecord(0, 1),
-                Op::Ret,
-            ],
+            code: vec![Op::PushConst(0), Op::MakeRecord(0, 1), Op::Ret],
             capabilities: Vec::new(),
             match_tables: Vec::new(),
         };
@@ -985,10 +1031,7 @@ fn view(state: State) -> UINode {
             name: "view".into(),
             arity: 1,
             locals: 1,
-            code: vec![
-                Op::CapCall(Capability::TimeNow.id(), 0),
-                Op::Ret,
-            ],
+            code: vec![Op::CapCall(Capability::TimeNow.id(), 0), Op::Ret],
             capabilities: vec![Capability::TimeNow],
             match_tables: Vec::new(),
         };
@@ -1016,7 +1059,10 @@ fn view(state: State) -> UINode {
         // Verify this still works (the deny-all change must not break init).
         let module = boruna_compiler::compile("test", COUNTER_APP).unwrap();
         let runtime = AppRuntime::new(module);
-        assert!(runtime.is_ok(), "init() should succeed without purity constraint");
+        assert!(
+            runtime.is_ok(),
+            "init() should succeed without purity constraint"
+        );
     }
 
     // --- Host Integration Tests ---
@@ -1039,7 +1085,10 @@ fn view(state: State) -> UINode {
         let ui = runtime.view().unwrap();
         match &ui {
             Value::Record { fields, .. } => {
-                assert!(matches!(&fields[0], Value::String(_)), "UI tag must be String");
+                assert!(
+                    matches!(&fields[0], Value::String(_)),
+                    "UI tag must be String"
+                );
             }
             _ => panic!("view must return Record"),
         }
@@ -1096,7 +1145,10 @@ fn view(state: State) -> UINode {
         // Host would execute the effect and deliver the result as a new message.
         // Simulate: "fetched" message with data
         let (state, effects2, _) = runtime
-            .send(AppMessage::new("fetched", Value::String("response_data".into())))
+            .send(AppMessage::new(
+                "fetched",
+                Value::String("response_data".into()),
+            ))
             .unwrap();
 
         // State should be updated with the data
@@ -1106,7 +1158,10 @@ fn view(state: State) -> UINode {
             }
             _ => panic!("state should contain response data"),
         }
-        assert!(effects2.is_empty(), "response should produce no new effects");
+        assert!(
+            effects2.is_empty(),
+            "response should produce no new effects"
+        );
     }
 
     #[test]
@@ -1117,8 +1172,10 @@ fn view(state: State) -> UINode {
         let mut rt1 = AppRuntime::new(module1).unwrap();
         let mut rt2 = AppRuntime::new(module2).unwrap();
 
-        rt1.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        rt2.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        rt1.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        rt2.send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
 
         let ui1 = rt1.view().unwrap();
         let ui2 = rt2.view().unwrap();
@@ -1131,8 +1188,12 @@ fn view(state: State) -> UINode {
         let module = boruna_compiler::compile("test", COUNTER_APP).unwrap();
         let mut runtime = AppRuntime::new(module).unwrap();
 
-        runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        runtime
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        runtime
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
 
         // Snapshot for host persistence
         let json = runtime.snapshot();
@@ -1149,8 +1210,12 @@ fn view(state: State) -> UINode {
         let module = boruna_compiler::compile("test", COUNTER_APP).unwrap();
         let mut runtime = AppRuntime::new(module).unwrap();
 
-        runtime.send(AppMessage::new("increment", Value::Int(0))).unwrap();
-        runtime.send(AppMessage::new("decrement", Value::Int(0))).unwrap();
+        runtime
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
+        runtime
+            .send(AppMessage::new("decrement", Value::Int(0)))
+            .unwrap();
 
         let log = runtime.cycle_log();
         assert_eq!(log.len(), 2);
@@ -1186,12 +1251,21 @@ fn view(state: State) -> UINode {
     fn test_api_snapshot_effect_kinds() {
         // All 8 effect kinds must exist and round-trip through as_str/from_str.
         let kinds = [
-            "http_request", "db_query", "fs_read", "fs_write",
-            "timer", "random", "spawn_actor", "emit_ui",
+            "http_request",
+            "db_query",
+            "fs_read",
+            "fs_write",
+            "timer",
+            "random",
+            "spawn_actor",
+            "emit_ui",
         ];
         for kind_str in &kinds {
-            let kind = EffectKind::from_str(kind_str);
-            assert!(kind.is_some(), "EffectKind::from_str({kind_str}) should exist");
+            let kind = EffectKind::parse_str(kind_str);
+            assert!(
+                kind.is_some(),
+                "EffectKind::parse_str({kind_str}) should exist"
+            );
             assert_eq!(kind.unwrap().as_str(), *kind_str);
         }
         assert_eq!(kinds.len(), 8, "exactly 8 effect kinds");
@@ -1209,7 +1283,9 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_api_snapshot_cycle_record_fields() {
         let mut harness = TestHarness::from_source(COUNTER_APP).unwrap();
-        harness.send(AppMessage::new("increment", Value::Int(0))).unwrap();
+        harness
+            .send(AppMessage::new("increment", Value::Int(0)))
+            .unwrap();
         let record = &harness.cycle_log()[0];
         // All public fields must be accessible
         let _cycle: u64 = record.cycle;
@@ -1225,8 +1301,10 @@ fn view(state: State) -> UINode {
     // ================================================================
 
     const ADMIN_CRUD_APP: &str = include_str!("../../../examples/admin_crud/admin_crud_app.ax");
-    const NOTIFICATION_APP: &str = include_str!("../../../examples/realtime_notifications/notification_app.ax");
-    const SYNC_TODO_APP: &str = include_str!("../../../examples/offline_sync_todo/sync_todo_app.ax");
+    const NOTIFICATION_APP: &str =
+        include_str!("../../../examples/realtime_notifications/notification_app.ax");
+    const SYNC_TODO_APP: &str =
+        include_str!("../../../examples/offline_sync_todo/sync_todo_app.ax");
 
     // --- Admin CRUD: Golden Determinism ---
 
@@ -1255,7 +1333,11 @@ fn view(state: State) -> UINode {
             cycle_fingerprint(h2.cycle_log()),
             "admin CRUD cycle fingerprints must match"
         );
-        assert_eq!(h1.snapshot(), h2.snapshot(), "admin CRUD snapshots must match");
+        assert_eq!(
+            h1.snapshot(),
+            h2.snapshot(),
+            "admin CRUD snapshots must match"
+        );
     }
 
     // --- Admin CRUD: Replay Equivalence ---
@@ -1285,7 +1367,9 @@ fn view(state: State) -> UINode {
         let mut h = TestHarness::from_source(ADMIN_CRUD_APP).unwrap();
 
         // Default role is admin — create should work
-        let (state, effects) = h.send(AppMessage::new("create_user", Value::String(String::new()))).unwrap();
+        let (state, effects) = h
+            .send(AppMessage::new("create_user", Value::String(String::new())))
+            .unwrap();
         match &state {
             Value::Record { fields, .. } => {
                 // mode field (index 0) should be "creating"
@@ -1297,25 +1381,35 @@ fn view(state: State) -> UINode {
         assert_eq!(effects[0].kind, EffectKind::DbQuery);
 
         // Accept callback
-        h.send(AppMessage::new("user_created", Value::String("ok".into()))).unwrap();
+        h.send(AppMessage::new("user_created", Value::String("ok".into())))
+            .unwrap();
 
         // Switch to viewer role
-        h.send(AppMessage::new("set_role", Value::String("viewer".into()))).unwrap();
+        h.send(AppMessage::new("set_role", Value::String("viewer".into())))
+            .unwrap();
 
         // Now create should be denied
-        let (state2, effects2) = h.send(AppMessage::new("create_user", Value::String(String::new()))).unwrap();
+        let (state2, effects2) = h
+            .send(AppMessage::new("create_user", Value::String(String::new())))
+            .unwrap();
         match &state2 {
             Value::Record { fields, .. } => {
                 // status field (index 5) should be "error"
                 assert_eq!(fields[5], Value::String("error".into()));
                 // status_detail (index 6) should mention unauthorized
                 if let Value::String(detail) = &fields[6] {
-                    assert!(detail.contains("unauthorized"), "should say unauthorized: {detail}");
+                    assert!(
+                        detail.contains("unauthorized"),
+                        "should say unauthorized: {detail}"
+                    );
                 }
             }
             _ => panic!("expected Record state"),
         }
-        assert!(effects2.is_empty(), "denied action should produce no effects");
+        assert!(
+            effects2.is_empty(),
+            "denied action should produce no effects"
+        );
     }
 
     // --- Admin CRUD: Delete authorization ---
@@ -1325,15 +1419,21 @@ fn view(state: State) -> UINode {
         let mut h = TestHarness::from_source(ADMIN_CRUD_APP).unwrap();
 
         // Switch to editor role — editor can create but NOT delete
-        h.send(AppMessage::new("set_role", Value::String("editor".into()))).unwrap();
+        h.send(AppMessage::new("set_role", Value::String("editor".into())))
+            .unwrap();
 
         // Delete should be denied for non-admin
-        let (state, effects) = h.send(AppMessage::new("delete_user", Value::String(String::new()))).unwrap();
+        let (state, effects) = h
+            .send(AppMessage::new("delete_user", Value::String(String::new())))
+            .unwrap();
         match &state {
             Value::Record { fields, .. } => {
                 assert_eq!(fields[5], Value::String("error".into()));
                 if let Value::String(detail) = &fields[6] {
-                    assert!(detail.contains("only admin"), "should say only admin: {detail}");
+                    assert!(
+                        detail.contains("only admin"),
+                        "should say only admin: {detail}"
+                    );
                 }
             }
             _ => panic!("expected Record state"),
@@ -1360,23 +1460,33 @@ fn view(state: State) -> UINode {
 
         // Create 3 users
         for _ in 0..3 {
-            h.send(AppMessage::new("create_user", Value::String(String::new()))).unwrap();
-            h.send(AppMessage::new("user_created", Value::String("ok".into()))).unwrap();
+            h.send(AppMessage::new("create_user", Value::String(String::new())))
+                .unwrap();
+            h.send(AppMessage::new("user_created", Value::String("ok".into())))
+                .unwrap();
         }
 
         // user_count (field 7) should be 3
         h.assert_state_field(7, &Value::Int(3)).unwrap();
 
         // Search
-        let (_, effects) = h.send(AppMessage::new("search", Value::String("alice".into()))).unwrap();
+        let (_, effects) = h
+            .send(AppMessage::new("search", Value::String("alice".into())))
+            .unwrap();
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].kind, EffectKind::DbQuery);
 
-        h.send(AppMessage::new("search_results", Value::String("1 result".into()))).unwrap();
+        h.send(AppMessage::new(
+            "search_results",
+            Value::String("1 result".into()),
+        ))
+        .unwrap();
 
         // Delete one
-        h.send(AppMessage::new("delete_user", Value::String(String::new()))).unwrap();
-        h.send(AppMessage::new("user_deleted", Value::String("ok".into()))).unwrap();
+        h.send(AppMessage::new("delete_user", Value::String(String::new())))
+            .unwrap();
+        h.send(AppMessage::new("user_deleted", Value::String("ok".into())))
+            .unwrap();
 
         // user_count should be 2
         h.assert_state_field(7, &Value::Int(2)).unwrap();
@@ -1405,7 +1515,10 @@ fn view(state: State) -> UINode {
         }
 
         assert_eq!(h1.state(), h2.state());
-        assert_eq!(cycle_fingerprint(h1.cycle_log()), cycle_fingerprint(h2.cycle_log()));
+        assert_eq!(
+            cycle_fingerprint(h1.cycle_log()),
+            cycle_fingerprint(h2.cycle_log())
+        );
         assert_eq!(h1.snapshot(), h2.snapshot());
     }
 
@@ -1435,13 +1548,16 @@ fn view(state: State) -> UINode {
     fn test_dogfood_notification_message_ordering() {
         let mut h = TestHarness::from_source(NOTIFICATION_APP).unwrap();
 
-        h.send(AppMessage::new("subscribe", Value::String(String::new()))).unwrap();
-        h.send(AppMessage::new("poll_tick", Value::String(String::new()))).unwrap();
+        h.send(AppMessage::new("subscribe", Value::String(String::new())))
+            .unwrap();
+        h.send(AppMessage::new("poll_tick", Value::String(String::new())))
+            .unwrap();
 
         // Deliver 5 events in order
         for i in 1..6 {
             let data = format!("event_{i}");
-            h.send(AppMessage::new("events_received", Value::String(data))).unwrap();
+            h.send(AppMessage::new("events_received", Value::String(data)))
+                .unwrap();
         }
 
         // Verify sequence numbers are monotonic
@@ -1473,13 +1589,16 @@ fn view(state: State) -> UINode {
     fn test_dogfood_notification_rate_limiting() {
         let mut h = TestHarness::from_source(NOTIFICATION_APP).unwrap();
 
-        h.send(AppMessage::new("subscribe", Value::String(String::new()))).unwrap();
-        h.send(AppMessage::new("poll_tick", Value::String(String::new()))).unwrap();
+        h.send(AppMessage::new("subscribe", Value::String(String::new())))
+            .unwrap();
+        h.send(AppMessage::new("poll_tick", Value::String(String::new())))
+            .unwrap();
 
         // Send 11 events (rate limit is 10)
         for i in 0..11 {
             let data = format!("event_{i}");
-            h.send(AppMessage::new("events_received", Value::String(data))).unwrap();
+            h.send(AppMessage::new("events_received", Value::String(data)))
+                .unwrap();
         }
 
         match h.state() {
@@ -1519,15 +1638,20 @@ fn view(state: State) -> UINode {
         }
 
         // Subscribe
-        let (_, effects) = h.send(AppMessage::new("subscribe", Value::String(String::new()))).unwrap();
+        let (_, effects) = h
+            .send(AppMessage::new("subscribe", Value::String(String::new())))
+            .unwrap();
         assert_eq!(effects.len(), 1, "subscribe should start timer");
 
         // Double subscribe is no-op
-        let (_, effects2) = h.send(AppMessage::new("subscribe", Value::String(String::new()))).unwrap();
+        let (_, effects2) = h
+            .send(AppMessage::new("subscribe", Value::String(String::new())))
+            .unwrap();
         assert!(effects2.is_empty(), "double subscribe should be no-op");
 
         // Unsubscribe
-        h.send(AppMessage::new("unsubscribe", Value::String(String::new()))).unwrap();
+        h.send(AppMessage::new("unsubscribe", Value::String(String::new())))
+            .unwrap();
         match h.state() {
             Value::Record { fields, .. } => {
                 assert_eq!(fields[0], Value::Int(0)); // subscribed = 0
@@ -1537,8 +1661,13 @@ fn view(state: State) -> UINode {
         }
 
         // Poll tick after unsubscribe should not re-activate
-        let (_, effects3) = h.send(AppMessage::new("poll_tick", Value::String(String::new()))).unwrap();
-        assert!(effects3.is_empty(), "poll after unsubscribe should produce no effects");
+        let (_, effects3) = h
+            .send(AppMessage::new("poll_tick", Value::String(String::new())))
+            .unwrap();
+        assert!(
+            effects3.is_empty(),
+            "poll after unsubscribe should produce no effects"
+        );
     }
 
     // --- Sync Todo: Golden Determinism ---
@@ -1565,7 +1694,10 @@ fn view(state: State) -> UINode {
         }
 
         assert_eq!(h1.state(), h2.state());
-        assert_eq!(cycle_fingerprint(h1.cycle_log()), cycle_fingerprint(h2.cycle_log()));
+        assert_eq!(
+            cycle_fingerprint(h1.cycle_log()),
+            cycle_fingerprint(h2.cycle_log())
+        );
         assert_eq!(h1.snapshot(), h2.snapshot());
     }
 
@@ -1596,12 +1728,16 @@ fn view(state: State) -> UINode {
         let mut h = TestHarness::from_source(SYNC_TODO_APP).unwrap();
 
         // Add todo online
-        h.send(AppMessage::new("add_todo", Value::String(String::new()))).unwrap();
+        h.send(AppMessage::new("add_todo", Value::String(String::new())))
+            .unwrap();
 
         // Server reports conflict
-        let (state, effects) = h.send(
-            AppMessage::new("sync_response", Value::String("conflict".into()))
-        ).unwrap();
+        let (state, effects) = h
+            .send(AppMessage::new(
+                "sync_response",
+                Value::String("conflict".into()),
+            ))
+            .unwrap();
 
         match &state {
             Value::Record { fields, .. } => {
@@ -1620,7 +1756,11 @@ fn view(state: State) -> UINode {
         assert_eq!(effects[0].callback_tag, "conflict_resolved");
 
         // Resolve conflict
-        h.send(AppMessage::new("conflict_resolved", Value::String("ok".into()))).unwrap();
+        h.send(AppMessage::new(
+            "conflict_resolved",
+            Value::String("ok".into()),
+        ))
+        .unwrap();
 
         match h.state() {
             Value::Record { fields, .. } => {
@@ -1629,7 +1769,10 @@ fn view(state: State) -> UINode {
                 // sync_status should be "synced"
                 assert_eq!(fields[6], Value::String("synced".into()));
                 // versions should be aligned
-                assert_eq!(fields[7], fields[8], "local and remote versions should match");
+                assert_eq!(
+                    fields[7], fields[8],
+                    "local and remote versions should match"
+                );
             }
             _ => panic!("expected Record state"),
         }
@@ -1642,13 +1785,14 @@ fn view(state: State) -> UINode {
         let mut h = TestHarness::from_source(SYNC_TODO_APP).unwrap();
 
         // Go offline
-        h.send(AppMessage::new("go_offline", Value::String(String::new()))).unwrap();
+        h.send(AppMessage::new("go_offline", Value::String(String::new())))
+            .unwrap();
 
         // Add 3 items offline — should queue edits, no effects
         for _ in 0..3 {
-            let (_, effects) = h.send(
-                AppMessage::new("add_todo", Value::String(String::new()))
-            ).unwrap();
+            let (_, effects) = h
+                .send(AppMessage::new("add_todo", Value::String(String::new())))
+                .unwrap();
             assert!(effects.is_empty(), "offline add should produce no effects");
         }
 
@@ -1665,9 +1809,9 @@ fn view(state: State) -> UINode {
         }
 
         // Go online — should flush pending
-        let (_, effects) = h.send(
-            AppMessage::new("go_online", Value::String(String::new()))
-        ).unwrap();
+        let (_, effects) = h
+            .send(AppMessage::new("go_online", Value::String(String::new())))
+            .unwrap();
         assert_eq!(effects.len(), 1, "go_online should trigger bulk sync");
         assert_eq!(effects[0].kind, EffectKind::HttpRequest);
     }
@@ -1702,7 +1846,11 @@ fn view(state: State) -> UINode {
             h2.send(msg.clone()).unwrap();
         }
 
-        assert_eq!(h1.snapshot(), h2.snapshot(), "sync todo snapshots must be bitwise identical");
+        assert_eq!(
+            h1.snapshot(),
+            h2.snapshot(),
+            "sync todo snapshots must be bitwise identical"
+        );
     }
 
     // --- Cross-app: Trace hash stability ---
@@ -1751,8 +1899,8 @@ fn view(state: State) -> UINode {
 
     // === Effect Executor Tests ===
 
-    use crate::executor::{MockEffectExecutor, HostEffectExecutor, EffectExecutor};
     use crate::effect::Effect;
+    use crate::executor::{EffectExecutor, HostEffectExecutor, MockEffectExecutor};
 
     /// App that returns multiple effects of different kinds.
     const MULTI_EFFECT_APP: &str = r#"
@@ -1794,13 +1942,11 @@ fn view(state: State) -> UINode {
         let mut executor = MockEffectExecutor::new();
         executor.set_response("fetched", Value::String("response_data".into()));
 
-        let effects = vec![
-            Effect {
-                kind: EffectKind::HttpRequest,
-                payload: Value::String("https://example.com".into()),
-                callback_tag: "fetched".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::HttpRequest,
+            payload: Value::String("https://example.com".into()),
+            callback_tag: "fetched".into(),
+        }];
 
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
@@ -1811,13 +1957,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_http_request() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::HttpRequest,
-                payload: Value::String("https://example.com".into()),
-                callback_tag: "result".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::HttpRequest,
+            payload: Value::String("https://example.com".into()),
+            callback_tag: "result".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "result");
@@ -1831,13 +1975,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_db_query() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::DbQuery,
-                payload: Value::String("SELECT 1".into()),
-                callback_tag: "db_result".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::DbQuery,
+            payload: Value::String("SELECT 1".into()),
+            callback_tag: "db_result".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "db_result");
@@ -1848,13 +1990,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_timer() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::Timer,
-                payload: Value::Unit,
-                callback_tag: "tick".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::Timer,
+            payload: Value::Unit,
+            callback_tag: "tick".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "tick");
@@ -1864,13 +2004,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_random() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::Random,
-                payload: Value::Unit,
-                callback_tag: "rng".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::Random,
+            payload: Value::Unit,
+            callback_tag: "rng".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "rng");
@@ -1880,13 +2018,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_fs_read() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::FsRead,
-                payload: Value::String("/tmp/test.txt".into()),
-                callback_tag: "file_read".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::FsRead,
+            payload: Value::String("/tmp/test.txt".into()),
+            callback_tag: "file_read".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "file_read");
@@ -1899,13 +2035,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_host_executor_fs_write() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::FsWrite,
-                payload: Value::String("/tmp/out.txt".into()),
-                callback_tag: "file_written".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::FsWrite,
+            payload: Value::String("/tmp/out.txt".into()),
+            callback_tag: "file_written".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "file_written");
@@ -1915,13 +2049,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_executor_emit_ui_no_callback() {
         let mut executor = MockEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::EmitUi,
-                payload: Value::String("ui_tree".into()),
-                callback_tag: "should_not_fire".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::EmitUi,
+            payload: Value::String("ui_tree".into()),
+            callback_tag: "should_not_fire".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert!(messages.is_empty(), "EmitUi should not produce callbacks");
     }
@@ -1961,13 +2093,11 @@ fn view(state: State) -> UINode {
     #[test]
     fn test_executor_spawn_actor_goes_through_gateway() {
         let mut executor = HostEffectExecutor::new();
-        let effects = vec![
-            Effect {
-                kind: EffectKind::SpawnActor,
-                payload: Value::String("child".into()),
-                callback_tag: "spawned".into(),
-            },
-        ];
+        let effects = vec![Effect {
+            kind: EffectKind::SpawnActor,
+            payload: Value::String("child".into()),
+            callback_tag: "spawned".into(),
+        }];
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "spawned");
@@ -1982,10 +2112,12 @@ fn view(state: State) -> UINode {
         executor.set_response("fetched", Value::String("server_data".into()));
 
         // Step 1: Send "fetch" → gets effects
-        let (_, callbacks) = harness.send_with_effects(
-            AppMessage::new("fetch", Value::String(String::new())),
-            &mut executor,
-        ).unwrap();
+        let (_, callbacks) = harness
+            .send_with_effects(
+                AppMessage::new("fetch", Value::String(String::new())),
+                &mut executor,
+            )
+            .unwrap();
 
         assert_eq!(callbacks.len(), 1);
         assert_eq!(callbacks[0].tag, "fetched");
@@ -2009,10 +2141,12 @@ fn view(state: State) -> UINode {
         executor.set_response("time_done", Value::Int(100));
         executor.set_response("db_done", Value::String("rows".into()));
 
-        let (state, callbacks, _ui) = runtime.send_with_executor(
-            AppMessage::new("do_stuff", Value::String(String::new())),
-            &mut executor,
-        ).unwrap();
+        let (state, callbacks, _ui) = runtime
+            .send_with_executor(
+                AppMessage::new("do_stuff", Value::String(String::new())),
+                &mut executor,
+            )
+            .unwrap();
 
         // State should be "busy"
         match &state {
@@ -2062,10 +2196,12 @@ fn view(state: State) -> UINode {
             executor.set_response("time_done", Value::Int(100));
             executor.set_response("db_done", Value::String("rows".into()));
 
-            let (_, callbacks) = harness.send_with_effects(
-                AppMessage::new("do_stuff", Value::String(String::new())),
-                &mut executor,
-            ).unwrap();
+            let (_, callbacks) = harness
+                .send_with_effects(
+                    AppMessage::new("do_stuff", Value::String(String::new())),
+                    &mut executor,
+                )
+                .unwrap();
 
             assert_eq!(callbacks.len(), 3);
             assert_eq!(callbacks[0].tag, "http_done");
@@ -2082,12 +2218,16 @@ fn view(state: State) -> UINode {
         let mut h2 = TestHarness::from_source(EFFECT_APP).unwrap();
 
         // Both start with "fetch" → identical effects
-        h1.send(AppMessage::new("fetch", Value::String(String::new()))).unwrap();
-        h2.send(AppMessage::new("fetch", Value::String(String::new()))).unwrap();
+        h1.send(AppMessage::new("fetch", Value::String(String::new())))
+            .unwrap();
+        h2.send(AppMessage::new("fetch", Value::String(String::new())))
+            .unwrap();
 
         // Feed different callback data
-        h1.send(AppMessage::new("fetched", Value::String("data_A".into()))).unwrap();
-        h2.send(AppMessage::new("fetched", Value::String("data_B".into()))).unwrap();
+        h1.send(AppMessage::new("fetched", Value::String("data_A".into())))
+            .unwrap();
+        h2.send(AppMessage::new("fetched", Value::String("data_B".into())))
+            .unwrap();
 
         // States must differ (proving effects are the channel)
         assert_ne!(h1.state(), h2.state());
@@ -2109,18 +2249,22 @@ fn view(state: State) -> UINode {
 
         for _ in 0..20 {
             let mut harness = TestHarness::from_source(EFFECT_APP).unwrap();
-            let (_, effects) = harness.send(
-                AppMessage::new("fetch", Value::String(String::new())),
-            ).unwrap();
+            let (_, effects) = harness
+                .send(AppMessage::new("fetch", Value::String(String::new())))
+                .unwrap();
 
-            let effect_strs: Vec<String> = effects.iter()
+            let effect_strs: Vec<String> = effects
+                .iter()
                 .map(|e| format!("{}:{}:{}", e.kind.as_str(), e.payload, e.callback_tag))
                 .collect();
 
             match &reference_effects {
                 None => reference_effects = Some(effect_strs),
                 Some(ref_effects) => {
-                    assert_eq!(&effect_strs, ref_effects, "effects must be identical across runs");
+                    assert_eq!(
+                        &effect_strs, ref_effects,
+                        "effects must be identical across runs"
+                    );
                 }
             }
         }
@@ -2133,13 +2277,11 @@ fn view(state: State) -> UINode {
 
         for _ in 0..10 {
             let mut executor = HostEffectExecutor::new();
-            let effects = vec![
-                Effect {
-                    kind: EffectKind::SpawnActor,
-                    payload: Value::String("child_actor".into()),
-                    callback_tag: "spawn_result".into(),
-                },
-            ];
+            let effects = vec![Effect {
+                kind: EffectKind::SpawnActor,
+                payload: Value::String("child_actor".into()),
+                callback_tag: "spawn_result".into(),
+            }];
             let messages = executor.execute(effects).unwrap();
             assert_eq!(messages.len(), 1);
             results.push(messages[0].payload.clone());
@@ -2147,7 +2289,10 @@ fn view(state: State) -> UINode {
 
         // All error messages must be identical
         for result in &results {
-            assert_eq!(result, &results[0], "error messages must be identical across runs");
+            assert_eq!(
+                result, &results[0],
+                "error messages must be identical across runs"
+            );
         }
     }
 
@@ -2157,10 +2302,12 @@ fn view(state: State) -> UINode {
         let run = |executor: &mut MockEffectExecutor| -> String {
             let mut harness = TestHarness::from_source(EFFECT_APP).unwrap();
             // fetch → effects → callback → state update
-            let (_, callbacks) = harness.send_with_effects(
-                AppMessage::new("fetch", Value::String(String::new())),
-                executor,
-            ).unwrap();
+            let (_, callbacks) = harness
+                .send_with_effects(
+                    AppMessage::new("fetch", Value::String(String::new())),
+                    executor,
+                )
+                .unwrap();
             for cb in callbacks {
                 harness.send(cb).unwrap();
             }
@@ -2182,10 +2329,12 @@ fn view(state: State) -> UINode {
         // INV-6: State snapshot JSON is bitwise identical after identical message sequences
         let run = |executor: &mut MockEffectExecutor| -> String {
             let mut harness = TestHarness::from_source(EFFECT_APP).unwrap();
-            let (_, callbacks) = harness.send_with_effects(
-                AppMessage::new("fetch", Value::String(String::new())),
-                executor,
-            ).unwrap();
+            let (_, callbacks) = harness
+                .send_with_effects(
+                    AppMessage::new("fetch", Value::String(String::new())),
+                    executor,
+                )
+                .unwrap();
             for cb in callbacks {
                 harness.send(cb).unwrap();
             }
@@ -2210,18 +2359,18 @@ fn view(state: State) -> UINode {
         executor.set_response("fetched", Value::String("replay_data".into()));
 
         // Run: fetch → callback
-        let (_, callbacks) = harness.send_with_effects(
-            AppMessage::new("fetch", Value::String(String::new())),
-            &mut executor,
-        ).unwrap();
+        let (_, callbacks) = harness
+            .send_with_effects(
+                AppMessage::new("fetch", Value::String(String::new())),
+                &mut executor,
+            )
+            .unwrap();
         for cb in &callbacks {
             harness.send(cb.clone()).unwrap();
         }
 
         // Build full message sequence for replay
-        let mut all_messages = vec![
-            AppMessage::new("fetch", Value::String(String::new())),
-        ];
+        let mut all_messages = vec![AppMessage::new("fetch", Value::String(String::new()))];
         all_messages.extend(callbacks);
 
         // Replay should match

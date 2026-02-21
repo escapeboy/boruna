@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::*;
     use crate::module::*;
+    use crate::*;
 
     #[test]
     fn test_module_json_roundtrip() {
@@ -44,7 +44,9 @@ mod tests {
 
     #[test]
     fn test_invalid_magic() {
-        let data = vec![0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00, b'{', b'}'];
+        let data = vec![
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00, b'{', b'}',
+        ];
         assert!(Module::from_bytes(&data).is_err());
     }
 
@@ -54,7 +56,10 @@ mod tests {
         assert_eq!(format!("{}", Value::String("hi".into())), "\"hi\"");
         assert_eq!(format!("{}", Value::Bool(true)), "true");
         assert_eq!(format!("{}", Value::None), "None");
-        assert_eq!(format!("{}", Value::Some(Box::new(Value::Int(1)))), "Some(1)");
+        assert_eq!(
+            format!("{}", Value::Some(Box::new(Value::Int(1)))),
+            "Some(1)"
+        );
     }
 
     #[test]

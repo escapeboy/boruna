@@ -87,7 +87,9 @@ impl StateMachine {
 
     /// Compute the diff between the current state and a previous cycle.
     pub fn diff_from_cycle(&self, cycle: u64) -> Vec<StateDiff> {
-        let old = self.history.iter()
+        let old = self
+            .history
+            .iter()
             .find(|s| s.cycle == cycle)
             .map(|s| &s.state);
 
@@ -102,8 +104,14 @@ impl StateMachine {
         let mut diffs = Vec::new();
 
         match (old, new) {
-            (Value::Record { fields: old_fields, .. },
-             Value::Record { fields: new_fields, .. }) => {
+            (
+                Value::Record {
+                    fields: old_fields, ..
+                },
+                Value::Record {
+                    fields: new_fields, ..
+                },
+            ) => {
                 let max = old_fields.len().max(new_fields.len());
                 for i in 0..max {
                     let old_val = old_fields.get(i).cloned().unwrap_or(Value::Unit);
@@ -135,11 +143,11 @@ impl StateMachine {
 
     /// Time-travel: rewind to a specific cycle.
     pub fn rewind(&mut self, target_cycle: u64) -> Result<(), FrameworkError> {
-        let snapshot = self.history.iter()
+        let snapshot = self
+            .history
+            .iter()
             .find(|s| s.cycle == target_cycle)
-            .ok_or_else(|| FrameworkError::State(
-                format!("cycle {target_cycle} not in history")
-            ))?;
+            .ok_or_else(|| FrameworkError::State(format!("cycle {target_cycle} not in history")))?;
         self.current = snapshot.state.clone();
         self.cycle = snapshot.cycle;
         Ok(())

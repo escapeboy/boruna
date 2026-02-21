@@ -9,8 +9,7 @@ pub fn run_library(source: &str) -> Result<i64, String> {
     let policy = boruna_vm::capability_gateway::Policy::default();
     let gateway = boruna_vm::capability_gateway::CapabilityGateway::new(policy);
     let mut vm = boruna_vm::Vm::new(module, gateway);
-    let result = vm.run()
-        .map_err(|e| format!("runtime error: {e}"))?;
+    let result = vm.run().map_err(|e| format!("runtime error: {e}"))?;
     match result {
         boruna_bytecode::Value::Int(n) => Ok(n),
         other => Err(format!("expected Int, got {other}")),
@@ -19,8 +18,7 @@ pub fn run_library(source: &str) -> Result<i64, String> {
 
 /// Compile a library source and verify it produces no errors.
 pub fn verify_compiles(source: &str) -> Result<(), String> {
-    boruna_compiler::compile("verify", source)
-        .map_err(|e| format!("compile error: {e}"))?;
+    boruna_compiler::compile("verify", source).map_err(|e| format!("compile error: {e}"))?;
     Ok(())
 }
 
@@ -42,7 +40,10 @@ pub fn run_framework_app(
     let mut harness = boruna_framework::testing::TestHarness::from_source(source)
         .map_err(|e| format!("harness error: {e}"))?;
     for (tag, payload) in messages {
-        let msg = boruna_framework::runtime::AppMessage::new(*tag, boruna_bytecode::Value::String(payload.to_string()));
+        let msg = boruna_framework::runtime::AppMessage::new(
+            *tag,
+            boruna_bytecode::Value::String(payload.to_string()),
+        );
         harness.send(msg).map_err(|e| format!("send: {e}"))?;
     }
     Ok(harness.cycle_log().to_vec())

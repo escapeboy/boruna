@@ -1,14 +1,14 @@
 #[cfg(test)]
 mod tests {
+    use crate::ast::*;
+    use crate::codegen;
+    use crate::compile;
     use crate::lexer;
     use crate::parser;
     use crate::typeck;
-    use crate::codegen;
-    use crate::compile;
-    use crate::ast::*;
     use boruna_bytecode::Value;
-    use boruna_vm::vm::Vm;
     use boruna_vm::capability_gateway::{CapabilityGateway, Policy};
+    use boruna_vm::vm::Vm;
 
     fn run_source(source: &str) -> Value {
         let module = compile("test", source).expect("compilation failed");
@@ -22,14 +22,20 @@ mod tests {
     #[test]
     fn test_lex_basic() {
         let tokens = lexer::lex("fn main() { 42 }").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t.kind, lexer::TokenKind::Fn)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, lexer::TokenKind::IntLit(42))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, lexer::TokenKind::Fn)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, lexer::TokenKind::IntLit(42))));
     }
 
     #[test]
     fn test_lex_string() {
         let tokens = lexer::lex(r#""hello world""#).unwrap();
-        assert!(tokens.iter().any(|t| matches!(&t.kind, lexer::TokenKind::StringLit(s) if s == "hello world")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(&t.kind, lexer::TokenKind::StringLit(s) if s == "hello world")));
     }
 
     #[test]
@@ -41,7 +47,10 @@ mod tests {
     #[test]
     fn test_lex_comments() {
         let tokens = lexer::lex("42 // this is a comment\n43").unwrap();
-        let ints: Vec<_> = tokens.iter().filter(|t| matches!(t.kind, lexer::TokenKind::IntLit(_))).collect();
+        let ints: Vec<_> = tokens
+            .iter()
+            .filter(|t| matches!(t.kind, lexer::TokenKind::IntLit(_)))
+            .collect();
         assert_eq!(ints.len(), 2);
     }
 
@@ -192,7 +201,10 @@ fn main() {
     #[test]
     fn test_e2e_boolean() {
         assert_eq!(run_source("fn main() -> Bool { 1 < 2 }"), Value::Bool(true));
-        assert_eq!(run_source("fn main() -> Bool { 1 > 2 }"), Value::Bool(false));
+        assert_eq!(
+            run_source("fn main() -> Bool { 1 > 2 }"),
+            Value::Bool(false)
+        );
     }
 
     #[test]
@@ -226,12 +238,14 @@ fn main() {
     #[test]
     fn test_e2e_recursion() {
         assert_eq!(
-            run_source(r#"
+            run_source(
+                r#"
 fn fib(n: Int) -> Int {
     if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
 }
 fn main() -> Int { fib(10) }
-"#),
+"#
+            ),
             Value::Int(55),
         );
     }
@@ -239,7 +253,8 @@ fn main() -> Int { fib(10) }
     #[test]
     fn test_e2e_while_loop() {
         assert_eq!(
-            run_source(r#"
+            run_source(
+                r#"
 fn main() -> Int {
     let mut sum: Int = 0
     let mut i: Int = 1
@@ -249,7 +264,8 @@ fn main() -> Int {
     }
     sum
 }
-"#),
+"#
+            ),
             Value::Int(55),
         );
     }
@@ -257,13 +273,15 @@ fn main() -> Int {
     #[test]
     fn test_e2e_record() {
         assert_eq!(
-            run_source(r#"
+            run_source(
+                r#"
 type Point { x: Int, y: Int }
 fn main() -> Int {
     let p: Point = Point { x: 3, y: 4 }
     p.x + p.y
 }
-"#),
+"#
+            ),
             Value::Int(7),
         );
     }
@@ -271,11 +289,13 @@ fn main() -> Int {
     #[test]
     fn test_e2e_nested_calls() {
         assert_eq!(
-            run_source(r#"
+            run_source(
+                r#"
 fn inc(n: Int) -> Int { n + 1 }
 fn double(n: Int) -> Int { n * 2 }
 fn main() -> Int { double(inc(5)) }
-"#),
+"#
+            ),
             Value::Int(12),
         );
     }
@@ -295,7 +315,10 @@ fn main() -> Int { double(inc(5)) }
 
     #[test]
     fn test_e2e_not() {
-        assert_eq!(run_source("fn main() -> Bool { !true }"), Value::Bool(false));
+        assert_eq!(
+            run_source("fn main() -> Bool { !true }"),
+            Value::Bool(false)
+        );
     }
 
     // ── List builtin E2E tests ──
@@ -369,27 +392,31 @@ fn main() -> Int { double(inc(5)) }
 
     #[test]
     fn test_e2e_try_parse_int_valid() {
-        let result = run_source(r#"
+        let result = run_source(
+            r#"
             fn main() -> Int {
                 match try_parse_int("42") {
                     Ok(n) => n,
                     Err(_) => -1,
                 }
             }
-        "#);
+        "#,
+        );
         assert_eq!(result, Value::Int(42));
     }
 
     #[test]
     fn test_e2e_try_parse_int_invalid() {
-        let result = run_source(r#"
+        let result = run_source(
+            r#"
             fn main() -> Int {
                 match try_parse_int("abc") {
                     Ok(n) => n,
                     Err(_) => -1,
                 }
             }
-        "#);
+        "#,
+        );
         assert_eq!(result, Value::Int(-1));
     }
 

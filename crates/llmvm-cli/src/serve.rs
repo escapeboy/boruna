@@ -89,10 +89,7 @@ pub struct SendForm {
     payload: Option<String>,
 }
 
-async fn handle_send(
-    State(state): State<SharedState>,
-    Form(form): Form<SendForm>,
-) -> Html<String> {
+async fn handle_send(State(state): State<SharedState>, Form(form): Form<SendForm>) -> Html<String> {
     let mut ctx = state.lock().unwrap();
 
     let payload_str = form.payload.as_deref().unwrap_or("0");
@@ -101,16 +98,27 @@ async fn handle_send(
 
     let entry = match ctx.harness.send(msg) {
         Ok((state_val, effects)) => {
-            let effect_strs: Vec<String> = effects.iter()
+            let effect_strs: Vec<String> = effects
+                .iter()
                 .map(|e| e.kind.as_str().to_string())
                 .collect();
             let cycle = ctx.harness.cycle();
             let state_after = format_state(&state_val, &ctx.state_fields);
-            CycleEntry { cycle, tag: form.tag.clone(), state_after, effects: effect_strs }
+            CycleEntry {
+                cycle,
+                tag: form.tag.clone(),
+                state_after,
+                effects: effect_strs,
+            }
         }
         Err(e) => {
             let cycle = ctx.harness.cycle();
-            CycleEntry { cycle, tag: format!("ERROR: {}", form.tag), state_after: format!("{e}"), effects: vec![] }
+            CycleEntry {
+                cycle,
+                tag: format!("ERROR: {}", form.tag),
+                state_after: format!("{e}"),
+                effects: vec![],
+            }
         }
     };
     ctx.cycle_log_display.push(entry);
@@ -162,12 +170,17 @@ fn escape_html(s: &str) -> String {
 fn format_state(val: &Value, field_names: &[String]) -> String {
     match val {
         Value::Record { fields, .. } => {
-            let pairs: Vec<String> = fields.iter().enumerate().map(|(i, v)| {
-                let label = field_names.get(i)
-                    .cloned()
-                    .unwrap_or_else(|| format!("[{i}]"));
-                format!("{label}: {v}")
-            }).collect();
+            let pairs: Vec<String> = fields
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let label = field_names
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| format!("[{i}]"));
+                    format!("{label}: {v}")
+                })
+                .collect();
             pairs.join(", ")
         }
         other => format!("{other}"),
@@ -193,22 +206,31 @@ fn render_page(ctx: &AppContext) -> String {
         Err(e) => format!("<em>view error: {}</em>", escape_html(&e.to_string())),
     };
 
-    let log_html: String = ctx.cycle_log_display.iter().rev().map(|entry| {
-        let effects = if entry.effects.is_empty() {
-            String::new()
-        } else {
-            format!(" <span class=\"effects\">[{}]</span>", escape_html(&entry.effects.join(", ")))
-        };
-        format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            entry.cycle,
-            escape_html(&entry.tag),
-            escape_html(&entry.state_after),
-            effects,
-        )
-    }).collect();
+    let log_html: String = ctx
+        .cycle_log_display
+        .iter()
+        .rev()
+        .map(|entry| {
+            let effects = if entry.effects.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " <span class=\"effects\">[{}]</span>",
+                    escape_html(&entry.effects.join(", "))
+                )
+            };
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                entry.cycle,
+                escape_html(&entry.tag),
+                escape_html(&entry.state_after),
+                effects,
+            )
+        })
+        .collect();
 
-    format!(r##"<!DOCTYPE html>
+    format!(
+        r##"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -275,9 +297,12 @@ pre {{ background: #f3f4f6; padding: 0.5rem; border-radius: 4px; overflow-x: aut
 </section>
 </body>
 </html>"##,
-        title = escape_html(&ctx.source_path.file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default()),
+        title = escape_html(
+            &ctx.source_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ),
         file = escape_html(&ctx.source_path.display().to_string()),
         cycle = ctx.harness.cycle(),
         state_html = state_html,
@@ -290,16 +315,21 @@ pre {{ background: #f3f4f6; padding: 0.5rem; border-radius: 4px; overflow-x: aut
 fn render_state_table(val: &Value, field_names: &[String]) -> String {
     match val {
         Value::Record { fields, .. } => {
-            let rows: String = fields.iter().enumerate().map(|(i, v)| {
-                let label = field_names.get(i)
-                    .cloned()
-                    .unwrap_or_else(|| format!("[{i}]"));
-                format!(
-                    "<tr><th>{}</th><td>{}</td></tr>",
-                    escape_html(&label),
-                    escape_html(&format!("{v}")),
-                )
-            }).collect();
+            let rows: String = fields
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let label = field_names
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| format!("[{i}]"));
+                    format!(
+                        "<tr><th>{}</th><td>{}</td></tr>",
+                        escape_html(&label),
+                        escape_html(&format!("{v}")),
+                    )
+                })
+                .collect();
             format!("<table>{rows}</table>")
         }
         other => format!("<pre>{}</pre>", escape_html(&format!("{other}"))),
@@ -355,7 +385,11 @@ fn collect_tags_from_block(block: &Block, tags: &mut Vec<String>) {
 fn collect_tags_from_expr(expr: &Expr, tags: &mut Vec<String>) {
     match expr {
         // msg.tag == "literal" or "literal" == msg.tag
-        Expr::Binary { op: BinOp::Eq, left, right } => {
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+        } => {
             if is_msg_tag_access(left) {
                 if let Expr::StringLit(s) = right.as_ref() {
                     tags.push(s.clone());
@@ -384,7 +418,11 @@ fn collect_tags_from_expr(expr: &Expr, tags: &mut Vec<String>) {
             collect_tags_from_expr(value, tags);
         }
 
-        Expr::If { condition, then_block, else_block } => {
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
             collect_tags_from_expr(condition, tags);
             collect_tags_from_block(then_block, tags);
             if let Some(eb) = else_block {
@@ -398,15 +436,23 @@ fn collect_tags_from_expr(expr: &Expr, tags: &mut Vec<String>) {
         Expr::Unary { expr, .. } => collect_tags_from_expr(expr, tags),
         Expr::Call { func, args } => {
             collect_tags_from_expr(func, tags);
-            for a in args { collect_tags_from_expr(a, tags); }
+            for a in args {
+                collect_tags_from_expr(a, tags);
+            }
         }
         Expr::FieldAccess { object, .. } => collect_tags_from_expr(object, tags),
         Expr::Record { fields, spread, .. } => {
-            for (_, e) in fields { collect_tags_from_expr(e, tags); }
-            if let Some(s) = spread { collect_tags_from_expr(s, tags); }
+            for (_, e) in fields {
+                collect_tags_from_expr(e, tags);
+            }
+            if let Some(s) = spread {
+                collect_tags_from_expr(s, tags);
+            }
         }
         Expr::List(items) => {
-            for e in items { collect_tags_from_expr(e, tags); }
+            for e in items {
+                collect_tags_from_expr(e, tags);
+            }
         }
         Expr::SomeExpr(e) | Expr::OkExpr(e) | Expr::ErrExpr(e) | Expr::Spawn(e) | Expr::Emit(e) => {
             collect_tags_from_expr(e, tags);

@@ -20,17 +20,14 @@ pub struct PackageManifest {
 
 impl PackageManifest {
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
-        let data = std::fs::read_to_string(path)
-            .map_err(|e| format!("read manifest: {e}"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| format!("parse manifest: {e}"))
+        let data = std::fs::read_to_string(path).map_err(|e| format!("read manifest: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("parse manifest: {e}"))
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("serialize manifest: {e}"))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("write manifest: {e}"))
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("serialize manifest: {e}"))?;
+        std::fs::write(path, json).map_err(|e| format!("write manifest: {e}"))
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -47,7 +44,10 @@ impl PackageManifest {
 
         // Version: semver
         if !is_valid_semver(&self.version) {
-            errors.push(format!("invalid version '{}': must be MAJOR.MINOR.PATCH", self.version));
+            errors.push(format!(
+                "invalid version '{}': must be MAJOR.MINOR.PATCH",
+                self.version
+            ));
         }
 
         if self.description.is_empty() {
@@ -60,7 +60,9 @@ impl PackageManifest {
                 errors.push(format!("invalid dependency name '{dep}'"));
             }
             if !is_valid_semver(ver) {
-                errors.push(format!("dependency '{dep}' version '{ver}' is not valid semver"));
+                errors.push(format!(
+                    "dependency '{dep}' version '{ver}' is not valid semver"
+                ));
             }
         }
 
@@ -75,7 +77,11 @@ impl PackageManifest {
             errors.push("exposed_modules must contain at least one entry".into());
         }
 
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 
     /// Package identifier: name@version
@@ -98,6 +104,12 @@ pub struct ResolvedPackage {
     pub dependencies: BTreeMap<String, String>,
 }
 
+impl Default for Lockfile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Lockfile {
     pub fn new() -> Self {
         Lockfile {
@@ -107,21 +119,21 @@ impl Lockfile {
     }
 
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
-        let data = std::fs::read_to_string(path)
-            .map_err(|e| format!("read lockfile: {e}"))?;
-        let lf: Self = serde_json::from_str(&data)
-            .map_err(|e| format!("parse lockfile: {e}"))?;
+        let data = std::fs::read_to_string(path).map_err(|e| format!("read lockfile: {e}"))?;
+        let lf: Self = serde_json::from_str(&data).map_err(|e| format!("parse lockfile: {e}"))?;
         if lf.lockfile_version != 1 {
-            return Err(format!("unsupported lockfile version: {}", lf.lockfile_version));
+            return Err(format!(
+                "unsupported lockfile version: {}",
+                lf.lockfile_version
+            ));
         }
         Ok(lf)
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("serialize lockfile: {e}"))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("write lockfile: {e}"))
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| format!("serialize lockfile: {e}"))?;
+        std::fs::write(path, json).map_err(|e| format!("write lockfile: {e}"))
     }
 
     pub fn validate(&self) -> Result<(), Vec<String>> {
@@ -140,7 +152,11 @@ impl Lockfile {
                 }
             }
         }
-        if errors.is_empty() { Ok(()) } else { Err(errors) }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 }
 
@@ -180,11 +196,16 @@ impl CapabilityPolicy {
     }
 
     pub fn check_capabilities(&self, caps: &[String]) -> Result<(), Vec<String>> {
-        let violations: Vec<String> = caps.iter()
+        let violations: Vec<String> = caps
+            .iter()
             .filter(|c| !self.is_allowed(c))
-            .map(|c| c.clone())
+            .cloned()
             .collect();
-        if violations.is_empty() { Ok(()) } else { Err(violations) }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
+        }
     }
 }
 
@@ -204,10 +225,11 @@ pub fn compute_content_hash(
         let mut files: Vec<_> = walkdir_sorted(&src_dir)?;
         files.sort();
         for file_path in &files {
-            let rel = file_path.strip_prefix(pkg_dir)
+            let rel = file_path
+                .strip_prefix(pkg_dir)
                 .map_err(|e| format!("strip prefix: {e}"))?;
-            let content = std::fs::read(file_path)
-                .map_err(|e| format!("read {}: {e}", rel.display()))?;
+            let content =
+                std::fs::read(file_path).map_err(|e| format!("read {}: {e}", rel.display()))?;
             hasher.update(rel.to_string_lossy().as_bytes());
             hasher.update(&content);
         }
@@ -237,13 +259,15 @@ pub fn compute_content_hash(
 }
 
 /// Verify a package's hash matches its HASH file.
-pub fn verify_hash(pkg_dir: &std::path::Path, dep_hashes: &BTreeMap<String, String>) -> Result<bool, String> {
+pub fn verify_hash(
+    pkg_dir: &std::path::Path,
+    dep_hashes: &BTreeMap<String, String>,
+) -> Result<bool, String> {
     let hash_file = pkg_dir.join("HASH");
     if !hash_file.exists() {
         return Err("HASH file not found".into());
     }
-    let expected = std::fs::read_to_string(&hash_file)
-        .map_err(|e| format!("read HASH: {e}"))?;
+    let expected = std::fs::read_to_string(&hash_file).map_err(|e| format!("read HASH: {e}"))?;
     let actual = compute_content_hash(pkg_dir, dep_hashes)?;
     Ok(expected.trim() == actual)
 }
@@ -261,7 +285,9 @@ struct SimpleRegex {
 }
 
 fn regex_lite(pattern: &str) -> SimpleRegex {
-    SimpleRegex { pattern: pattern.to_string() }
+    SimpleRegex {
+        pattern: pattern.to_string(),
+    }
 }
 
 impl SimpleRegex {
@@ -275,12 +301,16 @@ impl SimpleRegex {
 }
 
 fn is_valid_package_name(s: &str) -> bool {
-    if s.is_empty() { return false; }
+    if s.is_empty() {
+        return false;
+    }
     for (i, part) in s.split('.').enumerate() {
-        if part.is_empty() { return false; }
+        if part.is_empty() {
+            return false;
+        }
         let mut chars = part.chars();
         match chars.next() {
-            Some(c) if c.is_ascii_lowercase() => {},
+            Some(c) if c.is_ascii_lowercase() => {}
             _ => return false,
         }
         for c in chars {
@@ -303,11 +333,8 @@ fn walkdir_sorted(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Stri
 }
 
 fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("read dir {}: {e}", dir.display()))?;
-    let mut entries: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .collect();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {e}", dir.display()))?;
+    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
@@ -389,10 +416,13 @@ mod tests {
     #[test]
     fn test_lockfile_validate() {
         let mut lf = Lockfile::new();
-        lf.resolved.insert("a@0.1.0".into(), ResolvedPackage {
-            integrity: "sha256:abc".into(),
-            dependencies: BTreeMap::new(),
-        });
+        lf.resolved.insert(
+            "a@0.1.0".into(),
+            ResolvedPackage {
+                integrity: "sha256:abc".into(),
+                dependencies: BTreeMap::new(),
+            },
+        );
         assert!(lf.validate().is_ok());
     }
 
@@ -401,10 +431,13 @@ mod tests {
         let mut lf = Lockfile::new();
         let mut deps = BTreeMap::new();
         deps.insert("b".into(), "0.2.0".into());
-        lf.resolved.insert("a@0.1.0".into(), ResolvedPackage {
-            integrity: "sha256:abc".into(),
-            dependencies: deps,
-        });
+        lf.resolved.insert(
+            "a@0.1.0".into(),
+            ResolvedPackage {
+                integrity: "sha256:abc".into(),
+                dependencies: deps,
+            },
+        );
         let errs = lf.validate().unwrap_err();
         assert!(errs[0].contains("b@0.2.0"));
     }

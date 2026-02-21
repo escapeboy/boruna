@@ -1,5 +1,5 @@
-pub mod collector;
 pub mod analyzer;
+pub mod collector;
 pub mod suggest;
 
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,9 @@ impl DiagnosticSet {
     }
 
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == Severity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
     }
 
     pub fn to_json(&self) -> String {

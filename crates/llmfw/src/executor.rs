@@ -25,6 +25,12 @@ pub struct MockEffectExecutor {
     next_mock_actor_id: u64,
 }
 
+impl Default for MockEffectExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockEffectExecutor {
     pub fn new() -> Self {
         MockEffectExecutor {
@@ -83,6 +89,12 @@ impl EffectExecutor for MockEffectExecutor {
 pub struct HostEffectExecutor {
     gateway: CapabilityGateway,
     event_log: EventLog,
+}
+
+impl Default for HostEffectExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HostEffectExecutor {

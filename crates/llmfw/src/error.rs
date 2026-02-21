@@ -12,7 +12,11 @@ pub enum FrameworkError {
     PurityViolation { name: String },
 
     #[error("function `{name}` has wrong arity: expected {expected}, got {got}")]
-    WrongArity { name: String, expected: usize, got: usize },
+    WrongArity {
+        name: String,
+        expected: usize,
+        got: usize,
+    },
 
     #[error("missing type definition: {0}")]
     MissingType(String),

@@ -2,19 +2,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NodeStatus {
+    #[default]
     Pending,
     Ready,
     Running,
     Blocked,
     Failed,
     Passed,
-}
-
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 impl std::fmt::Display for NodeStatus {

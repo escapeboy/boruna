@@ -1,11 +1,11 @@
-pub mod opcode;
-pub mod module;
-pub mod value;
 pub mod capability;
+pub mod module;
+pub mod opcode;
 #[cfg(test)]
 mod tests;
+pub mod value;
 
-pub use opcode::Op;
-pub use module::{Module, Function, BytecodeError};
-pub use value::Value;
 pub use capability::Capability;
+pub use module::{BytecodeError, Function, Module};
+pub use opcode::Op;
+pub use value::Value;

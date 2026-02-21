@@ -12,7 +12,10 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(graph: WorkGraph, max_parallel: usize) -> Self {
-        Self { graph, max_parallel }
+        Self {
+            graph,
+            max_parallel,
+        }
     }
 
     /// Validate the graph is a DAG (no cycles). Returns Err with cycle description if invalid.
@@ -69,18 +72,26 @@ impl Scheduler {
 
     /// Compute the set of node IDs that are ready (all deps passed).
     pub fn ready_nodes(&self) -> Vec<String> {
-        let passed: HashSet<&str> = self.graph.nodes.iter()
+        let passed: HashSet<&str> = self
+            .graph
+            .nodes
+            .iter()
             .filter(|n| n.status == NodeStatus::Passed)
             .map(|n| n.id.as_str())
             .collect();
 
-        let running_count = self.graph.nodes.iter()
+        let running_count = self
+            .graph
+            .nodes
+            .iter()
             .filter(|n| n.status == NodeStatus::Running)
             .count();
 
         let available_slots = self.max_parallel.saturating_sub(running_count);
 
-        self.graph.nodes.iter()
+        self.graph
+            .nodes
+            .iter()
             .filter(|n| n.status == NodeStatus::Pending)
             .filter(|n| n.dependencies.iter().all(|d| passed.contains(d.as_str())))
             .take(available_slots)
@@ -105,7 +116,10 @@ impl Scheduler {
         // First advance pending -> ready
         self.advance();
 
-        let node = self.graph.nodes.iter_mut()
+        let node = self
+            .graph
+            .nodes
+            .iter_mut()
             .find(|n| n.status == NodeStatus::Ready && n.owner_role == role)?;
 
         node.status = NodeStatus::Running;
@@ -114,7 +128,10 @@ impl Scheduler {
 
     /// Mark a node as passed.
     pub fn mark_passed(&mut self, node_id: &str) -> Result<(), String> {
-        let node = self.graph.nodes.iter_mut()
+        let node = self
+            .graph
+            .nodes
+            .iter_mut()
             .find(|n| n.id == node_id)
             .ok_or_else(|| format!("node not found: {node_id}"))?;
         node.status = NodeStatus::Passed;
@@ -123,7 +140,10 @@ impl Scheduler {
 
     /// Mark a node as failed.
     pub fn mark_failed(&mut self, node_id: &str) -> Result<(), String> {
-        let node = self.graph.nodes.iter_mut()
+        let node = self
+            .graph
+            .nodes
+            .iter_mut()
             .find(|n| n.id == node_id)
             .ok_or_else(|| format!("node not found: {node_id}"))?;
         node.status = NodeStatus::Failed;
@@ -132,7 +152,10 @@ impl Scheduler {
 
     /// Mark a node as blocked.
     pub fn mark_blocked(&mut self, node_id: &str) -> Result<(), String> {
-        let node = self.graph.nodes.iter_mut()
+        let node = self
+            .graph
+            .nodes
+            .iter_mut()
             .find(|n| n.id == node_id)
             .ok_or_else(|| format!("node not found: {node_id}"))?;
         node.status = NodeStatus::Blocked;
@@ -183,8 +206,10 @@ impl Scheduler {
 
     /// Summary statistics.
     pub fn summary(&self) -> GraphSummary {
-        let mut s = GraphSummary::default();
-        s.total = self.graph.nodes.len();
+        let mut s = GraphSummary {
+            total: self.graph.nodes.len(),
+            ..GraphSummary::default()
+        };
         for node in &self.graph.nodes {
             match node.status {
                 NodeStatus::Pending => s.pending += 1,

@@ -25,7 +25,10 @@ pub enum VmError {
     InvalidGlobal(u32),
 
     #[error("type error: expected {expected}, got {got}")]
-    TypeError { expected: &'static str, got: &'static str },
+    TypeError {
+        expected: &'static str,
+        got: &'static str,
+    },
 
     #[error("division by zero")]
     DivisionByZero,

@@ -1,6 +1,6 @@
+use boruna_orchestrator::conflict::*;
 use boruna_orchestrator::engine::*;
 use boruna_orchestrator::patch::*;
-use boruna_orchestrator::conflict::*;
 use boruna_orchestrator::storage::*;
 
 // === DAG Scheduling Tests ===
@@ -189,7 +189,12 @@ fn test_bundle_apply_rollback_roundtrip() {
                 new_text: "modified_two".into(),
             }],
         }],
-        expected_checks: ExpectedChecks { compile: true, test: false, replay: false, diagnostics_count: None },
+        expected_checks: ExpectedChecks {
+            compile: true,
+            test: false,
+            replay: false,
+            diagnostics_count: None,
+        },
         reviewer_checklist: vec![],
     };
 
@@ -231,7 +236,12 @@ fn test_bundle_apply_fails_on_mismatch() {
                 new_text: "new_content".into(),
             }],
         }],
-        expected_checks: ExpectedChecks { compile: false, test: false, replay: false, diagnostics_count: None },
+        expected_checks: ExpectedChecks {
+            compile: false,
+            test: false,
+            replay: false,
+            diagnostics_count: None,
+        },
         reviewer_checklist: vec![],
     };
 
@@ -250,21 +260,27 @@ fn test_bundle_apply_fails_on_mismatch() {
 fn test_lock_acquire_release_cycle() {
     let mut locks = LockTable::new();
 
-    locks.acquire("N1", &["boruna-bytecode".into(), "boruna-vm".into()], "t1").unwrap();
+    locks
+        .acquire("N1", &["boruna-bytecode".into(), "boruna-vm".into()], "t1")
+        .unwrap();
     assert_eq!(locks.active_locks().len(), 2);
 
     locks.release("N1");
     assert_eq!(locks.active_locks().len(), 0);
 
     // Can now acquire same modules with different node
-    locks.acquire("N2", &["boruna-bytecode".into()], "t2").unwrap();
+    locks
+        .acquire("N2", &["boruna-bytecode".into()], "t2")
+        .unwrap();
     assert_eq!(locks.active_locks().len(), 1);
 }
 
 #[test]
 fn test_lock_conflict_blocks_node() {
     let mut locks = LockTable::new();
-    locks.acquire("N1", &["boruna-bytecode".into()], "t1").unwrap();
+    locks
+        .acquire("N1", &["boruna-bytecode".into()], "t1")
+        .unwrap();
 
     // N2 tries to lock same module
     let result = locks.acquire("N2", &["boruna-bytecode".into()], "t2");
@@ -277,7 +293,9 @@ fn test_lock_conflict_blocks_node() {
 #[test]
 fn test_lock_no_conflict_different_modules() {
     let mut locks = LockTable::new();
-    locks.acquire("N1", &["boruna-bytecode".into()], "t1").unwrap();
+    locks
+        .acquire("N1", &["boruna-bytecode".into()], "t1")
+        .unwrap();
     locks.acquire("N2", &["boruna-vm".into()], "t2").unwrap();
     assert_eq!(locks.active_locks().len(), 2);
 }
@@ -288,7 +306,9 @@ fn test_lock_conflict_scenario_from_plan() {
     let mut locks = LockTable::new();
 
     // WN-100 locks llmbc first
-    locks.acquire("WN-100", &["boruna-bytecode".into()], "t1").unwrap();
+    locks
+        .acquire("WN-100", &["boruna-bytecode".into()], "t1")
+        .unwrap();
 
     // WN-101 tries llmbc → conflict
     let result = locks.acquire("WN-101", &["boruna-bytecode".into()], "t2");
@@ -301,7 +321,9 @@ fn test_lock_conflict_scenario_from_plan() {
     locks.release("WN-100");
 
     // WN-101 can now acquire
-    locks.acquire("WN-101", &["boruna-bytecode".into()], "t4").unwrap();
+    locks
+        .acquire("WN-101", &["boruna-bytecode".into()], "t4")
+        .unwrap();
 }
 
 // === Deterministic Gating Integration (Mock) ===
@@ -408,10 +430,14 @@ fn test_conflict_plan_locks() {
 
     // Simulate lock conflict
     let mut locks = LockTable::new();
-    locks.acquire("WN-100", &["boruna-bytecode".into()], "t1").unwrap();
+    locks
+        .acquire("WN-100", &["boruna-bytecode".into()], "t1")
+        .unwrap();
 
     // WN-101 blocked
-    assert!(locks.acquire("WN-101", &["boruna-bytecode".into()], "t2").is_err());
+    assert!(locks
+        .acquire("WN-101", &["boruna-bytecode".into()], "t2")
+        .is_err());
 
     // WN-102 (docs) not blocked
     locks.acquire("WN-102", &["docs".into()], "t3").unwrap();

@@ -1,6 +1,6 @@
-use crate::diagnostics::*;
 use crate::diagnostics::collector::DiagnosticCollector;
-use crate::repair::{RepairTool, RepairStrategy};
+use crate::diagnostics::*;
+use crate::repair::{RepairStrategy, RepairTool};
 use crate::trace2tests;
 
 /// Full integration test: non-exhaustive match detected + suggested patch + repair + verify.
@@ -24,7 +24,10 @@ fn view(state: State) -> String { \"ok\" }
     let ds = DiagnosticCollector::new("test.ax", source).collect();
 
     // Should find non-exhaustive match
-    let match_diag = ds.diagnostics.iter().find(|d| d.id == E005_NON_EXHAUSTIVE_MATCH);
+    let match_diag = ds
+        .diagnostics
+        .iter()
+        .find(|d| d.id == E005_NON_EXHAUSTIVE_MATCH);
     assert!(match_diag.is_some(), "expected E005 diagnostic");
 
     let d = match_diag.unwrap();
@@ -32,7 +35,10 @@ fn view(state: State) -> String { \"ok\" }
     assert!(d.message.contains("Remove"), "should mention Remove");
 
     // Should have a suggested patch
-    assert!(!d.suggested_patches.is_empty(), "expected a suggested patch");
+    assert!(
+        !d.suggested_patches.is_empty(),
+        "expected a suggested patch"
+    );
     let patch = &d.suggested_patches[0];
     assert_eq!(patch.confidence, Confidence::High);
     assert!(patch.description.contains("add missing match arms"));
@@ -65,8 +71,14 @@ fn init() -> State {
     // Apply the fix
     let (repaired, result) = RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
     assert!(!result.applied.is_empty(), "should have applied a patch");
-    assert!(repaired.contains("count:"), "repaired source should have 'count:'");
-    assert!(!repaired.contains("countt:"), "repaired source should not have 'countt:'");
+    assert!(
+        repaired.contains("count:"),
+        "repaired source should have 'count:'"
+    );
+    assert!(
+        !repaired.contains("countt:"),
+        "repaired source should not have 'countt:'"
+    );
 }
 
 /// Integration test: capability violation in framework app -> suggest removal -> repair.
@@ -87,7 +99,10 @@ fn view(state: State) -> String { \"ok\" }
 
     let ds = DiagnosticCollector::new("test.ax", source).collect();
 
-    let cap_diag = ds.diagnostics.iter().find(|d| d.id == E007_CAPABILITY_VIOLATION);
+    let cap_diag = ds
+        .diagnostics
+        .iter()
+        .find(|d| d.id == E007_CAPABILITY_VIOLATION);
     assert!(cap_diag.is_some(), "expected E007 diagnostic");
 
     let d = cap_diag.unwrap();
@@ -102,7 +117,10 @@ fn view(state: State) -> String { \"ok\" }
     // Apply the fix
     let (repaired, result) = RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
     assert!(!result.applied.is_empty());
-    assert!(!repaired.contains("!{fs.read}"), "should have removed capability annotation");
+    assert!(
+        !repaired.contains("!{fs.read}"),
+        "should have removed capability annotation"
+    );
 }
 
 /// Integration test: undefined variable -> suggest rename -> repair.
@@ -122,7 +140,10 @@ fn main() -> Int {
 
     let d = undef_diag.unwrap();
     // Should suggest "count"
-    assert!(!d.suggested_patches.is_empty(), "expected a rename suggestion");
+    assert!(
+        !d.suggested_patches.is_empty(),
+        "expected a rename suggestion"
+    );
     let patch = &d.suggested_patches[0];
     assert!(patch.description.contains("count"));
 }
@@ -147,7 +168,11 @@ fn view(state: State) -> String { \"ok\" }
 ";
 
     let ds = DiagnosticCollector::new("test.ax", source).collect();
-    assert!(!ds.has_errors(), "valid code should have no errors, got: {}", ds.to_human());
+    assert!(
+        !ds.has_errors(),
+        "valid code should have no errors, got: {}",
+        ds.to_human()
+    );
 }
 
 /// Test JSON output format.
@@ -176,20 +201,22 @@ fn test_diagnostic_human_format() {
 #[test]
 fn test_diagnostic_set_roundtrip() {
     let mut ds = DiagnosticSet::new("test.ax");
-    ds.push(Diagnostic::error(E005_NON_EXHAUSTIVE_MATCH, "missing X".into())
-        .at("test.ax", 10, Some(5))
-        .with_suggestion(SuggestedPatch {
-            id: "fix-1".into(),
-            description: "add X".into(),
-            confidence: Confidence::High,
-            rationale: "covers remaining".into(),
-            edits: vec![TextEdit {
-                file: "test.ax".into(),
-                start_line: 15,
-                old_text: "}".into(),
-                new_text: "    X => {}\n}".into(),
-            }],
-        }));
+    ds.push(
+        Diagnostic::error(E005_NON_EXHAUSTIVE_MATCH, "missing X".into())
+            .at("test.ax", 10, Some(5))
+            .with_suggestion(SuggestedPatch {
+                id: "fix-1".into(),
+                description: "add X".into(),
+                confidence: Confidence::High,
+                rationale: "covers remaining".into(),
+                edits: vec![TextEdit {
+                    file: "test.ax".into(),
+                    start_line: 15,
+                    old_text: "}".into(),
+                    new_text: "    X => {}\n}".into(),
+                }],
+            }),
+    );
 
     let json = ds.to_json();
     let parsed: DiagnosticSet = serde_json::from_str(&json).unwrap();
@@ -263,8 +290,8 @@ fn main() -> Int {
 /// Integration test: full record → generate → run pipeline.
 #[test]
 fn test_trace2tests_full_pipeline() {
-    use boruna_framework::runtime::AppMessage;
     use boruna_bytecode::Value;
+    use boruna_framework::runtime::AppMessage;
 
     let msgs = vec![
         AppMessage::new("increment", Value::Int(0)),
@@ -289,29 +316,40 @@ fn test_trace2tests_full_pipeline() {
 /// Integration test: trace determinism across multiple recordings.
 #[test]
 fn test_trace2tests_determinism_integration() {
-    use boruna_framework::runtime::AppMessage;
     use boruna_bytecode::Value;
+    use boruna_framework::runtime::AppMessage;
 
-    let make_msgs = || vec![
-        AppMessage::new("increment", Value::Int(0)),
-        AppMessage::new("decrement", Value::Int(0)),
-        AppMessage::new("increment", Value::Int(0)),
-    ];
+    let make_msgs = || {
+        vec![
+            AppMessage::new("increment", Value::Int(0)),
+            AppMessage::new("decrement", Value::Int(0)),
+            AppMessage::new("increment", Value::Int(0)),
+        ]
+    };
 
     let trace1 = trace2tests::record_trace(TRACE_TEST_APP, "test.ax", make_msgs()).unwrap();
     let trace2 = trace2tests::record_trace(TRACE_TEST_APP, "test.ax", make_msgs()).unwrap();
 
     // All hashes must be identical
-    assert_eq!(trace1.trace_hash, trace2.trace_hash, "trace hashes must match");
-    assert_eq!(trace1.final_state_hash, trace2.final_state_hash, "final state hashes must match");
-    assert_eq!(trace1.source_hash, trace2.source_hash, "source hashes must match");
+    assert_eq!(
+        trace1.trace_hash, trace2.trace_hash,
+        "trace hashes must match"
+    );
+    assert_eq!(
+        trace1.final_state_hash, trace2.final_state_hash,
+        "final state hashes must match"
+    );
+    assert_eq!(
+        trace1.source_hash, trace2.source_hash,
+        "source hashes must match"
+    );
 }
 
 /// Integration test: minimizer with state mismatch predicate.
 #[test]
 fn test_trace2tests_minimize_integration() {
-    use boruna_framework::runtime::AppMessage;
     use boruna_bytecode::Value;
+    use boruna_framework::runtime::AppMessage;
 
     // Record a trace with mixed messages
     let msgs = vec![
@@ -325,9 +363,8 @@ fn test_trace2tests_minimize_integration() {
 
     // State mismatch predicate: fails if final state differs from trace
     let pred = trace2tests::make_state_mismatch_predicate(trace.final_state_hash.clone());
-    let trace_msgs: Vec<trace2tests::TraceMessage> = trace.cycles.iter()
-        .map(|c| c.message.clone())
-        .collect();
+    let trace_msgs: Vec<trace2tests::TraceMessage> =
+        trace.cycles.iter().map(|c| c.message.clone()).collect();
 
     let minimal = trace2tests::minimize_trace(TRACE_TEST_APP, &trace_msgs, &*pred);
 
@@ -337,17 +374,21 @@ fn test_trace2tests_minimize_integration() {
     // Let's just verify the minimal still produces the same state
     let app_msgs = trace2tests::messages_to_app(&minimal);
     let min_trace = trace2tests::record_trace(TRACE_TEST_APP, "test.ax", app_msgs).unwrap();
-    assert_eq!(min_trace.final_state_hash, trace.final_state_hash,
-        "minimized trace must preserve the failure condition (same final state hash)");
-    assert!(minimal.len() <= trace.cycles.len(),
-        "minimized trace should not be longer than original");
+    assert_eq!(
+        min_trace.final_state_hash, trace.final_state_hash,
+        "minimized trace must preserve the failure condition (same final state hash)"
+    );
+    assert!(
+        minimal.len() <= trace.cycles.len(),
+        "minimized trace should not be longer than original"
+    );
 }
 
 /// Integration test: generated test fails when source changes.
 #[test]
 fn test_trace2tests_detects_regression() {
-    use boruna_framework::runtime::AppMessage;
     use boruna_bytecode::Value;
+    use boruna_framework::runtime::AppMessage;
 
     let msgs = vec![
         AppMessage::new("increment", Value::Int(0)),
@@ -363,7 +404,10 @@ fn test_trace2tests_detects_regression() {
     // Modified source fails (change init count from 0 to 100)
     let modified = TRACE_TEST_APP.replace("count: 0", "count: 100");
     let result = trace2tests::run_test(&spec, &modified);
-    assert!(!result.passed, "should fail when source introduces regression");
+    assert!(
+        !result.passed,
+        "should fail when source introduces regression"
+    );
 }
 
 // ─── Standard Library Integration Tests ─────────────────────
@@ -374,17 +418,23 @@ fn test_stdlib_all_compile_and_run() {
     use crate::stdlib;
     let libs_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../libs");
     let lib_names = [
-        "std-ui", "std-validation", "std-forms", "std-authz",
-        "std-http", "std-db", "std-sync", "std-routing",
-        "std-storage", "std-notifications", "std-testing",
+        "std-ui",
+        "std-validation",
+        "std-forms",
+        "std-authz",
+        "std-http",
+        "std-db",
+        "std-sync",
+        "std-routing",
+        "std-storage",
+        "std-notifications",
+        "std-testing",
     ];
     for name in &lib_names {
         let src = stdlib::load_library_source(&libs_dir, name)
             .unwrap_or_else(|e| panic!("load {name}: {e}"));
-        stdlib::verify_compiles(&src)
-            .unwrap_or_else(|e| panic!("{name} compile: {e}"));
-        stdlib::run_library(&src)
-            .unwrap_or_else(|e| panic!("{name} run: {e}"));
+        stdlib::verify_compiles(&src).unwrap_or_else(|e| panic!("{name} compile: {e}"));
+        stdlib::run_library(&src).unwrap_or_else(|e| panic!("{name} run: {e}"));
     }
 }
 
@@ -394,14 +444,19 @@ fn test_stdlib_determinism() {
     use crate::stdlib;
     let libs_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../libs");
     let lib_names = [
-        "std-ui", "std-forms", "std-authz", "std-sync",
-        "std-routing", "std-db", "std-notifications", "std-testing",
+        "std-ui",
+        "std-forms",
+        "std-authz",
+        "std-sync",
+        "std-routing",
+        "std-db",
+        "std-notifications",
+        "std-testing",
     ];
     for name in &lib_names {
         let src = stdlib::load_library_source(&libs_dir, name)
             .unwrap_or_else(|e| panic!("load {name}: {e}"));
-        stdlib::verify_determinism(&src)
-            .unwrap_or_else(|e| panic!("{name} nondeterministic: {e}"));
+        stdlib::verify_determinism(&src).unwrap_or_else(|e| panic!("{name} nondeterministic: {e}"));
     }
 }
 
@@ -416,7 +471,10 @@ fn test_template_apply_and_validate() {
     args.insert("entity_name".into(), "users".into());
     args.insert("fields".into(), "name,email".into());
     let result = templates::apply_template(&templates_dir, "crud-admin", &args).unwrap();
-    assert!(result.source.contains("users"), "should substitute entity_name");
+    assert!(
+        result.source.contains("users"),
+        "should substitute entity_name"
+    );
     assert_eq!(result.template_name, "crud-admin");
     assert!(result.dependencies.contains(&"std.ui".to_string()));
     // Validate it compiles
@@ -472,5 +530,8 @@ fn test_template_determinism() {
     args.insert("fields".into(), "name".into());
     let r1 = templates::apply_template(&templates_dir, "crud-admin", &args).unwrap();
     let r2 = templates::apply_template(&templates_dir, "crud-admin", &args).unwrap();
-    assert_eq!(r1.source, r2.source, "template output must be deterministic");
+    assert_eq!(
+        r1.source, r2.source,
+        "template output must be deterministic"
+    );
 }

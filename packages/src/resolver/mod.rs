@@ -14,10 +14,7 @@ pub struct ResolutionResult {
 
 /// Resolve all dependencies starting from a root manifest.
 /// Uses exact version matching only. No ranges.
-pub fn resolve(
-    root: &PackageManifest,
-    registry: &Registry,
-) -> Result<ResolutionResult, String> {
+pub fn resolve(root: &PackageManifest, registry: &Registry) -> Result<ResolutionResult, String> {
     let mut resolved: BTreeMap<String, PackageManifest> = BTreeMap::new();
     let mut queue: VecDeque<(String, String)> = VecDeque::new();
 
@@ -35,16 +32,20 @@ pub fn resolve(
         }
 
         // Load from registry
-        let manifest = registry.load_manifest(&name, &version)
+        let manifest = registry
+            .load_manifest(&name, &version)
             .map_err(|e| format!("failed to load {id}: {e}"))?;
 
         // Validate
-        manifest.validate()
+        manifest
+            .validate()
             .map_err(|errs| format!("invalid package {id}: {}", errs.join("; ")))?;
 
         // Check for version conflicts: same name, different version
         for existing_id in resolved.keys() {
-            if existing_id.starts_with(&format!("{name}@")) && !existing_id.ends_with(&format!("@{version}")) {
+            if existing_id.starts_with(&format!("{name}@"))
+                && !existing_id.ends_with(&format!("@{version}"))
+            {
                 return Err(format!(
                     "version conflict: both '{existing_id}' and '{id}' required"
                 ));
@@ -97,10 +98,13 @@ pub fn generate_lockfile(
         let hash = crate::spec::compute_content_hash(&pkg_dir, &dep_hashes)?;
         hash_cache.insert(pkg_id.clone(), hash.clone());
 
-        lockfile.resolved.insert(pkg_id.clone(), ResolvedPackage {
-            integrity: hash,
-            dependencies: manifest.dependencies.clone(),
-        });
+        lockfile.resolved.insert(
+            pkg_id.clone(),
+            ResolvedPackage {
+                integrity: hash,
+                dependencies: manifest.dependencies.clone(),
+            },
+        );
     }
 
     Ok(lockfile)
@@ -181,7 +185,12 @@ mod tests {
         (dir, reg)
     }
 
-    fn make_manifest(name: &str, version: &str, deps: &[(&str, &str)], caps: &[&str]) -> PackageManifest {
+    fn make_manifest(
+        name: &str,
+        version: &str,
+        deps: &[(&str, &str)],
+        caps: &[&str],
+    ) -> PackageManifest {
         let mut dependencies = BTreeMap::new();
         for (n, v) in deps {
             dependencies.insert(n.to_string(), v.to_string());
@@ -203,7 +212,8 @@ mod tests {
         std::fs::write(
             pkg_dir.join("src/core.ax"),
             format!("// {} v{}", manifest.name, manifest.version),
-        ).unwrap();
+        )
+        .unwrap();
         manifest.save(&pkg_dir.join("package.ax.json")).unwrap();
         let hash = crate::spec::compute_content_hash(&pkg_dir, &BTreeMap::new()).unwrap();
         std::fs::write(pkg_dir.join("HASH"), &hash).unwrap();
@@ -242,8 +252,16 @@ mod tests {
         let result = resolve(&root, &reg).unwrap();
         assert_eq!(result.packages.len(), 2);
         // C should come before B in install order
-        let pos_c = result.install_order.iter().position(|x| x == "pkg.c@0.1.0").unwrap();
-        let pos_b = result.install_order.iter().position(|x| x == "pkg.b@0.2.0").unwrap();
+        let pos_c = result
+            .install_order
+            .iter()
+            .position(|x| x == "pkg.c@0.1.0")
+            .unwrap();
+        let pos_b = result
+            .install_order
+            .iter()
+            .position(|x| x == "pkg.b@0.2.0")
+            .unwrap();
         assert!(pos_c < pos_b);
     }
 
@@ -258,7 +276,12 @@ mod tests {
         publish_package(&reg, &b);
 
         // Root wants c@0.1.0 but b wants c@0.2.0
-        let root = make_manifest("app", "1.0.0", &[("pkg.c", "0.1.0"), ("pkg.b", "0.1.0")], &[]);
+        let root = make_manifest(
+            "app",
+            "1.0.0",
+            &[("pkg.c", "0.1.0"), ("pkg.b", "0.1.0")],
+            &[],
+        );
         let err = resolve(&root, &reg).unwrap_err();
         assert!(err.contains("version conflict"));
     }
@@ -325,7 +348,12 @@ mod tests {
         let b = make_manifest("pkg.b", "0.1.0", &[], &["db.query", "net.fetch"]);
         publish_package(&reg, &b);
 
-        let root = make_manifest("app", "1.0.0", &[("pkg.a", "0.1.0"), ("pkg.b", "0.1.0")], &[]);
+        let root = make_manifest(
+            "app",
+            "1.0.0",
+            &[("pkg.a", "0.1.0"), ("pkg.b", "0.1.0")],
+            &[],
+        );
         let result = resolve(&root, &reg).unwrap();
         let caps = aggregate_capabilities(&result);
         assert_eq!(caps, vec!["db.query", "net.fetch"]);

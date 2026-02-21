@@ -26,8 +26,7 @@ pub struct LlmCache {
 impl LlmCache {
     /// Open (or create) a cache at `cache_dir`.
     pub fn open(cache_dir: &Path) -> Result<Self, String> {
-        fs::create_dir_all(cache_dir)
-            .map_err(|e| format!("cannot create cache dir: {e}"))?;
+        fs::create_dir_all(cache_dir).map_err(|e| format!("cannot create cache dir: {e}"))?;
         Ok(LlmCache {
             cache_dir: cache_dir.to_path_buf(),
         })
@@ -52,8 +51,7 @@ impl LlmCache {
         let path = self.entry_path(&entry.cache_key);
         // Use sorted keys via BTreeMap-based serialization (serde_json sorts by default with BTreeMap)
         let json = canonical_serialize(entry)?;
-        fs::write(&path, json)
-            .map_err(|e| format!("cache write error: {e}"))
+        fs::write(&path, json).map_err(|e| format!("cache write error: {e}"))
     }
 
     /// Check if a cache entry exists.
@@ -65,8 +63,7 @@ impl LlmCache {
     pub fn delete(&self, cache_key: &str) -> Result<(), String> {
         let path = self.entry_path(cache_key);
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| format!("cache delete error: {e}"))?;
+            fs::remove_file(&path).map_err(|e| format!("cache delete error: {e}"))?;
         }
         Ok(())
     }
@@ -74,8 +71,7 @@ impl LlmCache {
     /// List all cache keys.
     pub fn list_keys(&self) -> Result<Vec<String>, String> {
         let mut keys = Vec::new();
-        let entries = fs::read_dir(&self.cache_dir)
-            .map_err(|e| format!("read dir error: {e}"))?;
+        let entries = fs::read_dir(&self.cache_dir).map_err(|e| format!("read dir error: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("entry error: {e}"))?;
             if let Some(name) = entry.file_name().to_str() {
@@ -91,13 +87,11 @@ impl LlmCache {
     /// Clear the entire cache.
     pub fn clear(&self) -> Result<usize, String> {
         let mut count = 0;
-        let entries = fs::read_dir(&self.cache_dir)
-            .map_err(|e| format!("read dir error: {e}"))?;
+        let entries = fs::read_dir(&self.cache_dir).map_err(|e| format!("read dir error: {e}"))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("entry error: {e}"))?;
             if entry.path().extension().and_then(|e| e.to_str()) == Some("json") {
-                fs::remove_file(entry.path())
-                    .map_err(|e| format!("delete error: {e}"))?;
+                fs::remove_file(entry.path()).map_err(|e| format!("delete error: {e}"))?;
                 count += 1;
             }
         }
@@ -109,15 +103,32 @@ impl LlmCache {
 fn canonical_serialize(entry: &CacheEntry) -> Result<String, String> {
     // Convert to a BTreeMap for sorted keys
     let mut map = BTreeMap::new();
-    map.insert("cache_key".to_string(), serde_json::to_value(&entry.cache_key).unwrap());
-    map.insert("model".to_string(), serde_json::to_value(&entry.model).unwrap());
-    map.insert("prompt_hash".to_string(), serde_json::to_value(&entry.prompt_hash).unwrap());
-    map.insert("prompt_id".to_string(), serde_json::to_value(&entry.prompt_id).unwrap());
-    map.insert("result".to_string(), serde_json::to_value(&entry.result).unwrap());
-    map.insert("schema_id".to_string(), serde_json::to_value(&entry.schema_id).unwrap());
+    map.insert(
+        "cache_key".to_string(),
+        serde_json::to_value(&entry.cache_key).unwrap(),
+    );
+    map.insert(
+        "model".to_string(),
+        serde_json::to_value(&entry.model).unwrap(),
+    );
+    map.insert(
+        "prompt_hash".to_string(),
+        serde_json::to_value(&entry.prompt_hash).unwrap(),
+    );
+    map.insert(
+        "prompt_id".to_string(),
+        serde_json::to_value(&entry.prompt_id).unwrap(),
+    );
+    map.insert(
+        "result".to_string(),
+        serde_json::to_value(&entry.result).unwrap(),
+    );
+    map.insert(
+        "schema_id".to_string(),
+        serde_json::to_value(&entry.schema_id).unwrap(),
+    );
 
-    serde_json::to_string_pretty(&map)
-        .map_err(|e| format!("serialize error: {e}"))
+    serde_json::to_string_pretty(&map).map_err(|e| format!("serialize error: {e}"))
 }
 
 #[cfg(test)]

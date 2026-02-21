@@ -5,22 +5,24 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 use boruna_bytecode::Module;
-use boruna_compiler;
+use boruna_framework::runtime::AppMessage;
+use boruna_framework::testing::TestHarness;
+use boruna_framework::validate::AppValidator;
+use boruna_tooling::diagnostics::collector::DiagnosticCollector;
+use boruna_tooling::repair::{RepairStrategy, RepairTool};
+use boruna_tooling::trace2tests;
 use boruna_vm::capability_gateway::{CapabilityGateway, Policy, ReplayHandler};
 use boruna_vm::replay::EventLog;
 use boruna_vm::vm::Vm;
-use boruna_framework::runtime::AppMessage;
-use boruna_framework::validate::AppValidator;
-use boruna_framework::testing::TestHarness;
-use boruna_tooling::diagnostics::collector::DiagnosticCollector;
-use boruna_tooling::repair::{RepairTool, RepairStrategy};
-use boruna_tooling::trace2tests;
 
 #[cfg(feature = "serve")]
 mod serve;
 
 #[derive(Parser)]
-#[command(name = "boruna", about = "Boruna — deterministic, capability-safe language")]
+#[command(
+    name = "boruna",
+    about = "Boruna — deterministic, capability-safe language"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -283,7 +285,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Compile { file, output } => {
             let source = fs::read_to_string(&file)?;
-            let name = file.file_stem()
+            let name = file
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "module".into());
             let module = boruna_compiler::compile(&name, &source)?;
@@ -291,10 +294,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let bytes = module.to_bytes()?;
             fs::write(&out_path, bytes)?;
             println!("compiled {} -> {}", file.display(), out_path.display());
-            println!("  {} functions, {} constants, {} types",
-                module.functions.len(), module.constants.len(), module.types.len());
+            println!(
+                "  {} functions, {} constants, {} types",
+                module.functions.len(),
+                module.constants.len(),
+                module.types.len()
+            );
         }
-        Command::Run { file, policy, max_steps, record } => {
+        Command::Run {
+            file,
+            policy,
+            max_steps,
+            record,
+        } => {
             let module = load_module(&file)?;
             let gateway = make_gateway(&policy)?;
             let mut vm = Vm::new(module, gateway);
@@ -318,7 +330,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if let Some(log_path) = record {
-                let json = vm.event_log().to_json()
+                let json = vm
+                    .event_log()
+                    .to_json()
                     .map_err(|e| format!("failed to serialize event log: {e}"))?;
                 fs::write(&log_path, json)?;
                 println!("events recorded to {}", log_path.display());
@@ -345,8 +359,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Replay { file, log } => {
             let module = load_module(&file)?;
             let log_json = fs::read_to_string(&log)?;
-            let original_log = EventLog::from_json(&log_json)
-                .map_err(|e| format!("invalid event log: {e}"))?;
+            let original_log =
+                EventLog::from_json(&log_json).map_err(|e| format!("invalid event log: {e}"))?;
 
             let results = original_log.capability_results();
             let handler = Box::new(ReplayHandler::new(results));
@@ -358,7 +372,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => eprintln!("replay error: {e}"),
             }
 
-            let replay_result = boruna_vm::replay::ReplayEngine::verify(&original_log, vm.event_log());
+            let replay_result =
+                boruna_vm::replay::ReplayEngine::verify(&original_log, vm.event_log());
             println!("replay verification: {replay_result:?}");
         }
         Command::Inspect { file } => {
@@ -376,8 +391,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("\nFunctions ({}):", module.functions.len());
             for (i, f) in module.functions.iter().enumerate() {
-                println!("  #{i}: {}(arity={}, locals={}, ops={})",
-                    f.name, f.arity, f.locals, f.code.len());
+                println!(
+                    "  #{i}: {}(arity={}, locals={}, ops={})",
+                    f.name,
+                    f.arity,
+                    f.locals,
+                    f.code.len()
+                );
                 if !f.capabilities.is_empty() {
                     let caps: Vec<_> = f.capabilities.iter().map(|c| c.name()).collect();
                     println!("      capabilities: {}", caps.join(", "));
@@ -437,8 +457,7 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
             // Get diagnostics: from file or run check
             let ds = if let Some(diag_path) = from {
                 let json = fs::read_to_string(&diag_path)?;
-                serde_json::from_str(&json)
-                    .map_err(|e| format!("invalid diagnostics JSON: {e}"))?
+                serde_json::from_str(&json).map_err(|e| format!("invalid diagnostics JSON: {e}"))?
             } else {
                 DiagnosticCollector::new(&file_str, &source).collect()
             };
@@ -449,9 +468,8 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
                 id => (RepairStrategy::ById, Some(id.to_string())),
             };
 
-            let (repaired, result) = RepairTool::repair(
-                &file_str, &source, &ds, strategy, specific_id.as_deref(),
-            );
+            let (repaired, result) =
+                RepairTool::repair(&file_str, &source, &ds, strategy, specific_id.as_deref());
 
             if result.applied.is_empty() {
                 println!("no patches applied");
@@ -467,7 +485,10 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
                 for a in &result.applied {
                     println!("  [{}] {}: {}", a.diagnostic_id, a.patch_id, a.description);
                 }
-                println!("diagnostics: {} -> {}", result.diagnostics_before, result.diagnostics_after);
+                println!(
+                    "diagnostics: {} -> {}",
+                    result.diagnostics_before, result.diagnostics_after
+                );
                 if result.verify_passed {
                     println!("verify: PASS");
                 } else {
@@ -481,11 +502,16 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_trace2tests(cmd: Trace2TestsCommand) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
-        Trace2TestsCommand::Record { file, messages, out } => {
+        Trace2TestsCommand::Record {
+            file,
+            messages,
+            out,
+        } => {
             let source = fs::read_to_string(&file)?;
             let file_str = file.display().to_string();
 
-            let msgs: Vec<AppMessage> = messages.split(',')
+            let msgs: Vec<AppMessage> = messages
+                .split(',')
                 .map(|s| {
                     let (tag, payload) = parse_message(s);
                     AppMessage::new(tag, payload)
@@ -497,7 +523,11 @@ fn run_trace2tests(cmd: Trace2TestsCommand) -> Result<(), Box<dyn std::error::Er
             let json = serde_json::to_string_pretty(&trace)?;
             fs::write(&out, json)?;
 
-            println!("recorded {} cycles to {}", trace.cycles.len(), out.display());
+            println!(
+                "recorded {} cycles to {}",
+                trace.cycles.len(),
+                out.display()
+            );
             println!("trace hash: {}", trace.trace_hash);
         }
         Trace2TestsCommand::Generate { trace, name, out } => {
@@ -509,7 +539,11 @@ fn run_trace2tests(cmd: Trace2TestsCommand) -> Result<(), Box<dyn std::error::Er
             fs::write(&out, json)?;
 
             println!("generated test spec: {}", out.display());
-            println!("  {} messages, {} assertions", spec.messages.len(), spec.assertions.len());
+            println!(
+                "  {} messages, {} assertions",
+                spec.messages.len(),
+                spec.assertions.len()
+            );
         }
         Trace2TestsCommand::Run { spec, source } => {
             let spec_json = fs::read_to_string(&spec)?;
@@ -532,29 +566,38 @@ fn run_trace2tests(cmd: Trace2TestsCommand) -> Result<(), Box<dyn std::error::Er
                 }
                 for ar in &result.assertion_results {
                     let status = if ar.passed { "ok" } else { "FAIL" };
-                    println!("  [{status}] {}: expected={}, actual={}",
-                        ar.kind, ar.expected, ar.actual);
+                    println!(
+                        "  [{status}] {}: expected={}, actual={}",
+                        ar.kind, ar.expected, ar.actual
+                    );
                 }
                 process::exit(1);
             }
         }
-        Trace2TestsCommand::Minimize { trace, source, predicate, out } => {
+        Trace2TestsCommand::Minimize {
+            trace,
+            source,
+            predicate,
+            out,
+        } => {
             let trace_json = fs::read_to_string(&trace)?;
             let trace_file: trace2tests::TraceFile = serde_json::from_str(&trace_json)?;
             let source_code = fs::read_to_string(&source)?;
 
-            let messages: Vec<trace2tests::TraceMessage> = trace_file.cycles.iter()
+            let messages: Vec<trace2tests::TraceMessage> = trace_file
+                .cycles
+                .iter()
                 .map(|c| c.message.clone())
                 .collect();
 
             let original_len = messages.len();
 
             let minimal = match predicate.as_str() {
-                "panic" => {
-                    trace2tests::minimize_trace(
-                        &source_code, &messages, &trace2tests::predicate_runtime_error,
-                    )
-                }
+                "panic" => trace2tests::minimize_trace(
+                    &source_code,
+                    &messages,
+                    &trace2tests::predicate_runtime_error,
+                ),
                 _ => {
                     // External command predicate
                     let cmd_str = predicate.clone();
@@ -598,7 +641,12 @@ fn external_predicate(
         "source_file": source_file,
         "messages": messages,
     });
-    if fs::write(&temp_path, serde_json::to_string(&trace_data).unwrap_or_default()).is_err() {
+    if fs::write(
+        &temp_path,
+        serde_json::to_string(&trace_data).unwrap_or_default(),
+    )
+    .is_err()
+    {
         return trace2tests::PredicateOutcome::Unresolved;
     }
 
@@ -626,7 +674,8 @@ fn run_framework(cmd: FrameworkCommand) -> Result<(), Box<dyn std::error::Error>
             let app_dir = base.join(&name);
             fs::create_dir_all(&app_dir)?;
 
-            let source = format!(r#"// {name} — Boruna Framework App
+            let source = format!(
+                r#"// {name} — Boruna Framework App
 
 type State {{ value: Int }}
 type Msg {{ tag: String, payload: Int }}
@@ -653,7 +702,8 @@ fn main() -> Int {{
     let s: State = init()
     s.value
 }}
-"#);
+"#
+            );
 
             let file_path = app_dir.join(format!("{name}.ax"));
             fs::write(&file_path, source)?;
@@ -669,10 +719,26 @@ fn main() -> Int {{
             match AppValidator::validate(&program) {
                 Ok(result) => {
                     println!("valid App protocol");
-                    println!("  init:     {}", if result.has_init { "yes" } else { "MISSING" });
-                    println!("  update:   {}", if result.has_update { "yes" } else { "MISSING" });
-                    println!("  view:     {}", if result.has_view { "yes" } else { "MISSING" });
-                    println!("  policies: {}", if result.has_policies { "yes" } else { "none (using defaults)" });
+                    println!(
+                        "  init:     {}",
+                        if result.has_init { "yes" } else { "MISSING" }
+                    );
+                    println!(
+                        "  update:   {}",
+                        if result.has_update { "yes" } else { "MISSING" }
+                    );
+                    println!(
+                        "  view:     {}",
+                        if result.has_view { "yes" } else { "MISSING" }
+                    );
+                    println!(
+                        "  policies: {}",
+                        if result.has_policies {
+                            "yes"
+                        } else {
+                            "none (using defaults)"
+                        }
+                    );
                     if let Some(t) = &result.state_type {
                         println!("  state type: {t}");
                     }
@@ -752,7 +818,10 @@ fn main() -> Int {{
                         println!("  no changes");
                     } else {
                         for d in &diffs {
-                            println!("  field[{}]: {} -> {}", d.field_index, d.old_value, d.new_value);
+                            println!(
+                                "  field[{}]: {} -> {}",
+                                d.field_index, d.old_value, d.new_value
+                            );
                         }
                     }
                 }
@@ -810,10 +879,26 @@ fn main() -> Int {{
             } else {
                 println!("=== App Contract ===");
                 println!("file: {}", file.display());
-                println!("init:     {}", if result.has_init { "yes" } else { "MISSING" });
-                println!("update:   {}", if result.has_update { "yes" } else { "MISSING" });
-                println!("view:     {}", if result.has_view { "yes" } else { "MISSING" });
-                println!("policies: {}", if result.has_policies { "yes" } else { "none (defaults)" });
+                println!(
+                    "init:     {}",
+                    if result.has_init { "yes" } else { "MISSING" }
+                );
+                println!(
+                    "update:   {}",
+                    if result.has_update { "yes" } else { "MISSING" }
+                );
+                println!(
+                    "view:     {}",
+                    if result.has_view { "yes" } else { "MISSING" }
+                );
+                println!(
+                    "policies: {}",
+                    if result.has_policies {
+                        "yes"
+                    } else {
+                        "none (defaults)"
+                    }
+                );
                 if let Some(t) = &result.state_type {
                     println!("state type:   {t}");
                 }
@@ -843,9 +928,8 @@ fn main() -> Int {{
                             let (tag, payload) = parse_message(msg_str);
                             match harness.send(AppMessage::new(tag.clone(), payload)) {
                                 Ok((state, effects)) => {
-                                    let effect_kinds: Vec<&str> = effects.iter()
-                                        .map(|e| e.kind.as_str())
-                                        .collect();
+                                    let effect_kinds: Vec<&str> =
+                                        effects.iter().map(|e| e.kind.as_str()).collect();
                                     cycles.push(serde_json::json!({
                                         "cycle": harness.cycle(),
                                         "message": tag,
@@ -900,7 +984,11 @@ fn main() -> Int {{
                     r.message.payload,
                     r.state_before,
                     r.state_after,
-                    r.effects.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>().join(","),
+                    r.effects
+                        .iter()
+                        .map(|e| e.kind.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
                 ));
             }
 
@@ -933,13 +1021,17 @@ fn main() -> Int {{
 
                 match harness.send(AppMessage::new(tag, payload)) {
                     Ok((state, _)) => {
-                        let expected_state = entry.get("state_after")
+                        let expected_state = entry
+                            .get("state_after")
                             .map(|v| v.to_string())
                             .unwrap_or_default();
                         let actual_state = format!("{state}");
                         if !expected_state.is_empty() && actual_state != expected_state {
                             mismatches.push(format!(
-                                "cycle {}: expected state {}, got {}", i + 1, expected_state, actual_state
+                                "cycle {}: expected state {}, got {}",
+                                i + 1,
+                                expected_state,
+                                actual_state
                             ));
                         }
                     }
@@ -993,7 +1085,8 @@ fn load_module(path: &PathBuf) -> Result<Module, Box<dyn std::error::Error>> {
         }
         "ax" => {
             let source = fs::read_to_string(path)?;
-            let name = path.file_stem()
+            let name = path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "module".into());
             Ok(boruna_compiler::compile(&name, &source)?)
@@ -1036,12 +1129,20 @@ fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> 
                 }
             }
         }
-        TemplateCommand::Apply { name, dir, args, out, validate } => {
+        TemplateCommand::Apply {
+            name,
+            dir,
+            args,
+            out,
+            validate,
+        } => {
             // Parse args from "key1=val1,key2=val2"
             let mut arg_map = std::collections::BTreeMap::new();
             for pair in args.split(',') {
                 let pair = pair.trim();
-                if pair.is_empty() { continue; }
+                if pair.is_empty() {
+                    continue;
+                }
                 let parts: Vec<&str> = pair.splitn(2, '=').collect();
                 if parts.len() != 2 {
                     return Err(format!("invalid arg format: '{pair}' (expected key=value)").into());
@@ -1060,7 +1161,11 @@ fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> 
 
             let output_path = out.unwrap_or_else(|| PathBuf::from(&result.output_file));
             fs::write(&output_path, &result.source)?;
-            println!("generated {} from template '{}'", output_path.display(), result.template_name);
+            println!(
+                "generated {} from template '{}'",
+                output_path.display(),
+                result.template_name
+            );
             println!("  deps: {}", result.dependencies.join(", "));
             println!("  caps: {}", result.capabilities.join(", "));
         }

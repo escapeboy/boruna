@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use sha2::{Sha256, Digest};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use boruna_bytecode::Value;
 use boruna_framework::runtime::{AppMessage, CycleRecord};
@@ -69,7 +69,9 @@ pub fn hash_value(value: &Value) -> String {
 pub fn trace_fingerprint(cycles: &[TraceCycle]) -> String {
     let mut parts = Vec::new();
     for c in cycles {
-        let effects_str: Vec<String> = c.effects.iter()
+        let effects_str: Vec<String> = c
+            .effects
+            .iter()
             .map(|e| format!("{}:{}", e.kind, e.callback_tag))
             .collect();
         parts.push(format!(
@@ -94,11 +96,12 @@ pub fn record_trace(
     source_file: &str,
     messages: Vec<AppMessage>,
 ) -> Result<TraceFile, String> {
-    let mut harness = TestHarness::from_source(source)
-        .map_err(|e| format!("failed to create harness: {e}"))?;
+    let mut harness =
+        TestHarness::from_source(source).map_err(|e| format!("failed to create harness: {e}"))?;
 
     for msg in &messages {
-        harness.send(msg.clone())
+        harness
+            .send(msg.clone())
             .map_err(|e| format!("cycle {} failed: {e}", harness.cycle()))?;
     }
 
@@ -114,8 +117,9 @@ pub fn trace_from_cycle_log(
 ) -> Result<TraceFile, String> {
     let source_hash = sha256_hex(source);
 
-    let cycles: Vec<TraceCycle> = cycle_log.iter().map(|cr| {
-        TraceCycle {
+    let cycles: Vec<TraceCycle> = cycle_log
+        .iter()
+        .map(|cr| TraceCycle {
             cycle: cr.cycle,
             message: TraceMessage {
                 tag: cr.message.tag.clone(),
@@ -124,16 +128,19 @@ pub fn trace_from_cycle_log(
             },
             state_before_hash: hash_value(&cr.state_before),
             state_after_hash: hash_value(&cr.state_after),
-            state_after: serde_json::to_value(&cr.state_after)
-                .unwrap_or(serde_json::Value::Null),
-            effects: cr.effects.iter().map(|e| TraceEffect {
-                kind: e.kind.as_str().to_string(),
-                payload_hash: hash_value(&e.payload),
-                callback_tag: e.callback_tag.clone(),
-            }).collect(),
-            ui_tree_hash: cr.ui_tree.as_ref().map(|v| hash_value(v)),
-        }
-    }).collect();
+            state_after: serde_json::to_value(&cr.state_after).unwrap_or(serde_json::Value::Null),
+            effects: cr
+                .effects
+                .iter()
+                .map(|e| TraceEffect {
+                    kind: e.kind.as_str().to_string(),
+                    payload_hash: hash_value(&e.payload),
+                    callback_tag: e.callback_tag.clone(),
+                })
+                .collect(),
+            ui_tree_hash: cr.ui_tree.as_ref().map(hash_value),
+        })
+        .collect();
 
     let final_state_hash = hash_value(final_state);
     let fingerprint = trace_fingerprint(&cycles);
@@ -172,9 +179,7 @@ pub struct TestAssertion {
 
 /// Generate a test spec from a trace file.
 pub fn generate_test(trace: &TraceFile, name: &str) -> TestSpec {
-    let messages: Vec<TraceMessage> = trace.cycles.iter()
-        .map(|c| c.message.clone())
-        .collect();
+    let messages: Vec<TraceMessage> = trace.cycles.iter().map(|c| c.message.clone()).collect();
 
     let assertions = vec![
         TestAssertion {
@@ -227,11 +232,13 @@ pub struct AssertionResult {
 pub fn run_test(spec: &TestSpec, source: &str) -> TestResult {
     let mut harness = match TestHarness::from_source(source) {
         Ok(h) => h,
-        Err(e) => return TestResult {
-            passed: false,
-            assertion_results: Vec::new(),
-            error: Some(format!("failed to create harness: {e}")),
-        },
+        Err(e) => {
+            return TestResult {
+                passed: false,
+                assertion_results: Vec::new(),
+                error: Some(format!("failed to create harness: {e}")),
+            }
+        }
     };
 
     for msg in &spec.messages {
@@ -248,8 +255,9 @@ pub fn run_test(spec: &TestSpec, source: &str) -> TestResult {
 
     // Build actual trace data
     let cycle_log = harness.cycle_log();
-    let actual_cycles: Vec<TraceCycle> = cycle_log.iter().map(|cr| {
-        TraceCycle {
+    let actual_cycles: Vec<TraceCycle> = cycle_log
+        .iter()
+        .map(|cr| TraceCycle {
             cycle: cr.cycle,
             message: TraceMessage {
                 tag: cr.message.tag.clone(),
@@ -258,16 +266,19 @@ pub fn run_test(spec: &TestSpec, source: &str) -> TestResult {
             },
             state_before_hash: hash_value(&cr.state_before),
             state_after_hash: hash_value(&cr.state_after),
-            state_after: serde_json::to_value(&cr.state_after)
-                .unwrap_or(serde_json::Value::Null),
-            effects: cr.effects.iter().map(|e| TraceEffect {
-                kind: e.kind.as_str().to_string(),
-                payload_hash: hash_value(&e.payload),
-                callback_tag: e.callback_tag.clone(),
-            }).collect(),
-            ui_tree_hash: cr.ui_tree.as_ref().map(|v| hash_value(v)),
-        }
-    }).collect();
+            state_after: serde_json::to_value(&cr.state_after).unwrap_or(serde_json::Value::Null),
+            effects: cr
+                .effects
+                .iter()
+                .map(|e| TraceEffect {
+                    kind: e.kind.as_str().to_string(),
+                    payload_hash: hash_value(&e.payload),
+                    callback_tag: e.callback_tag.clone(),
+                })
+                .collect(),
+            ui_tree_hash: cr.ui_tree.as_ref().map(hash_value),
+        })
+        .collect();
 
     let actual_final_hash = hash_value(harness.state());
     let actual_fingerprint = trace_fingerprint(&actual_cycles);
@@ -322,11 +333,10 @@ pub fn value_from_json(json: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            Value::List(arr.iter().map(value_from_json).collect())
-        }
+        serde_json::Value::Array(arr) => Value::List(arr.iter().map(value_from_json).collect()),
         serde_json::Value::Object(map) => {
-            let btree: BTreeMap<String, Value> = map.iter()
+            let btree: BTreeMap<String, Value> = map
+                .iter()
                 .map(|(k, v)| (k.clone(), value_from_json(v)))
                 .collect();
             Value::Map(btree)
@@ -336,10 +346,14 @@ pub fn value_from_json(json: &serde_json::Value) -> Value {
 
 /// Convert TraceMessages to AppMessages.
 pub fn messages_to_app(messages: &[TraceMessage]) -> Vec<AppMessage> {
-    messages.iter()
+    messages
+        .iter()
         .map(|m| AppMessage::new(&m.tag, value_from_json(&m.payload)))
         .collect()
 }
+
+/// A predicate function for delta debugging minimization.
+type TracePredicate = dyn Fn(&str, &[TraceMessage]) -> PredicateOutcome;
 
 // ─── Minimization (Delta Debugging) ──────────────────────────
 
@@ -362,7 +376,7 @@ pub enum PredicateOutcome {
 pub fn minimize_trace(
     source: &str,
     messages: &[TraceMessage],
-    predicate: &dyn Fn(&str, &[TraceMessage]) -> PredicateOutcome,
+    predicate: &TracePredicate,
 ) -> Vec<TraceMessage> {
     let mut current = messages.to_vec();
 
@@ -378,8 +392,10 @@ pub fn minimize_trace(
     // Phase 1: chunk-based reduction (ddmin)
     let mut granularity = 2;
     while granularity <= current.len() {
-        let chunk_size = (current.len() + granularity - 1) / granularity;
-        if chunk_size == 0 { break; }
+        let chunk_size = current.len().div_ceil(granularity);
+        if chunk_size == 0 {
+            break;
+        }
 
         let mut reduced = false;
         let mut offset = 0;
@@ -388,7 +404,8 @@ pub fn minimize_trace(
             let end = (offset + chunk_size).min(current.len());
 
             // Try removing this chunk
-            let without_chunk: Vec<TraceMessage> = current[..offset].iter()
+            let without_chunk: Vec<TraceMessage> = current[..offset]
+                .iter()
                 .chain(current[end..].iter())
                 .cloned()
                 .collect();
@@ -414,10 +431,13 @@ pub fn minimize_trace(
     // Phase 2: 1-minimal (try removing each individual message)
     let mut i = 0;
     while i < current.len() {
-        if current.len() <= 1 { break; }
+        if current.len() <= 1 {
+            break;
+        }
 
-        let without_i: Vec<TraceMessage> = current[..i].iter()
-            .chain(current[i+1..].iter())
+        let without_i: Vec<TraceMessage> = current[..i]
+            .iter()
+            .chain(current[i + 1..].iter())
             .cloned()
             .collect();
 
@@ -453,9 +473,7 @@ pub fn predicate_runtime_error(source: &str, messages: &[TraceMessage]) -> Predi
 
 /// Create a predicate that checks for state mismatch.
 /// Returns Fail if the final state hash differs from `expected_hash`.
-pub fn make_state_mismatch_predicate(
-    expected_hash: String,
-) -> Box<dyn Fn(&str, &[TraceMessage]) -> PredicateOutcome> {
+pub fn make_state_mismatch_predicate(expected_hash: String) -> Box<TracePredicate> {
     Box::new(move |source, messages| {
         let mut harness = match TestHarness::from_source(source) {
             Ok(h) => h,
@@ -638,8 +656,11 @@ fn main() -> Int {
         assert!(result.error.is_none());
         assert_eq!(result.assertion_results.len(), 3);
         for ar in &result.assertion_results {
-            assert!(ar.passed, "assertion {} failed: expected={}, actual={}",
-                ar.kind, ar.expected, ar.actual);
+            assert!(
+                ar.passed,
+                "assertion {} failed: expected={}, actual={}",
+                ar.kind, ar.expected, ar.actual
+            );
         }
     }
 
@@ -689,9 +710,8 @@ fn main() -> Int {
     fn test_minimize_no_reduction_needed() {
         // Single message — already minimal
         let msgs = make_trace_messages(&["increment"]);
-        let pred = |_src: &str, _msgs: &[TraceMessage]| -> PredicateOutcome {
-            PredicateOutcome::Fail
-        };
+        let pred =
+            |_src: &str, _msgs: &[TraceMessage]| -> PredicateOutcome { PredicateOutcome::Fail };
 
         let minimal = minimize_trace(COUNTER_APP, &msgs, &pred);
         assert_eq!(minimal.len(), 1);
@@ -702,9 +722,16 @@ fn main() -> Int {
         // 10 messages where only the 5th causes the "failure"
         // Predicate: fails if any message has tag "bad"
         let tags: Vec<&str> = vec![
-            "increment", "increment", "increment", "increment",
+            "increment",
+            "increment",
+            "increment",
+            "increment",
             "bad",
-            "increment", "increment", "increment", "increment", "increment",
+            "increment",
+            "increment",
+            "increment",
+            "increment",
+            "increment",
         ];
         let msgs = make_trace_messages(&tags);
 
@@ -725,9 +752,8 @@ fn main() -> Int {
     #[test]
     fn test_minimize_preserves_ordering() {
         // Predicate: fails if "a" appears before "b"
-        let msgs = make_trace_messages(&[
-            "increment", "a", "increment", "increment", "b", "increment",
-        ]);
+        let msgs =
+            make_trace_messages(&["increment", "a", "increment", "increment", "b", "increment"]);
 
         let pred = |_src: &str, msgs: &[TraceMessage]| -> PredicateOutcome {
             let has_a = msgs.iter().position(|m| m.tag == "a");
@@ -748,13 +774,22 @@ fn main() -> Int {
     #[test]
     fn test_minimize_deterministic() {
         let tags: Vec<&str> = vec![
-            "increment", "increment", "bad", "increment", "bad", "increment",
+            "increment",
+            "increment",
+            "bad",
+            "increment",
+            "bad",
+            "increment",
         ];
         let msgs = make_trace_messages(&tags);
 
         let pred = |_src: &str, msgs: &[TraceMessage]| -> PredicateOutcome {
             let bad_count = msgs.iter().filter(|m| m.tag == "bad").count();
-            if bad_count >= 2 { PredicateOutcome::Fail } else { PredicateOutcome::Pass }
+            if bad_count >= 2 {
+                PredicateOutcome::Fail
+            } else {
+                PredicateOutcome::Pass
+            }
         };
 
         let min1 = minimize_trace(COUNTER_APP, &msgs, &pred);
@@ -772,9 +807,8 @@ fn main() -> Int {
         // If the original doesn't fail, return it unchanged
         let msgs = make_trace_messages(&["increment", "increment"]);
 
-        let pred = |_src: &str, _msgs: &[TraceMessage]| -> PredicateOutcome {
-            PredicateOutcome::Pass
-        };
+        let pred =
+            |_src: &str, _msgs: &[TraceMessage]| -> PredicateOutcome { PredicateOutcome::Pass };
 
         let result = minimize_trace(COUNTER_APP, &msgs, &pred);
         assert_eq!(result.len(), 2);
@@ -808,9 +842,7 @@ fn main() -> Int {
     #[test]
     fn test_e2e_record_generate_run() {
         // Full pipeline: record → generate → run
-        let msgs = make_messages(&[
-            "increment", "increment", "decrement", "increment",
-        ]);
+        let msgs = make_messages(&["increment", "increment", "decrement", "increment"]);
         let trace = record_trace(COUNTER_APP, "test.ax", msgs).unwrap();
         let spec = generate_test(&trace, "e2e_test");
         let result = run_test(&spec, COUNTER_APP);
@@ -823,15 +855,18 @@ fn main() -> Int {
         // Full pipeline: record → minimize → generate → run
         // Create a sequence with extra messages, minimize to essential
         let msgs = make_messages(&[
-            "increment", "increment", "increment", "increment", "increment",
+            "increment",
+            "increment",
+            "increment",
+            "increment",
+            "increment",
         ]);
         let trace = record_trace(COUNTER_APP, "test.ax", msgs).unwrap();
 
         // Minimize with state mismatch predicate (count=5)
         let pred = make_state_mismatch_predicate(trace.final_state_hash.clone());
-        let trace_msgs: Vec<TraceMessage> = trace.cycles.iter()
-            .map(|c| c.message.clone())
-            .collect();
+        let trace_msgs: Vec<TraceMessage> =
+            trace.cycles.iter().map(|c| c.message.clone()).collect();
 
         // All messages produce the same tag, so minimizer can't reduce
         // (removing any increment changes the final count)

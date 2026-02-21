@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use boruna_compiler::ast::*;
 
-use super::*;
 use super::suggest;
+use super::*;
 
 /// AST analyzer that produces additional diagnostics beyond what the compiler checks.
 pub struct Analyzer<'a> {
@@ -23,13 +23,23 @@ impl<'a> Analyzer<'a> {
 
         for item in &program.items {
             match item {
-                Item::TypeDef(t) => { types.insert(t.name.clone(), &t.kind); }
-                Item::Function(f) => { functions.insert(f.name.clone(), f); }
+                Item::TypeDef(t) => {
+                    types.insert(t.name.clone(), &t.kind);
+                }
+                Item::Function(f) => {
+                    functions.insert(f.name.clone(), f);
+                }
                 _ => {}
             }
         }
 
-        Analyzer { file, source, program, types, functions }
+        Analyzer {
+            file,
+            source,
+            program,
+            types,
+            functions,
+        }
     }
 
     /// Run all analysis passes and return diagnostics.
@@ -104,9 +114,7 @@ impl<'a> Analyzer<'a> {
                 if let Expr::Ident(ref name) = **value {
                     if let Some(&type_name) = param_types.get(name.as_str()) {
                         if let Some(TypeDefKind::Enum(variants)) = self.types.get(type_name) {
-                            self.check_arms_cover_variants(
-                                name, type_name, variants, arms, diags,
-                            );
+                            self.check_arms_cover_variants(name, type_name, variants, arms, diags);
                         }
                     }
                 }
@@ -127,8 +135,14 @@ impl<'a> Analyzer<'a> {
                     self.check_match_in_expr(arg, param_types, diags);
                 }
             }
-            Expr::FieldAccess { object, .. } => self.check_match_in_expr(object, param_types, diags),
-            Expr::If { condition, then_block, else_block } => {
+            Expr::FieldAccess { object, .. } => {
+                self.check_match_in_expr(object, param_types, diags)
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.check_match_in_expr(condition, param_types, diags);
                 self.check_match_in_block(then_block, param_types, diags);
                 if let Some(eb) = else_block {
@@ -148,8 +162,11 @@ impl<'a> Analyzer<'a> {
                     self.check_match_in_expr(item, param_types, diags);
                 }
             }
-            Expr::SomeExpr(e) | Expr::OkExpr(e) | Expr::ErrExpr(e)
-            | Expr::Spawn(e) | Expr::Emit(e) => {
+            Expr::SomeExpr(e)
+            | Expr::OkExpr(e)
+            | Expr::ErrExpr(e)
+            | Expr::Spawn(e)
+            | Expr::Emit(e) => {
                 self.check_match_in_expr(e, param_types, diags);
             }
             Expr::Send { target, message } => {
@@ -170,21 +187,27 @@ impl<'a> Analyzer<'a> {
         diags: &mut Vec<Diagnostic>,
     ) {
         // Check if there's a wildcard or catch-all pattern
-        let has_wildcard = arms.iter().any(|a| matches!(a.pattern, Pattern::Wildcard | Pattern::Ident(_)));
+        let has_wildcard = arms
+            .iter()
+            .any(|a| matches!(a.pattern, Pattern::Wildcard | Pattern::Ident(_)));
         if has_wildcard {
             return; // Wildcard covers everything
         }
 
         let variant_names: HashSet<&str> = variants.iter().map(|(n, _)| n.as_str()).collect();
-        let covered: HashSet<&str> = arms.iter().filter_map(|a| {
-            if let Pattern::EnumVariant(ref name, _) = a.pattern {
-                Some(name.as_str())
-            } else {
-                None
-            }
-        }).collect();
+        let covered: HashSet<&str> = arms
+            .iter()
+            .filter_map(|a| {
+                if let Pattern::EnumVariant(ref name, _) = a.pattern {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        let missing: Vec<&str> = variant_names.difference(&covered)
+        let missing: Vec<&str> = variant_names
+            .difference(&covered)
             .copied()
             .collect::<Vec<_>>();
 
@@ -193,7 +216,8 @@ impl<'a> Analyzer<'a> {
             missing_sorted.sort();
 
             let match_line = find_match_line(self.source, scrutinee_name);
-            let match_end_line = match_line.and_then(|start| find_match_end_line(self.source, start));
+            let match_end_line =
+                match_line.and_then(|start| find_match_end_line(self.source, start));
 
             let mut diag = Diagnostic::error(
                 E005_NON_EXHAUSTIVE_MATCH,
@@ -212,7 +236,12 @@ impl<'a> Analyzer<'a> {
             // Generate suggested patch
             if let (Some(start), Some(end)) = (match_line, match_end_line) {
                 let patch = suggest::suggest_missing_match_arms(
-                    self.file, self.source, start, end, &missing_sorted, variants,
+                    self.file,
+                    self.source,
+                    start,
+                    end,
+                    &missing_sorted,
+                    variants,
                 );
                 if let Some(p) = patch {
                     diag = diag.with_suggestion(p);
@@ -252,11 +281,14 @@ impl<'a> Analyzer<'a> {
 
     fn check_fields_in_expr(&self, expr: &Expr, diags: &mut Vec<Diagnostic>) {
         match expr {
-            Expr::Record { type_name, fields, spread } => {
+            Expr::Record {
+                type_name,
+                fields,
+                spread,
+            } => {
                 if let Some(TypeDefKind::Record(type_fields)) = self.types.get(type_name.as_str()) {
-                    let known_fields: HashSet<&str> = type_fields.iter()
-                        .map(|(n, _)| n.as_str())
-                        .collect();
+                    let known_fields: HashSet<&str> =
+                        type_fields.iter().map(|(n, _)| n.as_str()).collect();
 
                     for (field_name, _) in fields {
                         if !known_fields.contains(field_name.as_str()) {
@@ -279,7 +311,11 @@ impl<'a> Analyzer<'a> {
                             );
                             if let Some(suggestion) = closest {
                                 let patch = suggest::suggest_rename_field(
-                                    self.file, self.source, field_name, suggestion, line,
+                                    self.file,
+                                    self.source,
+                                    field_name,
+                                    suggestion,
+                                    line,
                                 );
                                 if let Some(p) = patch {
                                     diag = diag.with_suggestion(p);
@@ -290,7 +326,11 @@ impl<'a> Analyzer<'a> {
                                 message: format!(
                                     "type '{}' has fields: {}",
                                     type_name,
-                                    type_fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                                    type_fields
+                                        .iter()
+                                        .map(|(n, _)| n.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
                                 ),
                                 location: None,
                             });
@@ -315,21 +355,38 @@ impl<'a> Analyzer<'a> {
             Expr::Unary { expr, .. } => self.check_fields_in_expr(expr, diags),
             Expr::Call { func, args } => {
                 self.check_fields_in_expr(func, diags);
-                for arg in args { self.check_fields_in_expr(arg, diags); }
+                for arg in args {
+                    self.check_fields_in_expr(arg, diags);
+                }
             }
             Expr::FieldAccess { object, .. } => self.check_fields_in_expr(object, diags),
-            Expr::If { condition, then_block, else_block } => {
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.check_fields_in_expr(condition, diags);
                 self.check_fields_in_block(then_block, diags);
-                if let Some(eb) = else_block { self.check_fields_in_block(eb, diags); }
+                if let Some(eb) = else_block {
+                    self.check_fields_in_block(eb, diags);
+                }
             }
             Expr::Match { value, arms } => {
                 self.check_fields_in_expr(value, diags);
-                for arm in arms { self.check_fields_in_expr(&arm.body, diags); }
+                for arm in arms {
+                    self.check_fields_in_expr(&arm.body, diags);
+                }
             }
-            Expr::List(items) => { for item in items { self.check_fields_in_expr(item, diags); } }
-            Expr::SomeExpr(e) | Expr::OkExpr(e) | Expr::ErrExpr(e)
-            | Expr::Spawn(e) | Expr::Emit(e) => self.check_fields_in_expr(e, diags),
+            Expr::List(items) => {
+                for item in items {
+                    self.check_fields_in_expr(item, diags);
+                }
+            }
+            Expr::SomeExpr(e)
+            | Expr::OkExpr(e)
+            | Expr::ErrExpr(e)
+            | Expr::Spawn(e)
+            | Expr::Emit(e) => self.check_fields_in_expr(e, diags),
             Expr::Send { target, message } => {
                 self.check_fields_in_expr(target, diags);
                 self.check_fields_in_expr(message, diags);
@@ -369,7 +426,10 @@ impl<'a> Analyzer<'a> {
                     // Suggest removing the capability annotation
                     if let Some(l) = line {
                         let patch = suggest::suggest_remove_capabilities(
-                            self.file, self.source, l, &f.capabilities,
+                            self.file,
+                            self.source,
+                            l,
+                            &f.capabilities,
                         );
                         if let Some(p) = patch {
                             diag = diag.with_suggestion(p);
@@ -402,10 +462,14 @@ fn find_match_end_line(source: &str, start_line: usize) -> Option<usize> {
     }
 
     let mut depth = 0i32;
-    for i in (start_line - 1)..lines.len() {
-        for ch in lines[i].chars() {
-            if ch == '{' { depth += 1; }
-            if ch == '}' { depth -= 1; }
+    for (i, line) in lines.iter().enumerate().skip(start_line - 1) {
+        for ch in line.chars() {
+            if ch == '{' {
+                depth += 1;
+            }
+            if ch == '}' {
+                depth -= 1;
+            }
         }
         if depth <= 0 {
             return Some(i + 1); // 1-indexed
@@ -430,7 +494,8 @@ fn find_field_line(source: &str, field_name: &str) -> Option<usize> {
     let pattern = format!("{field_name}:");
     for (i, line) in source.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with(&pattern) || trimmed.contains(&format!(" {pattern}"))
+        if trimmed.starts_with(&pattern)
+            || trimmed.contains(&format!(" {pattern}"))
             || trimmed.contains(&format!(",{pattern}"))
         {
             return Some(i + 1);
@@ -481,7 +546,10 @@ fn view(state: State) -> String { \"ok\" }
         let analyzer = Analyzer::new("test.ax", source, &program);
         let diags = analyzer.analyze();
         let match_diag = diags.iter().find(|d| d.id == E005_NON_EXHAUSTIVE_MATCH);
-        assert!(match_diag.is_some(), "expected non-exhaustive match diagnostic");
+        assert!(
+            match_diag.is_some(),
+            "expected non-exhaustive match diagnostic"
+        );
         let d = match_diag.unwrap();
         assert!(d.message.contains("Clear"));
         assert!(d.message.contains("Remove"));
@@ -544,7 +612,10 @@ fn view(state: State) -> String { \"ok\" }
         let analyzer = Analyzer::new("test.ax", source, &program);
         let diags = analyzer.analyze();
         let cap_diag = diags.iter().find(|d| d.id == E007_CAPABILITY_VIOLATION);
-        assert!(cap_diag.is_some(), "expected capability violation diagnostic");
+        assert!(
+            cap_diag.is_some(),
+            "expected capability violation diagnostic"
+        );
         assert!(cap_diag.unwrap().message.contains("update"));
     }
 }

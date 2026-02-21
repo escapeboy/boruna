@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::adapters::{self, CompileAdapter, GateAdapter, GateContext, TestAdapter, ReplayAdapter};
+use crate::adapters::{self, CompileAdapter, GateAdapter, GateContext, ReplayAdapter, TestAdapter};
 use crate::engine::{NodeStatus, Role, Scheduler, WorkGraph};
 use crate::patch::PatchBundle;
 use crate::storage::Store;
@@ -13,17 +13,17 @@ fn store_for(workspace: &Path) -> Result<Store, String> {
 }
 
 fn load_active_graph(store: &Store) -> Result<WorkGraph, String> {
-    let graph_id = store.latest_graph()?
+    let graph_id = store
+        .latest_graph()?
         .ok_or("no work graph found; run 'orch plan' first")?;
     store.load_graph(&graph_id)
 }
 
 /// `orch plan <spec.json>` — Create a DAG from a plan specification file.
 pub fn cmd_plan(workspace: &Path, spec_path: &Path) -> Result<(), String> {
-    let data = std::fs::read_to_string(spec_path)
-        .map_err(|e| format!("cannot read spec: {e}"))?;
-    let graph: WorkGraph = serde_json::from_str(&data)
-        .map_err(|e| format!("invalid spec JSON: {e}"))?;
+    let data = std::fs::read_to_string(spec_path).map_err(|e| format!("cannot read spec: {e}"))?;
+    let graph: WorkGraph =
+        serde_json::from_str(&data).map_err(|e| format!("invalid spec JSON: {e}"))?;
 
     // Validate DAG
     let sched = Scheduler::new(graph.clone(), 4);
@@ -98,10 +98,7 @@ pub fn cmd_apply(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     let locks = store.load_locks()?;
 
     // Check lock conflicts
-    let conflicts = locks.check_conflicts(
-        &bundle.metadata.id,
-        &bundle.metadata.touched_modules,
-    );
+    let conflicts = locks.check_conflicts(&bundle.metadata.id, &bundle.metadata.touched_modules);
     if !conflicts.is_empty() {
         println!("lock conflicts:");
         for c in &conflicts {
@@ -111,7 +108,10 @@ pub fn cmd_apply(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     }
 
     // Apply the patch bundle
-    println!("applying bundle: {} ({})", bundle.metadata.id, bundle.metadata.intent);
+    println!(
+        "applying bundle: {} ({})",
+        bundle.metadata.id, bundle.metadata.intent
+    );
     let rollback = bundle.apply(workspace)?;
     println!("  patches applied to {} files", bundle.patches.len());
 
@@ -125,7 +125,9 @@ pub fn cmd_apply(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     println!("running gates...");
     let results = adapters::run_gates(&adapters, &ctx);
 
-    let all_pass = results.iter().all(|r| r.status != adapters::GateStatus::Fail);
+    let all_pass = results
+        .iter()
+        .all(|r| r.status != adapters::GateStatus::Fail);
 
     for r in &results {
         let icon = match r.status {
@@ -147,7 +149,8 @@ pub fn cmd_apply(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     if all_pass {
         println!("all gates passed");
         // Save rollback bundle for future use
-        let rollback_path = store.bundles_dir()
+        let rollback_path = store
+            .bundles_dir()
             .join(format!("{}-rollback.patchbundle.json", bundle.metadata.id));
         rollback.save(&rollback_path)?;
         println!("  rollback saved to {}", rollback_path.display());
@@ -181,7 +184,10 @@ pub fn cmd_review(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
             for e in &errors {
                 println!("  - {e}");
             }
-            return Ok(output_review_result("reject", "format validation failed"));
+            return {
+                output_review_result("reject", "format validation failed");
+                Ok(())
+            };
         }
     }
 
@@ -199,7 +205,9 @@ pub fn cmd_review(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     println!("\nrunning gates...");
     let results = adapters::run_gates(&adapters, &ctx);
 
-    let all_pass = results.iter().all(|r| r.status != adapters::GateStatus::Fail);
+    let all_pass = results
+        .iter()
+        .all(|r| r.status != adapters::GateStatus::Fail);
 
     for r in &results {
         let icon = match r.status {
@@ -211,7 +219,10 @@ pub fn cmd_review(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     }
 
     if !all_pass {
-        return Ok(output_review_result("reject", "gate check failed"));
+        return {
+            output_review_result("reject", "gate check failed");
+            Ok(())
+        };
     }
 
     // 4. Reviewer checklist
@@ -221,7 +232,10 @@ pub fn cmd_review(workspace: &Path, bundle_path: &Path) -> Result<(), String> {
     }
 
     // 5. Two-person rule check
-    println!("\ntwo-person rule: reviewer must differ from author ({})", bundle.metadata.author);
+    println!(
+        "\ntwo-person rule: reviewer must differ from author ({})",
+        bundle.metadata.author
+    );
 
     // Store gate results
     let store = store_for(workspace)?;
@@ -266,7 +280,10 @@ pub fn cmd_status(workspace: &Path) -> Result<(), String> {
             NodeStatus::Failed => "[XX]",
             NodeStatus::Pending => "[  ]",
         };
-        println!("  {status_icon} {} — {} ({})", node.id, node.description, node.owner_role);
+        println!(
+            "  {status_icon} {} — {} ({})",
+            node.id, node.description, node.owner_role
+        );
         if !node.dependencies.is_empty() {
             println!("        deps: {}", node.dependencies.join(", "));
         }
@@ -278,7 +295,10 @@ pub fn cmd_status(workspace: &Path) -> Result<(), String> {
     if !active.is_empty() {
         println!("\nactive locks:");
         for lock in active {
-            println!("  {} → {} (since {})", lock.module, lock.held_by, lock.acquired_at);
+            println!(
+                "  {} → {} (since {})",
+                lock.module, lock.held_by, lock.acquired_at
+            );
         }
     }
 
@@ -293,25 +313,33 @@ pub fn cmd_report(workspace: &Path) -> Result<(), String> {
     let summary = sched.summary();
     let locks = store.load_locks()?;
 
-    let nodes_json: Vec<serde_json::Value> = graph.nodes.iter().map(|n| {
-        serde_json::json!({
-            "id": n.id,
-            "description": n.description,
-            "status": n.status,
-            "role": n.owner_role,
-            "dependencies": n.dependencies,
-            "outputs": n.outputs,
-            "tags": n.tags,
+    let nodes_json: Vec<serde_json::Value> = graph
+        .nodes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "id": n.id,
+                "description": n.description,
+                "status": n.status,
+                "role": n.owner_role,
+                "dependencies": n.dependencies,
+                "outputs": n.outputs,
+                "tags": n.tags,
+            })
         })
-    }).collect();
+        .collect();
 
-    let locks_json: Vec<serde_json::Value> = locks.active_locks().iter().map(|l| {
-        serde_json::json!({
-            "module": l.module,
-            "held_by": l.held_by,
-            "acquired_at": l.acquired_at,
+    let locks_json: Vec<serde_json::Value> = locks
+        .active_locks()
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "module": l.module,
+                "held_by": l.held_by,
+                "acquired_at": l.acquired_at,
+            })
         })
-    }).collect();
+        .collect();
 
     let report = serde_json::json!({
         "graph_id": graph.id,
@@ -346,7 +374,9 @@ fn build_gate_adapters(bundle: &PatchBundle) -> Vec<Box<dyn GateAdapter>> {
         adapters.push(Box::new(TestAdapter));
     }
     if bundle.expected_checks.replay {
-        adapters.push(Box::new(ReplayAdapter { expected_hashes: vec![] }));
+        adapters.push(Box::new(ReplayAdapter {
+            expected_hashes: vec![],
+        }));
     }
 
     adapters

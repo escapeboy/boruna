@@ -44,9 +44,7 @@ impl AppValidator {
                         "init" => {
                             result.has_init = true;
                             if !f.params.is_empty() {
-                                result.errors.push(
-                                    "init() must take 0 parameters".into()
-                                );
+                                result.errors.push("init() must take 0 parameters".into());
                             }
                             // init may have capabilities (for initial setup)
                         }
@@ -60,7 +58,8 @@ impl AppValidator {
                             }
                             if !f.capabilities.is_empty() {
                                 result.errors.push(
-                                    "update() must be pure — no capability annotations allowed".into()
+                                    "update() must be pure — no capability annotations allowed"
+                                        .into(),
                                 );
                             }
                         }
@@ -74,20 +73,22 @@ impl AppValidator {
                             }
                             if !f.capabilities.is_empty() {
                                 result.errors.push(
-                                    "view() must be pure — no capability annotations allowed".into()
+                                    "view() must be pure — no capability annotations allowed"
+                                        .into(),
                                 );
                             }
                         }
                         "policies" => {
                             result.has_policies = true;
                             if !f.params.is_empty() {
-                                result.errors.push(
-                                    "policies() must take 0 parameters".into()
-                                );
+                                result
+                                    .errors
+                                    .push("policies() must take 0 parameters".into());
                             }
                             if !f.capabilities.is_empty() {
                                 result.errors.push(
-                                    "policies() must be pure — no capability annotations allowed".into()
+                                    "policies() must be pure — no capability annotations allowed"
+                                        .into(),
                                 );
                             }
                         }
@@ -108,19 +109,23 @@ impl AppValidator {
         }
 
         if !result.has_init {
-            result.errors.push("missing required function: init()".into());
+            result
+                .errors
+                .push("missing required function: init()".into());
         }
         if !result.has_update {
-            result.errors.push("missing required function: update()".into());
+            result
+                .errors
+                .push("missing required function: update()".into());
         }
         if !result.has_view {
-            result.errors.push("missing required function: view()".into());
+            result
+                .errors
+                .push("missing required function: view()".into());
         }
 
         if !result.errors.is_empty() {
-            return Err(FrameworkError::Validation(
-                result.errors.join("; ")
-            ));
+            return Err(FrameworkError::Validation(result.errors.join("; ")));
         }
 
         Ok(result)

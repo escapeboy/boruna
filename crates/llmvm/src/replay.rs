@@ -54,6 +54,12 @@ fn default_version() -> u32 {
     EVENT_LOG_VERSION
 }
 
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventLog {
     pub fn new() -> Self {
         EventLog {
@@ -140,7 +146,8 @@ impl EventLog {
 
     /// Extract capability results for replay.
     pub fn capability_results(&self) -> Vec<Value> {
-        self.events.iter()
+        self.events
+            .iter()
             .filter_map(|e| match e {
                 Event::CapResult { result, .. } => Some(result.clone()),
                 _ => None,
@@ -155,10 +162,14 @@ pub struct ReplayEngine;
 impl ReplayEngine {
     /// Verify that a replay produces the same event sequence.
     pub fn verify(original: &EventLog, replay: &EventLog) -> ReplayResult {
-        let orig_caps: Vec<_> = original.events().iter()
+        let orig_caps: Vec<_> = original
+            .events()
+            .iter()
             .filter(|e| matches!(e, Event::CapCall { .. }))
             .collect();
-        let replay_caps: Vec<_> = replay.events().iter()
+        let replay_caps: Vec<_> = replay
+            .events()
+            .iter()
             .filter(|e| matches!(e, Event::CapCall { .. }))
             .collect();
 
@@ -174,8 +185,17 @@ impl ReplayEngine {
 
         // Compare capability call sequences
         for (i, (o, r)) in orig_caps.iter().zip(replay_caps.iter()).enumerate() {
-            if let (Event::CapCall { capability: oc, args: oa },
-                    Event::CapCall { capability: rc, args: ra }) = (o, r) {
+            if let (
+                Event::CapCall {
+                    capability: oc,
+                    args: oa,
+                },
+                Event::CapCall {
+                    capability: rc,
+                    args: ra,
+                },
+            ) = (o, r)
+            {
                 if oc != rc || oa != ra {
                     return ReplayResult::Diverged {
                         reason: format!(
@@ -197,11 +217,7 @@ impl ReplayEngine {
 
         if orig.len() != repl.len() {
             return ReplayResult::Diverged {
-                reason: format!(
-                    "different event count: {} vs {}",
-                    orig.len(),
-                    repl.len()
-                ),
+                reason: format!("different event count: {} vs {}", orig.len(), repl.len()),
             };
         }
 
@@ -210,9 +226,7 @@ impl ReplayEngine {
             let r_json = serde_json::to_string(r).unwrap_or_default();
             if o_json != r_json {
                 return ReplayResult::Diverged {
-                    reason: format!(
-                        "event #{i} differs: {o_json} vs {r_json}"
-                    ),
+                    reason: format!("event #{i} differs: {o_json} vs {r_json}"),
                 };
             }
         }
