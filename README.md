@@ -228,6 +228,47 @@ Execution can be recorded and replayed deterministically. The `EventLog` capture
 
 The actor system uses deterministic round-robin scheduling with sorted message delivery `(target_id, sender_id)`. Bounded execution budgets prevent any single actor from starving others.
 
+## Using Boruna in Existing Projects
+
+Boruna is designed as an embeddable platform. You can integrate its compiler, VM, and framework into existing Rust applications as crate dependencies.
+
+### Embed as a Scripting Engine
+
+```rust
+use boruna_compiler::compile;
+use boruna_vm::{Vm, CapabilityGateway, Policy};
+
+let module = compile("script", source)?;
+let gateway = CapabilityGateway::new(Policy::deny_all()); // sandboxed
+let mut vm = Vm::new(module, gateway);
+let result = vm.run()?;
+```
+
+### Run Framework Apps from Rust
+
+```rust
+use boruna_framework::runtime::{AppRuntime, AppMessage};
+use boruna_bytecode::Value;
+
+let module = compile("app", source)?;
+let mut runtime = AppRuntime::new(module)?;
+runtime.send(AppMessage::new("increment", Value::Int(0)))?;
+```
+
+### Common Integration Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| **Sandboxed scripting** | Run user-provided `.ax` scripts with `Policy::deny_all()` — no side effects possible |
+| **Business rules engine** | Load `.ax` rules at runtime, update without recompiling your host app |
+| **Safe plugin system** | Each plugin declares capabilities in `package.ax.json`, host enforces its own policy |
+| **Deterministic LLM calls** | Use effects + capability gateway for replayable, cached, budget-controlled LLM integration |
+| **Stateful UI components** | Embed Elm-architecture apps with state snapshots, time-travel debugging, and replay verification |
+| **Multi-agent orchestration** | Coordinate parallel agent work with DAG scheduling, patch bundles, and deterministic gates |
+| **Trace-based testing** | Record production traces, generate regression tests, minimize failing cases automatically |
+
+See [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) for detailed examples, API usage, and full integration walkthroughs.
+
 ## CLI Reference
 
 ```bash
@@ -260,6 +301,7 @@ Boruna is designed to be understood and operated by LLMs and autonomous coding a
 | Task | Where to Start |
 |------|---------------|
 | Understand the project | [`CLAUDE.md`](CLAUDE.md) — build commands, architecture, invariants |
+| Integrate into existing apps | [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) — embedding, plugins, LLM integration |
 | Learn the language | [`docs/language-guide.md`](docs/language-guide.md) — types, syntax, capabilities |
 | Build a framework app | [`docs/FRAMEWORK_API.md`](docs/FRAMEWORK_API.md) — AppRuntime, TestHarness, Effect |
 | Write and run tests | [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) — TestHarness usage, golden tests, CLI testing |
