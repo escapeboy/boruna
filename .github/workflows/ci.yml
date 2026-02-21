@@ -36,6 +36,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Build with http feature
+        run: cargo build --workspace --features boruna-vm/http
+
+      - name: Run tests with http feature
+        run: cargo test -p boruna-vm --features http
+
       - name: Validate example workflows
         run: |
           for dir in examples/workflows/*/; do
@@ -65,6 +71,9 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace -- -D warnings
+
+      - name: Run Clippy with http feature
+        run: cargo clippy --workspace --features boruna-vm/http -- -D warnings
 
   fmt:
     name: Format
