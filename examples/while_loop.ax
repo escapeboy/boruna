@@ -1,0 +1,15 @@
+// While loop demo — compute factorial iteratively
+
+fn factorial(n: Int) -> Int {
+    let mut result: Int = 1
+    let mut i: Int = n
+    while i > 0 {
+        result = result * i
+        i = i - 1
+    }
+    result
+}
+
+fn main() -> Int {
+    factorial(10)
+}

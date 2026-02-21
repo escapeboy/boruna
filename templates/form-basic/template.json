@@ -1,0 +1,11 @@
+{
+  "name": "form-basic",
+  "version": "0.1.0",
+  "description": "Simple validated form with field binding and submission",
+  "dependencies": ["std.ui", "std.forms", "std.validation"],
+  "capabilities": [],
+  "args": {
+    "form_name": { "type": "string", "required": true, "description": "Name of the form" },
+    "fields": { "type": "string", "required": true, "description": "Comma-separated field names" }
+  }
+}

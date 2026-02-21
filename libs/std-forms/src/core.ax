@@ -1,0 +1,93 @@
+// std.forms — Model-driven form engine
+// Pure logic only. Effects only returned by update().
+
+type FieldState { name: String, value: String, touched: Int, dirty: Int, error: String }
+type FormState { field_count: Int, submitted: Int, valid: Int, current_field: String, current_value: String, current_error: String }
+
+fn form_init(field_count: Int) -> FormState {
+    FormState {
+        field_count: field_count,
+        submitted: 0,
+        valid: 1,
+        current_field: "",
+        current_value: "",
+        current_error: ""
+    }
+}
+
+fn field_init(name: String) -> FieldState {
+    FieldState { name: name, value: "", touched: 0, dirty: 0, error: "" }
+}
+
+fn field_set_value(field: FieldState, value: String) -> FieldState {
+    FieldState { ..field, value: value, dirty: 1 }
+}
+
+fn field_touch(field: FieldState) -> FieldState {
+    FieldState { ..field, touched: 1 }
+}
+
+fn field_set_error(field: FieldState, error: String) -> FieldState {
+    FieldState { ..field, error: error }
+}
+
+fn field_clear_error(field: FieldState) -> FieldState {
+    FieldState { ..field, error: "" }
+}
+
+fn field_is_valid(field: FieldState) -> Int {
+    if field.error == "" { 1 } else { 0 }
+}
+
+fn field_reset(field: FieldState) -> FieldState {
+    FieldState { name: field.name, value: "", touched: 0, dirty: 0, error: "" }
+}
+
+fn form_set_field(form: FormState, name: String, value: String) -> FormState {
+    FormState { ..form, current_field: name, current_value: value }
+}
+
+fn form_set_error(form: FormState, field: String, error: String) -> FormState {
+    FormState { ..form, current_field: field, current_error: error, valid: 0 }
+}
+
+fn form_clear_errors(form: FormState) -> FormState {
+    FormState { ..form, current_error: "", valid: 1 }
+}
+
+fn form_submit(form: FormState) -> FormState {
+    if form.valid == 1 {
+        FormState { ..form, submitted: 1 }
+    } else {
+        form
+    }
+}
+
+fn form_reset(form: FormState) -> FormState {
+    FormState {
+        field_count: form.field_count,
+        submitted: 0,
+        valid: 1,
+        current_field: "",
+        current_value: "",
+        current_error: ""
+    }
+}
+
+fn form_is_valid(form: FormState) -> Int {
+    form.valid
+}
+
+fn form_is_submitted(form: FormState) -> Int {
+    form.submitted
+}
+
+fn main() -> Int {
+    let form: FormState = form_init(3)
+    let f1: FieldState = field_init("name")
+    let f2: FieldState = field_set_value(f1, "Alice")
+    let f3: FieldState = field_touch(f2)
+    let updated: FormState = form_set_field(form, "name", "Alice")
+    let submitted: FormState = form_submit(updated)
+    submitted.submitted
+}

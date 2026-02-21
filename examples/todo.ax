@@ -1,0 +1,28 @@
+// Todo app — demonstrates records, state management, and UI
+
+type Todo {
+    id: Int,
+    title: String,
+    done: Int,
+}
+
+fn make_todo(id: Int, title: String) -> Todo {
+    Todo { id: id, title: title, done: 0 }
+}
+
+fn render_todo(todo: Todo) -> String {
+    emit todo
+    todo.title
+}
+
+fn main() -> Int {
+    let t1: Todo = make_todo(1, "Buy groceries")
+    let t2: Todo = make_todo(2, "Write code")
+    let t3: Todo = make_todo(3, "Learn Boruna")
+
+    render_todo(t1)
+    render_todo(t2)
+    render_todo(t3)
+
+    3
+}

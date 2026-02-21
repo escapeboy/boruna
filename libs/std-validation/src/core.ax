@@ -1,0 +1,100 @@
+// std.validation — Reusable composable validation rules
+// Pure functions. Deterministic ordering.
+
+type ValidationError { field: String, message: String }
+type ValidationResult { valid: Int, error_field: String, error_message: String }
+
+fn validate_required(field: String, value: String) -> ValidationResult {
+    if value == "" {
+        ValidationResult { valid: 0, error_field: field, error_message: "is required" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_min_length(field: String, value: String, min: Int) -> ValidationResult {
+    let len: Int = string_length(value)
+    if len < min {
+        ValidationResult { valid: 0, error_field: field, error_message: "too short" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_max_length(field: String, value: String, max: Int) -> ValidationResult {
+    let len: Int = string_length(value)
+    if len > max {
+        ValidationResult { valid: 0, error_field: field, error_message: "too long" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_numeric(field: String, value: String) -> ValidationResult {
+    match try_parse_int(value) {
+        Ok(_) => ValidationResult { valid: 1, error_field: "", error_message: "" },
+        Err(_) => ValidationResult { valid: 0, error_field: field, error_message: "must be numeric" },
+    }
+}
+
+fn validate_min_value(field: String, value: Int, min: Int) -> ValidationResult {
+    if value < min {
+        ValidationResult { valid: 0, error_field: field, error_message: "below minimum" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_max_value(field: String, value: Int, max: Int) -> ValidationResult {
+    if value > max {
+        ValidationResult { valid: 0, error_field: field, error_message: "above maximum" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_not_empty(field: String, value: String) -> ValidationResult {
+    validate_required(field, value)
+}
+
+fn validate_equals(field: String, actual: String, expected: String) -> ValidationResult {
+    if actual == expected {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    } else {
+        ValidationResult { valid: 0, error_field: field, error_message: "does not match" }
+    }
+}
+
+fn validation_ok() -> ValidationResult {
+    ValidationResult { valid: 1, error_field: "", error_message: "" }
+}
+
+fn validation_fail(field: String, message: String) -> ValidationResult {
+    ValidationResult { valid: 0, error_field: field, error_message: message }
+}
+
+fn validation_merge(a: ValidationResult, b: ValidationResult) -> ValidationResult {
+    if a.valid == 0 {
+        a
+    } else {
+        b
+    }
+}
+
+fn string_length(s: String) -> Int {
+    // Built-in: returns character count
+    0
+}
+
+fn parse_int(s: String) -> Int {
+    // Built-in: parses string to int, returns 0 on failure
+    0
+}
+
+fn main() -> Int {
+    let r1: ValidationResult = validate_required("name", "")
+    let r2: ValidationResult = validate_required("name", "Alice")
+    let r3: ValidationResult = validate_min_value("age", 5, 18)
+    let merged: ValidationResult = validation_merge(r1, r2)
+    r1.valid
+}

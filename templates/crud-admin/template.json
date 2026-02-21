@@ -1,0 +1,11 @@
+{
+  "name": "crud-admin",
+  "version": "0.1.0",
+  "description": "Full CRUD admin panel with authz guards, db effects, form validation",
+  "dependencies": ["std.ui", "std.forms", "std.authz", "std.db", "std.validation"],
+  "capabilities": ["db.query"],
+  "args": {
+    "entity_name": { "type": "string", "required": true, "description": "Name of the entity to manage" },
+    "fields": { "type": "string", "required": true, "description": "Comma-separated field names" }
+  }
+}

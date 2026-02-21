@@ -1,0 +1,82 @@
+// std.notifications — Notification queue and toast helpers
+// Effects only for timers. Pure queue management.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+
+type Notification { id: Int, level: String, message: String, dismiss_ms: Int }
+
+type NotificationQueue {
+    next_id: Int,
+    count: Int,
+    max_visible: Int,
+    last_level: String,
+    last_message: String,
+    last_id: Int
+}
+
+fn notification_init(max_visible: Int) -> NotificationQueue {
+    NotificationQueue {
+        next_id: 1,
+        count: 0,
+        max_visible: max_visible,
+        last_level: "",
+        last_message: "",
+        last_id: 0
+    }
+}
+
+fn notification_make(id: Int, level: String, message: String, dismiss_ms: Int) -> Notification {
+    Notification { id: id, level: level, message: message, dismiss_ms: dismiss_ms }
+}
+
+fn notification_push(queue: NotificationQueue, level: String, message: String, dismiss_ms: Int) -> NotificationQueue {
+    NotificationQueue {
+        ..queue,
+        next_id: queue.next_id + 1,
+        count: queue.count + 1,
+        last_level: level,
+        last_message: message,
+        last_id: queue.next_id
+    }
+}
+
+fn notification_dismiss(queue: NotificationQueue, id: Int) -> NotificationQueue {
+    let new_count: Int = if queue.count > 0 { queue.count - 1 } else { 0 }
+    NotificationQueue { ..queue, count: new_count }
+}
+
+fn notification_dismiss_effect(id: Int, delay_ms: Int) -> Effect {
+    Effect { kind: "timer", payload: "dismiss", callback_tag: "notification_dismissed" }
+}
+
+fn notification_count(queue: NotificationQueue) -> Int {
+    queue.count
+}
+
+fn notification_is_full(queue: NotificationQueue) -> Int {
+    if queue.count >= queue.max_visible { 1 } else { 0 }
+}
+
+fn notification_info(queue: NotificationQueue, level: String, message: String) -> NotificationQueue {
+    notification_push(queue, "info", message, 3000)
+}
+
+fn notification_success(queue: NotificationQueue, message: String) -> NotificationQueue {
+    notification_push(queue, "success", message, 3000)
+}
+
+fn notification_warning(queue: NotificationQueue, message: String) -> NotificationQueue {
+    notification_push(queue, "warning", message, 5000)
+}
+
+fn notification_error(queue: NotificationQueue, message: String) -> NotificationQueue {
+    notification_push(queue, "error", message, 0)
+}
+
+fn main() -> Int {
+    let q: NotificationQueue = notification_init(5)
+    let q1: NotificationQueue = notification_success(q, "Item saved")
+    let q2: NotificationQueue = notification_error(q1, "Network error")
+    let q3: NotificationQueue = notification_dismiss(q2, 1)
+    q3.count
+}

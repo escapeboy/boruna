@@ -1,0 +1,59 @@
+// std.routing — Declarative routing model
+// Pure functions. Deterministic match ordering. No dynamic parsing magic.
+
+type Route { name: String, path: String, param_count: Int }
+type RouteMatch { matched: Int, route_name: String, param1: String, param2: String }
+
+fn route_define(name: String, path: String) -> Route {
+    Route { name: name, path: path, param_count: 0 }
+}
+
+fn route_define_with_param(name: String, path: String, param_count: Int) -> Route {
+    Route { name: name, path: path, param_count: param_count }
+}
+
+fn route_match_path(route: Route, path: String) -> RouteMatch {
+    if route.path == path {
+        RouteMatch { matched: 1, route_name: route.name, param1: "", param2: "" }
+    } else {
+        RouteMatch { matched: 0, route_name: "", param1: "", param2: "" }
+    }
+}
+
+fn route_no_match() -> RouteMatch {
+    RouteMatch { matched: 0, route_name: "", param1: "", param2: "" }
+}
+
+fn route_navigate(route_name: String) -> String {
+    route_name
+}
+
+fn route_navigate_with_param(route_name: String, param: String) -> String {
+    route_name
+}
+
+fn route_is_active(current_route: String, route_name: String) -> Int {
+    if current_route == route_name { 1 } else { 0 }
+}
+
+fn route_match_first(r1: Route, r2: Route, r3: Route, path: String) -> RouteMatch {
+    let m1: RouteMatch = route_match_path(r1, path)
+    if m1.matched == 1 {
+        m1
+    } else {
+        let m2: RouteMatch = route_match_path(r2, path)
+        if m2.matched == 1 {
+            m2
+        } else {
+            route_match_path(r3, path)
+        }
+    }
+}
+
+fn main() -> Int {
+    let home: Route = route_define("home", "/")
+    let users: Route = route_define("users", "/users")
+    let settings: Route = route_define("settings", "/settings")
+    let m: RouteMatch = route_match_first(home, users, settings, "/users")
+    m.matched
+}

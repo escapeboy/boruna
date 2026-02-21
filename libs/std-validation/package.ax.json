@@ -1,0 +1,8 @@
+{
+  "name": "std.validation",
+  "version": "0.1.0",
+  "description": "Reusable composable validation rules",
+  "dependencies": {},
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

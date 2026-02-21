@@ -1,0 +1,15 @@
+[package]
+name = "boruna-compiler"
+description = "Boruna compiler (lexer, parser, type checker, bytecode emitter)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+boruna-bytecode = { path = "../llmbc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+logos = { workspace = true }
+
+[dev-dependencies]
+boruna-vm = { path = "../llmvm" }

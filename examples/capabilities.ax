@@ -1,0 +1,14 @@
+// Capability demo — functions declare their side effects
+
+fn get_time() -> Int !{time} {
+    42
+}
+
+fn pure_add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+fn main() -> Int {
+    let t: Int = get_time()
+    pure_add(t, 10)
+}

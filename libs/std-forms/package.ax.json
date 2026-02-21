@@ -1,0 +1,10 @@
+{
+  "name": "std.forms",
+  "version": "0.1.0",
+  "description": "Model-driven form engine with validation and state tracking",
+  "dependencies": {
+    "std.validation": "0.1.0"
+  },
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

@@ -1,0 +1,48 @@
+// Trace Demo App — demonstrates trace recording and regression test generation.
+//
+// Usage:
+//   llmvm trace2tests record examples/trace_demo/trace_app.llm \
+//     --messages "increment:0,increment:0,decrement:0,increment:0" \
+//     --out trace.json
+//
+//   llmvm trace2tests generate --trace trace.json --name counter_regression --out test.json
+//   llmvm trace2tests run --spec test.json --source examples/trace_demo/trace_app.llm
+
+type State { count: Int, label: String }
+type Msg { tag: String, payload: Int }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+
+fn init() -> State {
+    State { count: 0, label: "trace_demo" }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    let new_count: Int = if msg.tag == "increment" {
+        state.count + 1
+    } else {
+        if msg.tag == "decrement" {
+            state.count - 1
+        } else {
+            if msg.tag == "reset" {
+                0
+            } else {
+                state.count
+            }
+        }
+    }
+    UpdateResult {
+        state: State { count: new_count, label: state.label },
+        effects: [],
+    }
+}
+
+fn view(state: State) -> UINode {
+    UINode { tag: "counter", text: state.label }
+}
+
+fn main() -> Int {
+    let s: State = init()
+    s.count
+}

@@ -1,0 +1,11 @@
+[package]
+name = "boruna-vm"
+description = "Boruna virtual machine and runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+boruna-bytecode = { path = "../llmbc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

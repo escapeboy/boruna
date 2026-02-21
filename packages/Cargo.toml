@@ -1,0 +1,22 @@
+[package]
+name = "boruna-pkg"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "boruna-pkg"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+sha2 = "0.10"
+boruna-bytecode = { path = "../crates/llmbc" }
+boruna-compiler = { path = "../crates/llmc" }
+
+[dev-dependencies]
+tempfile = "3"

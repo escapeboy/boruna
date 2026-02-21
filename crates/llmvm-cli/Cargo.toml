@@ -1,0 +1,25 @@
+[package]
+name = "boruna-cli"
+description = "Boruna CLI tool"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "boruna"
+path = "src/main.rs"
+
+[features]
+default = []
+serve = ["dep:axum", "dep:tokio"]
+
+[dependencies]
+boruna-bytecode = { path = "../llmbc" }
+boruna-vm = { path = "../llmvm" }
+boruna-compiler = { path = "../llmc" }
+boruna-framework = { path = "../llmfw" }
+boruna-tooling = { path = "../../tooling" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }

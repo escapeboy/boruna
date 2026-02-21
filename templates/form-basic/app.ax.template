@@ -1,0 +1,90 @@
+// Form Basic — Generated from form-basic template
+// Form: {{form_name}}
+// Fields: {{fields}}
+
+type State {
+    field1_value: String,
+    field2_value: String,
+    field1_error: String,
+    field2_error: String,
+    submitted: Int,
+    valid: Int,
+    status: String
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+
+fn init() -> State {
+    State {
+        field1_value: "",
+        field2_value: "",
+        field1_error: "",
+        field2_error: "",
+        submitted: 0,
+        valid: 1,
+        status: "editing"
+    }
+}
+
+fn validate_field(value: String, field_name: String) -> String {
+    if value == "" { "is required" } else { "" }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "set_field1" => {
+            let err: String = validate_field(msg.payload, "field1")
+            UpdateResult {
+                state: State { ..state, field1_value: msg.payload, field1_error: err },
+                effects: [],
+            }
+        },
+        "set_field2" => {
+            let err: String = validate_field(msg.payload, "field2")
+            UpdateResult {
+                state: State { ..state, field2_value: msg.payload, field2_error: err },
+                effects: [],
+            }
+        },
+        "submit" => {
+            let e1: String = validate_field(state.field1_value, "field1")
+            let e2: String = validate_field(state.field2_value, "field2")
+            let is_valid: Int = if e1 == "" { if e2 == "" { 1 } else { 0 } } else { 0 }
+            if is_valid == 1 {
+                UpdateResult {
+                    state: State { ..state, submitted: 1, valid: 1, status: "submitted", field1_error: "", field2_error: "" },
+                    effects: [],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, valid: 0, status: "invalid", field1_error: e1, field2_error: e2 },
+                    effects: [],
+                }
+            }
+        },
+        "reset" => {
+            UpdateResult {
+                state: init(),
+                effects: [],
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    UINode { tag: "form", text: state.status }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "set_field1", payload: "Alice" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "set_field2", payload: "alice@test.com" })
+    let r3: UpdateResult = update(r2.state, Msg { tag: "submit", payload: "" })
+    r3.state.submitted
+}

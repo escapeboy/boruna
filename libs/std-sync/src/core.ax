@@ -1,0 +1,107 @@
+// std.sync — Offline queue and conflict resolution helpers
+// Pure conflict resolution. Effects only describe sync operations.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+
+type SyncState {
+    online: Int,
+    pending_count: Int,
+    synced_count: Int,
+    status: String,
+    local_version: Int,
+    remote_version: Int,
+    conflicts: Int,
+    resolved: Int
+}
+
+fn sync_init() -> SyncState {
+    SyncState {
+        online: 1,
+        pending_count: 0,
+        synced_count: 0,
+        status: "idle",
+        local_version: 0,
+        remote_version: 0,
+        conflicts: 0,
+        resolved: 0
+    }
+}
+
+fn sync_queue_edit(state: SyncState) -> SyncState {
+    SyncState {
+        ..state,
+        pending_count: state.pending_count + 1,
+        local_version: state.local_version + 1,
+        status: if state.online == 1 { "syncing" } else { "queued" }
+    }
+}
+
+fn sync_mark_synced(state: SyncState) -> SyncState {
+    let new_pending: Int = if state.pending_count > 0 { state.pending_count - 1 } else { 0 }
+    SyncState {
+        ..state,
+        pending_count: new_pending,
+        synced_count: state.synced_count + 1,
+        remote_version: state.local_version,
+        status: if new_pending == 0 { "synced" } else { "syncing" }
+    }
+}
+
+fn sync_go_offline(state: SyncState) -> SyncState {
+    SyncState { ..state, online: 0, status: "offline" }
+}
+
+fn sync_go_online(state: SyncState) -> SyncState {
+    let new_status: String = if state.pending_count > 0 { "syncing" } else { "synced" }
+    SyncState { ..state, online: 1, status: new_status }
+}
+
+fn sync_detect_conflict(state: SyncState) -> SyncState {
+    SyncState {
+        ..state,
+        conflicts: state.conflicts + 1,
+        status: "conflict"
+    }
+}
+
+fn sync_resolve_conflict(state: SyncState, strategy: String) -> SyncState {
+    SyncState {
+        ..state,
+        resolved: state.resolved + 1,
+        local_version: state.local_version + 1,
+        status: "resolving"
+    }
+}
+
+fn sync_effect(endpoint: String, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: endpoint, callback_tag: callback_tag }
+}
+
+fn sync_needs_push(state: SyncState) -> Int {
+    if state.pending_count > 0 {
+        if state.online == 1 { 1 } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn sync_is_idle(state: SyncState) -> Int {
+    if state.status == "idle" { 1 } else {
+        if state.status == "synced" { 1 } else { 0 }
+    }
+}
+
+fn sync_has_conflicts(state: SyncState) -> Int {
+    if state.conflicts > state.resolved { 1 } else { 0 }
+}
+
+fn main() -> Int {
+    let s0: SyncState = sync_init()
+    let s1: SyncState = sync_queue_edit(s0)
+    let s2: SyncState = sync_queue_edit(s1)
+    let s3: SyncState = sync_mark_synced(s2)
+    let s4: SyncState = sync_go_offline(s3)
+    let s5: SyncState = sync_queue_edit(s4)
+    let s6: SyncState = sync_go_online(s5)
+    s6.pending_count
+}

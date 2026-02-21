@@ -1,0 +1,177 @@
+// Admin CRUD App — Framework Dogfood Example
+// Demonstrates: db effects, role-based policy, CRUD view model, deterministic replay
+// Uses: match expressions (F4 fix), record spread (F5 fix)
+
+type State {
+    mode: String,
+    form_id: Int,
+    form_name: String,
+    form_email: String,
+    form_role: String,
+    status: String,
+    status_detail: String,
+    user_count: Int,
+    last_op_cycle: Int,
+    search_query: String,
+    current_user_role: String
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+fn init() -> State {
+    State {
+        mode: "idle",
+        form_id: 0,
+        form_name: "",
+        form_email: "",
+        form_role: "viewer",
+        status: "ready",
+        status_detail: "",
+        user_count: 0,
+        last_op_cycle: 0,
+        search_query: "",
+        current_user_role: "admin"
+    }
+}
+
+fn can_write(role: String) -> Bool {
+    if role == "admin" { true } else { if role == "editor" { true } else { false } }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "create_user" => {
+            if can_write(state.current_user_role) {
+                UpdateResult {
+                    state: State { ..state, mode: "creating", status: "pending", status_detail: "creating user" },
+                    effects: [
+                        Effect { kind: "db_query", payload: "INSERT INTO users (name, email, role) VALUES", callback_tag: "user_created" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", status_detail: "unauthorized: role lacks create permission" },
+                    effects: [],
+                }
+            }
+        },
+        "user_created" => {
+            UpdateResult {
+                state: State { ..state, mode: "idle", form_name: "", form_email: "", form_role: "viewer", status: "ok", status_detail: "user created successfully", user_count: state.user_count + 1, last_op_cycle: state.last_op_cycle + 1 },
+                effects: [],
+            }
+        },
+        "delete_user" => {
+            if state.current_user_role == "admin" {
+                UpdateResult {
+                    state: State { ..state, mode: "deleting", status: "pending", status_detail: "deleting user" },
+                    effects: [
+                        Effect { kind: "db_query", payload: "DELETE FROM users WHERE id =", callback_tag: "user_deleted" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", status_detail: "unauthorized: only admin can delete" },
+                    effects: [],
+                }
+            }
+        },
+        "user_deleted" => {
+            let new_count: Int = if state.user_count > 0 { state.user_count - 1 } else { 0 }
+            UpdateResult {
+                state: State { ..state, mode: "idle", status: "ok", status_detail: "user deleted", user_count: new_count, last_op_cycle: state.last_op_cycle + 1 },
+                effects: [],
+            }
+        },
+        "edit_user" => {
+            if can_write(state.current_user_role) {
+                UpdateResult {
+                    state: State { ..state, mode: "editing", status: "pending", status_detail: "updating user" },
+                    effects: [
+                        Effect { kind: "db_query", payload: "UPDATE users SET name, email, role WHERE id =", callback_tag: "user_updated" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", status_detail: "unauthorized: role lacks edit permission" },
+                    effects: [],
+                }
+            }
+        },
+        "user_updated" => {
+            UpdateResult {
+                state: State { ..state, mode: "idle", status: "ok", status_detail: "user updated", last_op_cycle: state.last_op_cycle + 1 },
+                effects: [],
+            }
+        },
+        "list_users" => {
+            UpdateResult {
+                state: State { ..state, mode: "listing", status: "pending", status_detail: "fetching user list" },
+                effects: [
+                    Effect { kind: "db_query", payload: "SELECT * FROM users", callback_tag: "users_listed" },
+                ],
+            }
+        },
+        "users_listed" => {
+            UpdateResult {
+                state: State { ..state, mode: "idle", status: "ok", status_detail: msg.payload, last_op_cycle: state.last_op_cycle + 1 },
+                effects: [],
+            }
+        },
+        "search" => {
+            UpdateResult {
+                state: State { ..state, mode: "searching", status: "pending", status_detail: "searching", search_query: msg.payload },
+                effects: [
+                    Effect { kind: "db_query", payload: "SELECT * FROM users WHERE name LIKE", callback_tag: "search_results" },
+                ],
+            }
+        },
+        "search_results" => {
+            UpdateResult {
+                state: State { ..state, mode: "idle", status: "ok", status_detail: msg.payload, last_op_cycle: state.last_op_cycle + 1 },
+                effects: [],
+            }
+        },
+        "set_role" => {
+            UpdateResult {
+                state: State { ..state, current_user_role: msg.payload },
+                effects: [],
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    if state.mode == "idle" {
+        UINode { tag: "admin-panel", text: state.status }
+    } else {
+        UINode { tag: "admin-panel", text: state.status_detail }
+    }
+}
+
+fn policies() -> PolicySet {
+    PolicySet {
+        capabilities: ["db.query"],
+        max_effects: 5,
+        max_steps: 1000000,
+    }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    // Create a user
+    let r1: UpdateResult = update(s0, Msg { tag: "create_user", payload: "" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "user_created", payload: "ok" })
+    // Delete a user
+    let r3: UpdateResult = update(r2.state, Msg { tag: "delete_user", payload: "" })
+    let r4: UpdateResult = update(r3.state, Msg { tag: "user_deleted", payload: "ok" })
+    // Final: user_count should be 0
+    r4.state.user_count
+}

@@ -1,0 +1,110 @@
+// std.db — Typed database query helpers
+// Only produces Effects. No hidden IO.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+type Query { operation: String, table: String, columns: String, conditions: String, order_by: String, limit_val: Int, offset_val: Int }
+type Pagination { page: Int, per_page: Int, total: Int, total_pages: Int }
+
+fn db_select(table: String, columns: String) -> Query {
+    Query {
+        operation: "SELECT",
+        table: table,
+        columns: columns,
+        conditions: "",
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_insert(table: String, columns: String, values: String) -> Query {
+    Query {
+        operation: "INSERT",
+        table: table,
+        columns: columns,
+        conditions: values,
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_update(table: String, sets: String, conditions: String) -> Query {
+    Query {
+        operation: "UPDATE",
+        table: table,
+        columns: sets,
+        conditions: conditions,
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_delete(table: String, conditions: String) -> Query {
+    Query {
+        operation: "DELETE",
+        table: table,
+        columns: "",
+        conditions: conditions,
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_where(query: Query, condition: String) -> Query {
+    Query { ..query, conditions: condition }
+}
+
+fn db_order(query: Query, column: String) -> Query {
+    Query { ..query, order_by: column }
+}
+
+fn db_limit(query: Query, limit_val: Int) -> Query {
+    Query { ..query, limit_val: limit_val }
+}
+
+fn db_offset(query: Query, offset_val: Int) -> Query {
+    Query { ..query, offset_val: offset_val }
+}
+
+fn db_paginate(query: Query, page: Int, per_page: Int) -> Query {
+    let offset: Int = (page - 1) * per_page
+    Query { ..query, limit_val: per_page, offset_val: offset }
+}
+
+fn db_to_effect(query: Query, callback_tag: String) -> Effect {
+    Effect { kind: "db_query", payload: query.operation, callback_tag: callback_tag }
+}
+
+fn pagination_info(page: Int, per_page: Int, total: Int) -> Pagination {
+    let pages: Int = if total == 0 { 1 } else { (total + per_page - 1) / per_page }
+    Pagination { page: page, per_page: per_page, total: total, total_pages: pages }
+}
+
+fn pagination_has_next(p: Pagination) -> Int {
+    if p.page < p.total_pages { 1 } else { 0 }
+}
+
+fn pagination_has_prev(p: Pagination) -> Int {
+    if p.page > 1 { 1 } else { 0 }
+}
+
+fn pagination_next_page(p: Pagination) -> Int {
+    if p.page < p.total_pages { p.page + 1 } else { p.page }
+}
+
+fn pagination_prev_page(p: Pagination) -> Int {
+    if p.page > 1 { p.page - 1 } else { 1 }
+}
+
+fn main() -> Int {
+    let q: Query = db_select("users", "id, name, email")
+    let q2: Query = db_where(q, "active = 1")
+    let q3: Query = db_order(q2, "name")
+    let q4: Query = db_paginate(q3, 2, 10)
+    let eff: Effect = db_to_effect(q4, "users_loaded")
+    let p: Pagination = pagination_info(2, 10, 45)
+    pagination_has_next(p)
+}

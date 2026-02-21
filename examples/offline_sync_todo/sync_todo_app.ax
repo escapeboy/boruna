@@ -1,0 +1,177 @@
+// Offline-First Sync Todo App — Framework Dogfood Example
+// Demonstrates: offline edits, sync effects, conflict resolution, version vectors
+// Uses: match expressions (F4 fix), record spread (F5 fix), list ops (F1 fix), parse_int (F2 fix)
+
+type State {
+    total_items: Int,
+    completed_items: Int,
+    last_action: String,
+    online: Int,
+    pending_edits: Int,
+    synced_edits: Int,
+    sync_status: String,
+    local_version: Int,
+    remote_version: Int,
+    conflicts_detected: Int,
+    conflicts_resolved: Int,
+    last_conflict_resolution: String,
+    sync_requests_sent: Int
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+fn init() -> State {
+    State {
+        total_items: 0,
+        completed_items: 0,
+        last_action: "init",
+        online: 1,
+        pending_edits: 0,
+        synced_edits: 0,
+        sync_status: "idle",
+        local_version: 0,
+        remote_version: 0,
+        conflicts_detected: 0,
+        conflicts_resolved: 0,
+        last_conflict_resolution: "none",
+        sync_requests_sent: 0
+    }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "add_todo" => {
+            let new_pending: Int = state.pending_edits + 1
+            let new_local_v: Int = state.local_version + 1
+            if state.online == 1 {
+                UpdateResult {
+                    state: State { ..state, total_items: state.total_items + 1, last_action: "add", pending_edits: new_pending, sync_status: "syncing", local_version: new_local_v, sync_requests_sent: state.sync_requests_sent + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "POST /api/todos/sync", callback_tag: "sync_response" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, total_items: state.total_items + 1, last_action: "add", pending_edits: new_pending, sync_status: "offline_queued", local_version: new_local_v },
+                    effects: [],
+                }
+            }
+        },
+        "complete_todo" => {
+            let new_completed: Int = if state.completed_items < state.total_items { state.completed_items + 1 } else { state.completed_items }
+            let new_local_v: Int = state.local_version + 1
+            let new_pending: Int = state.pending_edits + 1
+            if state.online == 1 {
+                UpdateResult {
+                    state: State { ..state, completed_items: new_completed, last_action: "complete", pending_edits: new_pending, sync_status: "syncing", local_version: new_local_v, sync_requests_sent: state.sync_requests_sent + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "POST /api/todos/sync", callback_tag: "sync_response" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, completed_items: new_completed, last_action: "complete", pending_edits: new_pending, sync_status: "offline_queued", local_version: new_local_v },
+                    effects: [],
+                }
+            }
+        },
+        "sync_response" => {
+            let cleared: Int = if state.pending_edits > 0 { state.pending_edits - 1 } else { 0 }
+            if msg.payload == "ok" {
+                UpdateResult {
+                    state: State { ..state, pending_edits: cleared, synced_edits: state.synced_edits + 1, sync_status: "synced", remote_version: state.local_version },
+                    effects: [],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, pending_edits: cleared, sync_status: "resolving_conflict", local_version: state.local_version + 1, conflicts_detected: state.conflicts_detected + 1, last_conflict_resolution: "local_wins", sync_requests_sent: state.sync_requests_sent + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "POST /api/todos/force_sync", callback_tag: "conflict_resolved" },
+                    ],
+                }
+            }
+        },
+        "conflict_resolved" => {
+            UpdateResult {
+                state: State { ..state, synced_edits: state.synced_edits + 1, sync_status: "synced", remote_version: state.local_version, conflicts_resolved: state.conflicts_resolved + 1, last_conflict_resolution: "local_wins" },
+                effects: [],
+            }
+        },
+        "go_offline" => {
+            UpdateResult {
+                state: State { ..state, online: 0, sync_status: "offline" },
+                effects: [],
+            }
+        },
+        "go_online" => {
+            if state.pending_edits > 0 {
+                UpdateResult {
+                    state: State { ..state, online: 1, sync_status: "syncing", sync_requests_sent: state.sync_requests_sent + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "POST /api/todos/bulk_sync", callback_tag: "sync_response" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, online: 1, sync_status: "synced" },
+                    effects: [],
+                }
+            }
+        },
+        "delete_todo" => {
+            let new_total: Int = if state.total_items > 0 { state.total_items - 1 } else { 0 }
+            let new_completed: Int = if state.completed_items > new_total { new_total } else { state.completed_items }
+            let new_local_v: Int = state.local_version + 1
+            let new_pending: Int = state.pending_edits + 1
+            if state.online == 1 {
+                UpdateResult {
+                    state: State { ..state, total_items: new_total, completed_items: new_completed, last_action: "delete", pending_edits: new_pending, sync_status: "syncing", local_version: new_local_v, sync_requests_sent: state.sync_requests_sent + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "POST /api/todos/sync", callback_tag: "sync_response" },
+                    ],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, total_items: new_total, completed_items: new_completed, last_action: "delete", pending_edits: new_pending, sync_status: "offline_queued", local_version: new_local_v },
+                    effects: [],
+                }
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    if state.online == 1 {
+        UINode { tag: "sync-todo", text: state.sync_status }
+    } else {
+        UINode { tag: "sync-todo", text: "offline" }
+    }
+}
+
+fn policies() -> PolicySet {
+    PolicySet {
+        capabilities: ["net.fetch"],
+        max_effects: 2,
+        max_steps: 1000000,
+    }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "add_todo", payload: "" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "sync_response", payload: "ok" })
+    let r3: UpdateResult = update(r2.state, Msg { tag: "go_offline", payload: "" })
+    let r4: UpdateResult = update(r3.state, Msg { tag: "add_todo", payload: "" })
+    let r5: UpdateResult = update(r4.state, Msg { tag: "add_todo", payload: "" })
+    let r6: UpdateResult = update(r5.state, Msg { tag: "go_online", payload: "" })
+    let r7: UpdateResult = update(r6.state, Msg { tag: "sync_response", payload: "conflict" })
+    let r8: UpdateResult = update(r7.state, Msg { tag: "conflict_resolved", payload: "ok" })
+    r8.state.total_items
+}

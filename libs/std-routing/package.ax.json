@@ -1,0 +1,8 @@
+{
+  "name": "std.routing",
+  "version": "0.1.0",
+  "description": "Declarative routing model",
+  "dependencies": {},
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

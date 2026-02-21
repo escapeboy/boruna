@@ -1,0 +1,23 @@
+// Counter app — demonstrates state, UI emission, and capability use
+
+type CounterState {
+    count: Int,
+    label: String,
+}
+
+fn make_ui(state: CounterState) -> String {
+    emit state
+    state.label
+}
+
+fn main() -> Int {
+    let state: CounterState = CounterState { count: 0, label: "Counter" }
+    make_ui(state)
+
+    // Increment
+    let count: Int = state.count + 1
+    let state2: CounterState = CounterState { count: count, label: "Counter" }
+    make_ui(state2)
+
+    state2.count
+}

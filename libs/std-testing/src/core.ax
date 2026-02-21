@@ -1,0 +1,93 @@
+// std.testing — High-level test helpers for framework apps
+// Pure assertions. No host UI dependency. Deterministic.
+
+type TestResult { passed: Int, label: String, detail: String }
+type TestSummary { total: Int, passed: Int, failed: Int }
+
+fn assert_eq_int(actual: Int, expected: Int, label: String) -> TestResult {
+    if actual == expected {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "mismatch" }
+    }
+}
+
+fn assert_eq_string(actual: String, expected: String, label: String) -> TestResult {
+    if actual == expected {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "mismatch" }
+    }
+}
+
+fn assert_true(value: Int, label: String) -> TestResult {
+    if value == 1 {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "expected true" }
+    }
+}
+
+fn assert_false(value: Int, label: String) -> TestResult {
+    if value == 0 {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "expected false" }
+    }
+}
+
+fn assert_gt(actual: Int, threshold: Int, label: String) -> TestResult {
+    if actual > threshold {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "not greater than" }
+    }
+}
+
+fn assert_lt(actual: Int, threshold: Int, label: String) -> TestResult {
+    if actual < threshold {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    } else {
+        TestResult { passed: 0, label: label, detail: "not less than" }
+    }
+}
+
+fn assert_not_empty(value: String, label: String) -> TestResult {
+    if value == "" {
+        TestResult { passed: 0, label: label, detail: "was empty" }
+    } else {
+        TestResult { passed: 1, label: label, detail: "ok" }
+    }
+}
+
+fn test_summary(t1: TestResult, t2: TestResult, t3: TestResult) -> TestSummary {
+    let passed: Int = t1.passed + t2.passed + t3.passed
+    let failed: Int = 3 - passed
+    TestSummary { total: 3, passed: passed, failed: failed }
+}
+
+fn test_all_passed_2(t1: TestResult, t2: TestResult) -> Int {
+    if t1.passed == 1 {
+        if t2.passed == 1 { 1 } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn test_all_passed_3(t1: TestResult, t2: TestResult, t3: TestResult) -> Int {
+    if t1.passed == 1 {
+        if t2.passed == 1 {
+            if t3.passed == 1 { 1 } else { 0 }
+        } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn main() -> Int {
+    let r1: TestResult = assert_eq_int(42, 42, "answer check")
+    let r2: TestResult = assert_true(1, "is true")
+    let r3: TestResult = assert_not_empty("hello", "non-empty")
+    let summary: TestSummary = test_summary(r1, r2, r3)
+    summary.passed
+}

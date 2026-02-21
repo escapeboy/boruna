@@ -1,0 +1,108 @@
+// std.authz — Role and permission enforcement
+// Pure functions. No global state. Deterministic.
+
+type Role { name: String, level: Int }
+type Permission { resource: String, action: String }
+type RolePermission { role_name: String, resource: String, action: String }
+type AuthzResult { allowed: Int, reason: String }
+
+type AuthzPolicy {
+    admin_role: String,
+    editor_role: String,
+    viewer_role: String,
+    admin_level: Int,
+    editor_level: Int,
+    viewer_level: Int
+}
+
+fn authz_default_policy() -> AuthzPolicy {
+    AuthzPolicy {
+        admin_role: "admin",
+        editor_role: "editor",
+        viewer_role: "viewer",
+        admin_level: 100,
+        editor_level: 50,
+        viewer_level: 10
+    }
+}
+
+fn authz_role_level(policy: AuthzPolicy, role_name: String) -> Int {
+    if role_name == policy.admin_role {
+        policy.admin_level
+    } else {
+        if role_name == policy.editor_role {
+            policy.editor_level
+        } else {
+            if role_name == policy.viewer_role {
+                policy.viewer_level
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn authz_check(policy: AuthzPolicy, role_name: String, resource: String, action: String) -> AuthzResult {
+    let level: Int = authz_role_level(policy, role_name)
+    if action == "read" {
+        if level >= policy.viewer_level {
+            AuthzResult { allowed: 1, reason: "read permitted" }
+        } else {
+            AuthzResult { allowed: 0, reason: "insufficient role for read" }
+        }
+    } else {
+        if action == "write" {
+            if level >= policy.editor_level {
+                AuthzResult { allowed: 1, reason: "write permitted" }
+            } else {
+                AuthzResult { allowed: 0, reason: "insufficient role for write" }
+            }
+        } else {
+            if action == "delete" {
+                if level >= policy.admin_level {
+                    AuthzResult { allowed: 1, reason: "delete permitted" }
+                } else {
+                    AuthzResult { allowed: 0, reason: "only admin can delete" }
+                }
+            } else {
+                AuthzResult { allowed: 0, reason: "unknown action" }
+            }
+        }
+    }
+}
+
+fn authz_require_role(policy: AuthzPolicy, role_name: String, min_level: Int) -> AuthzResult {
+    let level: Int = authz_role_level(policy, role_name)
+    if level >= min_level {
+        AuthzResult { allowed: 1, reason: "role level sufficient" }
+    } else {
+        AuthzResult { allowed: 0, reason: "role level insufficient" }
+    }
+}
+
+fn authz_guard_update(policy: AuthzPolicy, role_name: String, resource: String, action: String) -> Int {
+    let result: AuthzResult = authz_check(policy, role_name, resource, action)
+    result.allowed
+}
+
+fn authz_is_admin(policy: AuthzPolicy, role_name: String) -> Int {
+    if role_name == policy.admin_role { 1 } else { 0 }
+}
+
+fn authz_can_write(policy: AuthzPolicy, role_name: String) -> Int {
+    let level: Int = authz_role_level(policy, role_name)
+    if level >= policy.editor_level { 1 } else { 0 }
+}
+
+fn authz_can_read(policy: AuthzPolicy, role_name: String) -> Int {
+    let level: Int = authz_role_level(policy, role_name)
+    if level >= policy.viewer_level { 1 } else { 0 }
+}
+
+fn main() -> Int {
+    let policy: AuthzPolicy = authz_default_policy()
+    let r1: AuthzResult = authz_check(policy, "admin", "users", "delete")
+    let r2: AuthzResult = authz_check(policy, "viewer", "users", "delete")
+    let r3: AuthzResult = authz_require_role(policy, "editor", 50)
+    r1.allowed
+}

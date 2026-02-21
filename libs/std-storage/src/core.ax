@@ -1,0 +1,45 @@
+// std.storage — Typed local persistence abstraction
+// Only produces Effects. Replay-compatible.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+type StorageKey { namespace: String, key: String }
+type StorageEntry { namespace: String, key: String, value: String, version: Int }
+
+fn storage_key(namespace: String, key: String) -> StorageKey {
+    StorageKey { namespace: namespace, key: key }
+}
+
+fn storage_get(namespace: String, key: String, callback_tag: String) -> Effect {
+    Effect { kind: "storage_read", payload: namespace, callback_tag: callback_tag }
+}
+
+fn storage_set(namespace: String, key: String, value: String, callback_tag: String) -> Effect {
+    Effect { kind: "storage_write", payload: namespace, callback_tag: callback_tag }
+}
+
+fn storage_delete(namespace: String, key: String, callback_tag: String) -> Effect {
+    Effect { kind: "storage_delete", payload: namespace, callback_tag: callback_tag }
+}
+
+fn storage_list(namespace: String, callback_tag: String) -> Effect {
+    Effect { kind: "storage_list", payload: namespace, callback_tag: callback_tag }
+}
+
+fn storage_make_entry(namespace: String, key: String, value: String, version: Int) -> StorageEntry {
+    StorageEntry { namespace: namespace, key: key, value: value, version: version }
+}
+
+fn storage_bump_version(entry: StorageEntry, new_value: String) -> StorageEntry {
+    StorageEntry { ..entry, value: new_value, version: entry.version + 1 }
+}
+
+fn storage_is_newer(a: StorageEntry, b: StorageEntry) -> Int {
+    if a.version > b.version { 1 } else { 0 }
+}
+
+fn main() -> Int {
+    let eff: Effect = storage_get("app", "settings", "settings_loaded")
+    let entry: StorageEntry = storage_make_entry("app", "settings", "{}", 1)
+    let updated: StorageEntry = storage_bump_version(entry, "{\"theme\":\"dark\"}")
+    updated.version
+}

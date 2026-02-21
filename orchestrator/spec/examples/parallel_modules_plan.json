@@ -1,0 +1,58 @@
+{
+  "id": "G-parallel-001",
+  "description": "Two independent changes in parallel: VM optimization + new example app",
+  "nodes": [
+    {
+      "id": "WN-010",
+      "description": "Optimize VM dispatch loop in boruna-vm",
+      "inputs": [],
+      "outputs": ["boruna-vm"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["vm", "performance"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-011",
+      "description": "Review VM dispatch optimization",
+      "inputs": [],
+      "outputs": [],
+      "dependencies": ["WN-010"],
+      "owner_role": "reviewer",
+      "tags": ["vm"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-020",
+      "description": "Create chat_app.ax example",
+      "inputs": [],
+      "outputs": ["examples"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["examples"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-021",
+      "description": "Review chat_app example",
+      "inputs": [],
+      "outputs": [],
+      "dependencies": ["WN-020"],
+      "owner_role": "reviewer",
+      "tags": ["examples"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    }
+  ]
+}

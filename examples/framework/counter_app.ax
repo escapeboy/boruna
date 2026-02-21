@@ -1,0 +1,51 @@
+// Counter App — Framework Example
+// Demonstrates the mandatory App protocol: init, update, view
+
+type State { count: Int }
+type Msg { tag: String, payload: Int }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+
+// Initialize application state
+fn init() -> State {
+    State { count: 0 }
+}
+
+// Pure update function — no side effects allowed
+fn update(state: State, msg: Msg) -> UpdateResult {
+    let new_count: Int = if msg.tag == "increment" {
+        state.count + 1
+    } else {
+        if msg.tag == "decrement" {
+            state.count - 1
+        } else {
+            if msg.tag == "reset" {
+                0
+            } else {
+                state.count
+            }
+        }
+    }
+    UpdateResult {
+        state: State { count: new_count },
+        effects: [],
+    }
+}
+
+// Pure view function — returns declarative UI
+fn view(state: State) -> UINode {
+    UINode { tag: "counter", text: "count" }
+}
+
+// Entry point for standalone testing
+fn main() -> Int {
+    let s0: State = init()
+    let msg1: Msg = Msg { tag: "increment", payload: 0 }
+    let r1: UpdateResult = update(s0, msg1)
+    let msg2: Msg = Msg { tag: "increment", payload: 0 }
+    let r2: UpdateResult = update(r1.state, msg2)
+    let msg3: Msg = Msg { tag: "decrement", payload: 0 }
+    let r3: UpdateResult = update(r2.state, msg3)
+    r3.state.count
+}

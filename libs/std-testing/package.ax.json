@@ -1,0 +1,8 @@
+{
+  "name": "std.testing",
+  "version": "0.1.0",
+  "description": "High-level test helpers for framework apps",
+  "dependencies": {},
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

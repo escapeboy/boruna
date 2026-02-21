@@ -1,0 +1,201 @@
+// Stdlib Demo — Demonstrates standard library usage
+// Uses patterns from: std.ui, std.forms, std.authz, std.db, std.notifications, std.validation
+// Full framework app with init/update/view
+
+type State {
+    mode: String,
+    form_name: String,
+    form_email: String,
+    form_error: String,
+    current_role: String,
+    item_count: Int,
+    notification_count: Int,
+    last_notification: String,
+    status: String,
+    page: Int,
+    per_page: Int
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+// Validation (from std.validation pattern)
+fn validate_required(value: String) -> String {
+    if value == "" { "is required" } else { "" }
+}
+
+// Authorization (from std.authz pattern)
+fn can_write(role: String) -> Int {
+    if role == "admin" { 1 } else { if role == "editor" { 1 } else { 0 } }
+}
+
+fn can_delete(role: String) -> Int {
+    if role == "admin" { 1 } else { 0 }
+}
+
+fn init() -> State {
+    State {
+        mode: "list",
+        form_name: "",
+        form_email: "",
+        form_error: "",
+        current_role: "admin",
+        item_count: 0,
+        notification_count: 0,
+        last_notification: "",
+        status: "ready",
+        page: 1,
+        per_page: 10
+    }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        // Form actions (from std.forms pattern)
+        "set_name" => {
+            let err: String = validate_required(msg.payload)
+            UpdateResult {
+                state: State { ..state, form_name: msg.payload, form_error: err },
+                effects: [],
+            }
+        },
+        "set_email" => {
+            UpdateResult {
+                state: State { ..state, form_email: msg.payload },
+                effects: [],
+            }
+        },
+        // CRUD actions (from std.db pattern)
+        "create" => {
+            let name_err: String = validate_required(state.form_name)
+            let email_err: String = validate_required(state.form_email)
+            if name_err == "" {
+                if email_err == "" {
+                    if can_write(state.current_role) == 1 {
+                        UpdateResult {
+                            state: State { ..state, mode: "creating", status: "pending" },
+                            effects: [Effect { kind: "db_query", payload: "INSERT INTO items", callback_tag: "created" }],
+                        }
+                    } else {
+                        UpdateResult {
+                            state: State { ..state, status: "error", last_notification: "unauthorized", notification_count: state.notification_count + 1 },
+                            effects: [],
+                        }
+                    }
+                } else {
+                    UpdateResult {
+                        state: State { ..state, form_error: email_err },
+                        effects: [],
+                    }
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, form_error: name_err },
+                    effects: [],
+                }
+            }
+        },
+        "created" => {
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok", form_name: "", form_email: "", form_error: "", item_count: state.item_count + 1, notification_count: state.notification_count + 1, last_notification: "item created" },
+                effects: [],
+            }
+        },
+        "delete" => {
+            if can_delete(state.current_role) == 1 {
+                UpdateResult {
+                    state: State { ..state, mode: "deleting", status: "pending" },
+                    effects: [Effect { kind: "db_query", payload: "DELETE FROM items", callback_tag: "deleted" }],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", last_notification: "only admin can delete", notification_count: state.notification_count + 1 },
+                    effects: [],
+                }
+            }
+        },
+        "deleted" => {
+            let new_count: Int = if state.item_count > 0 { state.item_count - 1 } else { 0 }
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok", item_count: new_count, notification_count: state.notification_count + 1, last_notification: "item deleted" },
+                effects: [],
+            }
+        },
+        // Pagination (from std.db pattern)
+        "next_page" => {
+            UpdateResult {
+                state: State { ..state, page: state.page + 1, status: "pending" },
+                effects: [Effect { kind: "db_query", payload: "SELECT * FROM items LIMIT 10 OFFSET", callback_tag: "listed" }],
+            }
+        },
+        "prev_page" => {
+            let new_page: Int = if state.page > 1 { state.page - 1 } else { 1 }
+            UpdateResult {
+                state: State { ..state, page: new_page, status: "pending" },
+                effects: [Effect { kind: "db_query", payload: "SELECT * FROM items LIMIT 10 OFFSET", callback_tag: "listed" }],
+            }
+        },
+        "listed" => {
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok" },
+                effects: [],
+            }
+        },
+        // Role management (from std.authz pattern)
+        "set_role" => {
+            UpdateResult {
+                state: State { ..state, current_role: msg.payload },
+                effects: [],
+            }
+        },
+        // Notification dismiss (from std.notifications pattern)
+        "dismiss_notification" => {
+            let new_count: Int = if state.notification_count > 0 { state.notification_count - 1 } else { 0 }
+            UpdateResult {
+                state: State { ..state, notification_count: new_count },
+                effects: [],
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+// View (from std.ui pattern)
+fn view(state: State) -> UINode {
+    if state.mode == "list" {
+        UINode { tag: "admin-panel", text: state.status }
+    } else {
+        UINode { tag: "admin-panel", text: state.last_notification }
+    }
+}
+
+fn policies() -> PolicySet {
+    PolicySet { capabilities: ["db.query"], max_effects: 5, max_steps: 1000000 }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    // Fill form and create
+    let r1: UpdateResult = update(s0, Msg { tag: "set_name", payload: "Widget" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "set_email", payload: "widget@co.com" })
+    let r3: UpdateResult = update(r2.state, Msg { tag: "create", payload: "" })
+    let r4: UpdateResult = update(r3.state, Msg { tag: "created", payload: "ok" })
+    // Create another
+    let r5: UpdateResult = update(r4.state, Msg { tag: "set_name", payload: "Gadget" })
+    let r6: UpdateResult = update(r5.state, Msg { tag: "set_email", payload: "gadget@co.com" })
+    let r7: UpdateResult = update(r6.state, Msg { tag: "create", payload: "" })
+    let r8: UpdateResult = update(r7.state, Msg { tag: "created", payload: "ok" })
+    // Delete one
+    let r9: UpdateResult = update(r8.state, Msg { tag: "delete", payload: "" })
+    let r10: UpdateResult = update(r9.state, Msg { tag: "deleted", payload: "ok" })
+    // Try unauthorized delete as viewer
+    let r11: UpdateResult = update(r10.state, Msg { tag: "set_role", payload: "viewer" })
+    let r12: UpdateResult = update(r11.state, Msg { tag: "delete", payload: "" })
+    // Final: 1 item, viewer can't delete
+    r12.state.item_count
+}

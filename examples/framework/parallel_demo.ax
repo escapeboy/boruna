@@ -1,0 +1,56 @@
+// Parallel Worker Demo — Framework Example
+// Demonstrates the effect system with multiple effects per cycle
+
+type State { tasks_dispatched: Int, results_received: Int }
+type Msg { tag: String, payload: Int }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+
+fn init() -> State {
+    State { tasks_dispatched: 0, results_received: 0 }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    if msg.tag == "dispatch" {
+        // Dispatch 3 parallel HTTP requests via effects
+        UpdateResult {
+            state: State {
+                tasks_dispatched: state.tasks_dispatched + 3,
+                results_received: state.results_received,
+            },
+            effects: [
+                Effect { kind: "http_request", payload: "https://api.example.com/task1", callback_tag: "result" },
+                Effect { kind: "http_request", payload: "https://api.example.com/task2", callback_tag: "result" },
+                Effect { kind: "http_request", payload: "https://api.example.com/task3", callback_tag: "result" },
+            ],
+        }
+    } else {
+        if msg.tag == "result" {
+            UpdateResult {
+                state: State {
+                    tasks_dispatched: state.tasks_dispatched,
+                    results_received: state.results_received + 1,
+                },
+                effects: [],
+            }
+        } else {
+            UpdateResult { state: state, effects: [] }
+        }
+    }
+}
+
+fn view(state: State) -> UINode {
+    UINode { tag: "worker-status", text: "status" }
+}
+
+// Standalone: simulate dispatch + 3 results
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "dispatch", payload: 0 })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "result", payload: 0 })
+    let r3: UpdateResult = update(r2.state, Msg { tag: "result", payload: 0 })
+    let r4: UpdateResult = update(r3.state, Msg { tag: "result", payload: 0 })
+    // dispatched=3, received=3
+    r4.state.results_received
+}

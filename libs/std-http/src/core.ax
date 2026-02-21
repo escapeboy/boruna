@@ -1,0 +1,79 @@
+// std.http — Safe typed HTTP effect wrappers
+// Only produces Effects. No execution in library.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+type HttpRequest { method: String, url: String, body: String, content_type: String }
+type HttpResponse { status: Int, body: String }
+type RetryConfig { max_retries: Int, backoff_ms: Int, multiplier: Int }
+
+fn http_get(url: String, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: url, callback_tag: callback_tag }
+}
+
+fn http_post(url: String, body: String, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: url, callback_tag: callback_tag }
+}
+
+fn http_put(url: String, body: String, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: url, callback_tag: callback_tag }
+}
+
+fn http_delete(url: String, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: url, callback_tag: callback_tag }
+}
+
+fn http_request(req: HttpRequest, callback_tag: String) -> Effect {
+    Effect { kind: "http_request", payload: req.url, callback_tag: callback_tag }
+}
+
+fn http_retry_config(max_retries: Int, backoff_ms: Int, multiplier: Int) -> RetryConfig {
+    RetryConfig { max_retries: max_retries, backoff_ms: backoff_ms, multiplier: multiplier }
+}
+
+fn http_default_retry() -> RetryConfig {
+    RetryConfig { max_retries: 3, backoff_ms: 1000, multiplier: 2 }
+}
+
+fn http_parse_status(payload: String) -> Int {
+    let code: Int = parse_int(payload)
+    code
+}
+
+fn http_is_success(status: Int) -> Int {
+    if status >= 200 {
+        if status < 300 { 1 } else { 0 }
+    } else {
+        0
+    }
+}
+
+fn http_is_error(status: Int) -> Int {
+    if status >= 400 { 1 } else { 0 }
+}
+
+fn http_should_retry(status: Int) -> Int {
+    if status == 429 { 1 } else {
+        if status >= 500 { 1 } else { 0 }
+    }
+}
+
+fn http_next_backoff(config: RetryConfig, attempt: Int) -> Int {
+    let base: Int = config.backoff_ms
+    if attempt == 0 { base } else {
+        if attempt == 1 { base * config.multiplier } else {
+            base * config.multiplier * config.multiplier
+        }
+    }
+}
+
+fn parse_int(s: String) -> Int {
+    0
+}
+
+fn main() -> Int {
+    let get_eff: Effect = http_get("https://api.example.com/users", "users_loaded")
+    let post_eff: Effect = http_post("https://api.example.com/users", "{}", "user_created")
+    let cfg: RetryConfig = http_default_retry()
+    let backoff: Int = http_next_backoff(cfg, 1)
+    0
+}

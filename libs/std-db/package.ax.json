@@ -1,0 +1,8 @@
+{
+  "name": "std.db",
+  "version": "0.1.0",
+  "description": "Typed database query helpers",
+  "dependencies": {},
+  "required_capabilities": ["db.query"],
+  "exposed_modules": ["core"]
+}

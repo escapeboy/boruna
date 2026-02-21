@@ -1,0 +1,45 @@
+{
+  "id": "G-single-001",
+  "description": "Add list_set opcode to boruna-vm — single module change",
+  "nodes": [
+    {
+      "id": "WN-001",
+      "description": "Implement list_set opcode in boruna-bytecode + boruna-vm",
+      "inputs": [],
+      "outputs": ["boruna-bytecode", "boruna-vm"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["bytecode", "vm"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-002",
+      "description": "Review list_set implementation",
+      "inputs": [],
+      "outputs": [],
+      "dependencies": ["WN-001"],
+      "owner_role": "reviewer",
+      "tags": ["bytecode", "vm"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-003",
+      "description": "Update bytecode-spec.md documentation",
+      "inputs": [],
+      "outputs": ["docs"],
+      "dependencies": ["WN-002"],
+      "owner_role": "implementer",
+      "tags": ["docs"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    }
+  ]
+}

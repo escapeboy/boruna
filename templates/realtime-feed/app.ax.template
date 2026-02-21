@@ -1,0 +1,118 @@
+// Realtime Feed — Generated from realtime-feed template
+// Feed: {{feed_name}}
+
+type State {
+    subscribed: Int,
+    events_received: Int,
+    last_event: String,
+    events_this_window: Int,
+    rate_limit: Int,
+    rate_limited_count: Int,
+    poll_active: Int,
+    total_polls: Int,
+    errors: Int,
+    notification_count: Int
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+fn init() -> State {
+    State {
+        subscribed: 0,
+        events_received: 0,
+        last_event: "",
+        events_this_window: 0,
+        rate_limit: 10,
+        rate_limited_count: 0,
+        poll_active: 0,
+        total_polls: 0,
+        errors: 0,
+        notification_count: 0
+    }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "subscribe" => {
+            if state.subscribed == 1 {
+                UpdateResult { state: state, effects: [] }
+            } else {
+                UpdateResult {
+                    state: State { ..state, subscribed: 1, poll_active: 1 },
+                    effects: [Effect { kind: "timer", payload: "1000", callback_tag: "poll_tick" }],
+                }
+            }
+        },
+        "unsubscribe" => {
+            UpdateResult {
+                state: State { ..state, subscribed: 0, poll_active: 0 },
+                effects: [],
+            }
+        },
+        "poll_tick" => {
+            if state.subscribed == 0 {
+                UpdateResult { state: State { ..state, poll_active: 0 }, effects: [] }
+            } else {
+                UpdateResult {
+                    state: State { ..state, total_polls: state.total_polls + 1 },
+                    effects: [
+                        Effect { kind: "http_request", payload: "GET /api/{{feed_name}}/events", callback_tag: "event_received" },
+                        Effect { kind: "timer", payload: "1000", callback_tag: "poll_tick" },
+                    ],
+                }
+            }
+        },
+        "event_received" => {
+            if state.events_this_window >= state.rate_limit {
+                UpdateResult {
+                    state: State { ..state, rate_limited_count: state.rate_limited_count + 1 },
+                    effects: [],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, events_received: state.events_received + 1, last_event: msg.payload, events_this_window: state.events_this_window + 1, notification_count: state.notification_count + 1 },
+                    effects: [],
+                }
+            }
+        },
+        "reset_window" => {
+            UpdateResult {
+                state: State { ..state, events_this_window: 0 },
+                effects: [],
+            }
+        },
+        "error" => {
+            UpdateResult {
+                state: State { ..state, errors: state.errors + 1 },
+                effects: [],
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    if state.subscribed == 1 {
+        UINode { tag: "feed", text: state.last_event }
+    } else {
+        UINode { tag: "feed", text: "unsubscribed" }
+    }
+}
+
+fn policies() -> PolicySet {
+    PolicySet { capabilities: ["net.fetch", "time.now"], max_effects: 3, max_steps: 1000000 }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "subscribe", payload: "" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "poll_tick", payload: "" })
+    let r3: UpdateResult = update(r2.state, Msg { tag: "event_received", payload: "event1" })
+    r3.state.events_received
+}

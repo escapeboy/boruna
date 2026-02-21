@@ -1,0 +1,121 @@
+// CRUD Admin — Generated from crud-admin template
+// Entity: {{entity_name}}
+// Fields: {{fields}}
+
+type State {
+    mode: String,
+    form_name: String,
+    form_email: String,
+    status: String,
+    status_detail: String,
+    item_count: Int,
+    current_role: String,
+    search_query: String
+}
+
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+fn init() -> State {
+    State {
+        mode: "list",
+        form_name: "",
+        form_email: "",
+        status: "ready",
+        status_detail: "",
+        item_count: 0,
+        current_role: "admin",
+        search_query: ""
+    }
+}
+
+fn can_write(role: String) -> Int {
+    if role == "admin" { 1 } else { if role == "editor" { 1 } else { 0 } }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "create" => {
+            if can_write(state.current_role) == 1 {
+                UpdateResult {
+                    state: State { ..state, mode: "creating", status: "pending" },
+                    effects: [Effect { kind: "db_query", payload: "INSERT INTO {{entity_name}}", callback_tag: "created" }],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", status_detail: "unauthorized" },
+                    effects: [],
+                }
+            }
+        },
+        "created" => {
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok", status_detail: "created", item_count: state.item_count + 1, form_name: "", form_email: "" },
+                effects: [],
+            }
+        },
+        "delete" => {
+            if state.current_role == "admin" {
+                UpdateResult {
+                    state: State { ..state, mode: "deleting", status: "pending" },
+                    effects: [Effect { kind: "db_query", payload: "DELETE FROM {{entity_name}}", callback_tag: "deleted" }],
+                }
+            } else {
+                UpdateResult {
+                    state: State { ..state, status: "error", status_detail: "only admin can delete" },
+                    effects: [],
+                }
+            }
+        },
+        "deleted" => {
+            let new_count: Int = if state.item_count > 0 { state.item_count - 1 } else { 0 }
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok", status_detail: "deleted", item_count: new_count },
+                effects: [],
+            }
+        },
+        "list" => {
+            UpdateResult {
+                state: State { ..state, mode: "listing", status: "pending" },
+                effects: [Effect { kind: "db_query", payload: "SELECT * FROM {{entity_name}}", callback_tag: "listed" }],
+            }
+        },
+        "listed" => {
+            UpdateResult {
+                state: State { ..state, mode: "list", status: "ok", status_detail: msg.payload },
+                effects: [],
+            }
+        },
+        "search" => {
+            UpdateResult {
+                state: State { ..state, search_query: msg.payload, status: "pending" },
+                effects: [Effect { kind: "db_query", payload: "SELECT * FROM {{entity_name}} WHERE name LIKE", callback_tag: "listed" }],
+            }
+        },
+        _ => {
+            UpdateResult { state: state, effects: [] }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    if state.mode == "list" {
+        UINode { tag: "admin-panel", text: state.status }
+    } else {
+        UINode { tag: "admin-panel", text: state.status_detail }
+    }
+}
+
+fn policies() -> PolicySet {
+    PolicySet { capabilities: ["db.query"], max_effects: 5, max_steps: 1000000 }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "create", payload: "" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "created", payload: "ok" })
+    r2.state.item_count
+}

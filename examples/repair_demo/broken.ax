@@ -1,0 +1,27 @@
+// Repair Demo: This file has intentional errors that the diagnostic + repair tool can fix.
+//
+// Errors:
+// 1. Non-exhaustive match (E005): 'update' doesn't handle all Action variants
+// 2. Wrong field name (E006): 'countt' instead of 'count' in init
+// 3. Capability violation (E007): 'update' declares capabilities but must be pure
+//
+// Run:   llmvm lang check examples/repair_demo/broken.llm --json
+// Fix:   llmvm lang repair examples/repair_demo/broken.llm --apply best
+
+enum Action { Increment, Decrement, Reset }
+
+type State { count: Int, name: String }
+
+fn init() -> State {
+    State { countt: 0, name: "repair_demo" }
+}
+
+fn update(state: State, action: Action) -> State !{fs.read} {
+    match action {
+        Increment => State { count: state.count + 1, name: state.name }
+    }
+}
+
+fn view(state: State) -> String {
+    "count: " ++ state.name
+}

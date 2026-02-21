@@ -1,0 +1,10 @@
+{
+  "name": "auth-app",
+  "version": "0.1.0",
+  "description": "Authentication flow with role management",
+  "dependencies": ["std.authz", "std.http", "std.storage"],
+  "capabilities": ["net.fetch", "fs.read", "fs.write"],
+  "args": {
+    "app_name": { "type": "string", "required": true, "description": "Application name" }
+  }
+}

@@ -1,0 +1,27 @@
+// Pattern matching demo — Option, Result, and match expressions
+
+fn safe_divide(a: Int, b: Int) -> Int {
+    if b == 0 {
+        -1
+    } else {
+        a / b
+    }
+}
+
+fn classify(n: Int) -> String {
+    if n < 0 {
+        "negative"
+    } else {
+        if n == 0 {
+            "zero"
+        } else {
+            "positive"
+        }
+    }
+}
+
+fn main() -> String {
+    let result: Int = safe_divide(10, 3)
+    let class: String = classify(result)
+    class
+}

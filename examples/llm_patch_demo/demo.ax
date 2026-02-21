@@ -1,0 +1,71 @@
+// LLM Patch Demo
+//
+// Demonstrates using the LLM effect to request a PatchBundle.
+// In mock mode, returns a fixed patch. Fully deterministic and replay-safe.
+//
+// The update() function produces an LlmCall effect when it receives
+// a "refactor" message. The framework executes the effect and delivers
+// the result back as an "llm_result" message.
+
+type State { status: String, last_result: String }
+type Msg { tag: String, payload: String }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+type PolicySet { capabilities: List<String>, max_effects: Int, max_steps: Int }
+
+fn init() -> State {
+    State { status: "idle", last_result: "none" }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    match msg.tag {
+        "refactor" => {
+            UpdateResult {
+                state: State { status: "waiting", last_result: state.last_result },
+                effects: [
+                    Effect {
+                        kind: "llm_call",
+                        payload: "demo.refactor",
+                        callback_tag: "llm_result",
+                    },
+                ],
+            }
+        },
+        "llm_result" => {
+            UpdateResult {
+                state: State { status: "done", last_result: msg.payload },
+                effects: [],
+            }
+        },
+        _ => {
+            UpdateResult {
+                state: state,
+                effects: [],
+            }
+        },
+    }
+}
+
+fn view(state: State) -> UINode {
+    UINode { tag: "patch-demo", text: state.status }
+}
+
+fn policies() -> PolicySet {
+    PolicySet {
+        capabilities: ["llm.call"],
+        max_effects: 5,
+        max_steps: 10000000,
+    }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let r1: UpdateResult = update(s0, Msg { tag: "refactor", payload: "" })
+    let r2: UpdateResult = update(r1.state, Msg { tag: "llm_result", payload: "patch_applied" })
+    if r2.state.status == "done" {
+        0
+    } else {
+        1
+    }
+}

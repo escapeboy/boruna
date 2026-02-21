@@ -1,0 +1,10 @@
+{
+  "name": "offline-sync",
+  "version": "0.1.0",
+  "description": "Offline-first app with sync queue and conflict resolution",
+  "dependencies": ["std.sync", "std.storage", "std.http"],
+  "capabilities": ["net.fetch", "fs.read", "fs.write"],
+  "args": {
+    "entity_name": { "type": "string", "required": true, "description": "Name of the synced entity" }
+  }
+}

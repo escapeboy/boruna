@@ -1,0 +1,8 @@
+{
+  "name": "std.http",
+  "version": "0.1.0",
+  "description": "Safe typed HTTP effect wrappers",
+  "dependencies": {},
+  "required_capabilities": ["net.fetch"],
+  "exposed_modules": ["core"]
+}

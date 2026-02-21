@@ -1,0 +1,16 @@
+[package]
+name = "boruna-framework"
+description = "Boruna Application Framework — mandatory App protocol, effects, state, testing"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+boruna-bytecode = { path = "../llmbc" }
+boruna-vm = { path = "../llmvm" }
+boruna-compiler = { path = "../llmc" }
+boruna-effect = { path = "../llm-effect" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

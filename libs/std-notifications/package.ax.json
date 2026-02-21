@@ -1,0 +1,8 @@
+{
+  "name": "std.notifications",
+  "version": "0.1.0",
+  "description": "Notification queue and toast helpers",
+  "dependencies": {},
+  "required_capabilities": ["time.now"],
+  "exposed_modules": ["core"]
+}

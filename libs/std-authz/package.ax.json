@@ -1,0 +1,8 @@
+{
+  "name": "std.authz",
+  "version": "0.1.0",
+  "description": "Role and permission enforcement via policies",
+  "dependencies": {},
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

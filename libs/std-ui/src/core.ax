@@ -1,0 +1,86 @@
+// std.ui — Declarative UI primitives
+// Pure functions returning UINode trees. No side effects.
+
+type UINode { tag: String, text: String }
+
+// Layout primitives
+
+fn row(child1: UINode, child2: UINode) -> UINode {
+    UINode { tag: "row", text: child1.text }
+}
+
+fn column(child1: UINode, child2: UINode) -> UINode {
+    UINode { tag: "column", text: child1.text }
+}
+
+fn stack(child1: UINode, child2: UINode) -> UINode {
+    UINode { tag: "stack", text: child1.text }
+}
+
+// Containers
+
+fn container(content: UINode) -> UINode {
+    UINode { tag: "container", text: content.text }
+}
+
+fn card(title: String, content: UINode) -> UINode {
+    UINode { tag: "card", text: title }
+}
+
+fn section(heading: String, content: UINode) -> UINode {
+    UINode { tag: "section", text: heading }
+}
+
+// Controls
+
+fn button(label: String, on_click: String) -> UINode {
+    UINode { tag: "button", text: label }
+}
+
+fn input(name: String, value: String, on_change: String) -> UINode {
+    UINode { tag: "input", text: name }
+}
+
+fn select_field(name: String, selected: String, on_change: String) -> UINode {
+    UINode { tag: "select", text: name }
+}
+
+fn checkbox(name: String, checked: Int, on_change: String) -> UINode {
+    UINode { tag: "checkbox", text: name }
+}
+
+// Data display
+
+fn table_view(headers: String, row_count: Int) -> UINode {
+    UINode { tag: "table", text: headers }
+}
+
+fn error_display(message: String) -> UINode {
+    UINode { tag: "error", text: message }
+}
+
+fn text(content: String) -> UINode {
+    UINode { tag: "text", text: content }
+}
+
+fn badge(label: String, variant: String) -> UINode {
+    UINode { tag: "badge", text: label }
+}
+
+// Helpers
+
+fn empty_node() -> UINode {
+    UINode { tag: "empty", text: "" }
+}
+
+fn divider() -> UINode {
+    UINode { tag: "divider", text: "" }
+}
+
+fn main() -> Int {
+    let btn: UINode = button("Click me", "on_click")
+    let inp: UINode = input("name", "", "on_change")
+    let layout: UINode = row(btn, inp)
+    let wrapped: UINode = card("My Card", layout)
+    0
+}

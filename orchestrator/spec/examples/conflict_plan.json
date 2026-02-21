@@ -1,0 +1,45 @@
+{
+  "id": "G-conflict-001",
+  "description": "Two nodes competing for the same module — demonstrates lock conflict",
+  "nodes": [
+    {
+      "id": "WN-100",
+      "description": "Refactor opcode encoding in boruna-bytecode",
+      "inputs": [],
+      "outputs": ["boruna-bytecode"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["bytecode"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-101",
+      "description": "Add new opcode to boruna-bytecode (conflicts with WN-100)",
+      "inputs": [],
+      "outputs": ["boruna-bytecode"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["bytecode"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    },
+    {
+      "id": "WN-102",
+      "description": "Independent docs update (no conflict)",
+      "inputs": [],
+      "outputs": ["docs"],
+      "dependencies": [],
+      "owner_role": "implementer",
+      "tags": ["docs"],
+      "status": "pending",
+      "assigned_to": null,
+      "patch_bundle": null,
+      "review_result": null
+    }
+  ]
+}

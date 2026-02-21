@@ -1,0 +1,11 @@
+{
+  "name": "realtime-feed",
+  "version": "0.1.0",
+  "description": "Live event feed with polling, rate limiting, and notifications",
+  "dependencies": ["std.ui", "std.http", "std.notifications"],
+  "capabilities": ["net.fetch", "time.now"],
+  "args": {
+    "feed_name": { "type": "string", "required": true, "description": "Name of the event feed" },
+    "poll_interval_ms": { "type": "int", "required": false, "default": 1000, "description": "Polling interval" }
+  }
+}
