@@ -1,0 +1,5 @@
+// Step 1: Receive and parse a support ticket.
+fn main() -> Int {
+    // Mock: return ticket ID
+    12345
+}

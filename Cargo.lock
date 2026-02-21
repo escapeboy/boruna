@@ -169,6 +169,7 @@ dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
  "boruna-framework",
+ "boruna-orchestrator",
  "boruna-tooling",
  "boruna-vm",
  "clap",
@@ -218,7 +219,10 @@ dependencies = [
 name = "boruna-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "boruna-bytecode",
+ "boruna-compiler",
  "boruna-effect",
+ "boruna-vm",
  "chrono",
  "clap",
  "serde",

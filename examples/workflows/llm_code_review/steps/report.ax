@@ -1,0 +1,5 @@
+// Step 3: Generate a review report from the analysis.
+fn main() -> Int {
+    // Mock: return report status (1 = pass, 0 = fail)
+    1
+}

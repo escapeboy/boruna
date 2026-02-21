@@ -1,0 +1,5 @@
+// Step 1: Ingest a document.
+fn main() -> Int {
+    // Mock: return document length
+    1500
+}

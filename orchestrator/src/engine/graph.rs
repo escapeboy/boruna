@@ -84,9 +84,15 @@ pub struct WorkNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkGraph {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub id: String,
     pub description: String,
     pub nodes: Vec<WorkNode>,
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 impl WorkGraph {

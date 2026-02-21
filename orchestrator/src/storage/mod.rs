@@ -148,6 +148,7 @@ mod tests {
         let store = Store::new(dir.path()).unwrap();
 
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test graph".into(),
             nodes: vec![WorkNode {
@@ -178,11 +179,13 @@ mod tests {
         let store = Store::new(dir.path()).unwrap();
 
         let g1 = WorkGraph {
+            schema_version: 1,
             id: "G-001".into(),
             description: "a".into(),
             nodes: vec![],
         };
         let g2 = WorkGraph {
+            schema_version: 1,
             id: "G-002".into(),
             description: "b".into(),
             nodes: vec![],

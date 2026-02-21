@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "customer-support-triage",
+  "version": "1.0.0",
+  "description": "Support ticket triage: receive ticket, LLM triage, approval gate for high severity, route to team.",
+  "steps": {
+    "receive": {
+      "kind": "source",
+      "source": "steps/receive.ax",
+      "capabilities": [],
+      "outputs": {
+        "ticket": "String"
+      }
+    },
+    "triage": {
+      "kind": "source",
+      "source": "steps/triage.ax",
+      "capabilities": [],
+      "inputs": {
+        "ticket": "receive.result"
+      },
+      "outputs": {
+        "severity": "Int",
+        "team": "String"
+      }
+    },
+    "approve": {
+      "kind": "approval_gate",
+      "required_role": "support_lead",
+      "condition": "severity >= 3",
+      "depends_on": ["triage"]
+    },
+    "route": {
+      "kind": "source",
+      "source": "steps/route.ax",
+      "capabilities": [],
+      "inputs": {
+        "severity": "triage.result",
+        "team": "triage.result"
+      },
+      "depends_on": ["approve"]
+    }
+  },
+  "edges": [
+    ["receive", "triage"]
+  ]
+}

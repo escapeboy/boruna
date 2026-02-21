@@ -86,6 +86,12 @@ enum Command {
     /// Template tools (list, apply, validate).
     #[command(subcommand)]
     Template(TemplateCommand),
+    /// Workflow execution and validation.
+    #[command(subcommand)]
+    Workflow(WorkflowCommand),
+    /// Evidence bundle inspection and verification.
+    #[command(subcommand)]
+    Evidence(EvidenceCommand),
 }
 
 #[derive(Subcommand)]
@@ -189,6 +195,46 @@ enum Trace2TestsCommand {
         /// Output minimized trace file.
         #[arg(short, long)]
         out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    /// Validate a workflow definition directory.
+    Validate {
+        /// Workflow directory containing workflow.json.
+        dir: PathBuf,
+    },
+    /// Run a workflow.
+    Run {
+        /// Workflow directory containing workflow.json.
+        dir: PathBuf,
+        /// Capability policy: "allow-all", "deny-all", or a JSON policy file.
+        #[arg(short, long, default_value = "allow-all")]
+        policy: String,
+        /// Record evidence bundle for this run.
+        #[arg(long)]
+        record: bool,
+        /// Evidence output directory (defaults to <dir>/evidence/).
+        #[arg(long)]
+        evidence_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvidenceCommand {
+    /// Verify an evidence bundle for integrity.
+    Verify {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+    },
+    /// Inspect an evidence bundle's manifest.
+    Inspect {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -418,6 +464,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Lang(lang) => run_lang(lang)?,
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
+        Command::Workflow(wf) => run_workflow(wf)?,
+        Command::Evidence(ev) => run_evidence(ev)?,
     }
     Ok(())
 }
@@ -1108,6 +1156,184 @@ fn make_gateway(policy_str: &str) -> Result<CapabilityGateway, Box<dyn std::erro
         }
     };
     Ok(CapabilityGateway::new(policy))
+}
+
+fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::audit::{AuditEvent, AuditLog, EvidenceBundleBuilder};
+    use boruna_orchestrator::workflow::{
+        RunOptions, WorkflowDef, WorkflowRunner, WorkflowValidator,
+    };
+
+    match cmd {
+        WorkflowCommand::Validate { dir } => {
+            let def_path = dir.join("workflow.json");
+            let json = fs::read_to_string(&def_path)
+                .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
+            let def: WorkflowDef =
+                serde_json::from_str(&json).map_err(|e| format!("invalid workflow.json: {e}"))?;
+
+            match WorkflowValidator::validate(&def) {
+                Ok(()) => {
+                    let order = WorkflowValidator::topological_order(&def)?;
+                    println!("workflow '{}' v{} is valid", def.name, def.version);
+                    println!("  steps: {}", def.steps.len());
+                    println!("  edges: {}", def.edges.len());
+                    println!("  execution order: {}", order.join(" -> "));
+                }
+                Err(errors) => {
+                    eprintln!("validation failed:");
+                    for err in &errors {
+                        eprintln!("  {err}");
+                    }
+                    process::exit(1);
+                }
+            }
+        }
+        WorkflowCommand::Run {
+            dir,
+            policy,
+            record,
+            evidence_dir,
+        } => {
+            let def_path = dir.join("workflow.json");
+            let json = fs::read_to_string(&def_path)
+                .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
+            let def: WorkflowDef =
+                serde_json::from_str(&json).map_err(|e| format!("invalid workflow.json: {e}"))?;
+
+            let policy_obj = match policy.as_str() {
+                "allow-all" => Policy::allow_all(),
+                "deny-all" => Policy::deny_all(),
+                path => {
+                    let pjson = fs::read_to_string(path)?;
+                    serde_json::from_str(&pjson)?
+                }
+            };
+
+            let options = RunOptions {
+                policy: Some(policy_obj.clone()),
+                record,
+                workflow_dir: dir.display().to_string(),
+            };
+
+            let result = WorkflowRunner::run(&def, &options).map_err(|e| format!("{e}"))?;
+
+            println!("workflow '{}' run: {:?}", def.name, result.status);
+            println!("  run_id: {}", result.run_id);
+            println!("  duration: {}ms", result.total_duration_ms);
+            for (id, sr) in &result.step_results {
+                println!("  step '{id}': {:?} ({}ms)", sr.status, sr.duration_ms);
+                if let Some(err) = &sr.error {
+                    println!("    error: {err}");
+                }
+            }
+
+            if record {
+                let ev_dir = evidence_dir.unwrap_or_else(|| dir.join("evidence"));
+                let mut builder = EvidenceBundleBuilder::new(&ev_dir, &result.run_id, &def.name)?;
+
+                builder.add_workflow_def(&json)?;
+                let policy_json = serde_json::to_string_pretty(&policy_obj)?;
+                builder.add_policy(&policy_json)?;
+
+                // Build audit log from results
+                let mut audit = AuditLog::new();
+                audit.append(AuditEvent::WorkflowStarted {
+                    workflow_hash: boruna_orchestrator::workflow::DataStore::hash_value(
+                        &boruna_bytecode::Value::String(json.clone()),
+                    ),
+                    policy_hash: boruna_orchestrator::workflow::DataStore::hash_value(
+                        &boruna_bytecode::Value::String(policy_json.clone()),
+                    ),
+                });
+
+                for (id, sr) in &result.step_results {
+                    match &sr.status {
+                        boruna_orchestrator::workflow::StepStatus::Completed => {
+                            audit.append(AuditEvent::StepCompleted {
+                                step_id: id.clone(),
+                                output_hash: sr.output_hash.clone().unwrap_or_default(),
+                                duration_ms: sr.duration_ms,
+                            });
+                        }
+                        boruna_orchestrator::workflow::StepStatus::Failed => {
+                            audit.append(AuditEvent::StepFailed {
+                                step_id: id.clone(),
+                                error: sr.error.clone().unwrap_or_default(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+
+                audit.append(AuditEvent::WorkflowCompleted {
+                    result_hash: format!("{:?}", result.status),
+                    total_duration_ms: result.total_duration_ms,
+                });
+
+                let manifest = builder.finalize(&audit)?;
+                println!(
+                    "\nevidence bundle: {}",
+                    ev_dir.join(&result.run_id).display()
+                );
+                println!("  bundle_hash: {}", manifest.bundle_hash);
+                println!("  audit_log_hash: {}", manifest.audit_log_hash);
+                println!("  files: {}", manifest.file_checksums.len());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::audit::{evidence::BundleManifest, verify::verify_bundle};
+
+    match cmd {
+        EvidenceCommand::Verify { dir } => {
+            let result = verify_bundle(&dir);
+            if result.valid {
+                println!("evidence bundle is VALID");
+            } else {
+                eprintln!("evidence bundle INVALID:");
+                for err in &result.errors {
+                    eprintln!("  {err}");
+                }
+                process::exit(1);
+            }
+        }
+        EvidenceCommand::Inspect { dir, json } => {
+            let manifest_path = dir.join("manifest.json");
+            let manifest_json = fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("cannot read manifest: {e}"))?;
+            let manifest: BundleManifest = serde_json::from_str(&manifest_json)
+                .map_err(|e| format!("invalid manifest: {e}"))?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&manifest)?);
+            } else {
+                println!("=== Evidence Bundle ===");
+                println!("run_id:        {}", manifest.run_id);
+                println!("workflow:      {}", manifest.workflow_name);
+                println!("started_at:    {}", manifest.started_at);
+                println!("completed_at:  {}", manifest.completed_at);
+                println!("bundle_hash:   {}", manifest.bundle_hash);
+                println!("workflow_hash: {}", manifest.workflow_hash);
+                println!("policy_hash:   {}", manifest.policy_hash);
+                println!("audit_hash:    {}", manifest.audit_log_hash);
+                println!("files: {}", manifest.file_checksums.len());
+                for (name, hash) in &manifest.file_checksums {
+                    println!("  {name}: {}", &hash[..16]);
+                }
+                println!("\nenv:");
+                println!("  boruna: {}", manifest.env_fingerprint.boruna_version);
+                println!(
+                    "  os: {}/{}",
+                    manifest.env_fingerprint.os, manifest.env_fingerprint.arch
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> {

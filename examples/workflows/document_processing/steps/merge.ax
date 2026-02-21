@@ -1,0 +1,5 @@
+// Step 3: Merge classification, entities, and summary into final result.
+fn main() -> Int {
+    // Mock: return success status
+    1
+}

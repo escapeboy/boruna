@@ -2,7 +2,7 @@ mod graph;
 
 pub use graph::*;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The DAG scheduler. Manages node lifecycle, topological ordering, and concurrency.
 pub struct Scheduler {
@@ -21,7 +21,7 @@ impl Scheduler {
     /// Validate the graph is a DAG (no cycles). Returns Err with cycle description if invalid.
     pub fn validate(&self) -> Result<(), String> {
         // Kahn's algorithm: if topo sort doesn't consume all nodes, there's a cycle.
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
         for node in &self.graph.nodes {
             in_degree.entry(&node.id).or_insert(0);
             for dep in &node.dependencies {
@@ -30,7 +30,7 @@ impl Scheduler {
         }
 
         // Build adjacency: dependency -> dependents
-        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for node in &self.graph.nodes {
             for dep in &node.dependencies {
                 dependents.entry(dep.as_str()).or_default().push(&node.id);
@@ -72,7 +72,7 @@ impl Scheduler {
 
     /// Compute the set of node IDs that are ready (all deps passed).
     pub fn ready_nodes(&self) -> Vec<String> {
-        let passed: HashSet<&str> = self
+        let passed: BTreeSet<&str> = self
             .graph
             .nodes
             .iter()
@@ -164,8 +164,8 @@ impl Scheduler {
 
     /// Topological sort: returns node IDs in valid execution order.
     pub fn topological_order(&self) -> Result<Vec<String>, String> {
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
-        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
 
         for node in &self.graph.nodes {
             in_degree.entry(&node.id).or_insert(0);
@@ -258,6 +258,7 @@ mod tests {
     #[test]
     fn test_validate_dag() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -273,6 +274,7 @@ mod tests {
     #[test]
     fn test_detect_cycle() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-cycle".into(),
             description: "test".into(),
             nodes: vec![
@@ -288,6 +290,7 @@ mod tests {
     #[test]
     fn test_ready_nodes_initial() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -304,6 +307,7 @@ mod tests {
     #[test]
     fn test_ready_after_pass() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -322,6 +326,7 @@ mod tests {
     #[test]
     fn test_concurrency_limit() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -342,6 +347,7 @@ mod tests {
     #[test]
     fn test_topological_order() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -362,6 +368,7 @@ mod tests {
     #[test]
     fn test_assign_next() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![
@@ -379,6 +386,7 @@ mod tests {
     #[test]
     fn test_summary() {
         let graph = WorkGraph {
+            schema_version: 1,
             id: "G-test".into(),
             description: "test".into(),
             nodes: vec![

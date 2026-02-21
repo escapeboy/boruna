@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "llm-code-review",
+  "version": "1.0.0",
+  "description": "LLM-powered code review: fetch diff, analyze with LLM, generate report.",
+  "steps": {
+    "fetch_diff": {
+      "kind": "source",
+      "source": "steps/fetch_diff.ax",
+      "capabilities": [],
+      "outputs": {
+        "diff": "String"
+      }
+    },
+    "analyze": {
+      "kind": "source",
+      "source": "steps/analyze.ax",
+      "capabilities": [],
+      "inputs": {
+        "diff": "fetch_diff.result"
+      },
+      "outputs": {
+        "analysis": "String"
+      }
+    },
+    "report": {
+      "kind": "source",
+      "source": "steps/report.ax",
+      "capabilities": [],
+      "inputs": {
+        "analysis": "analyze.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    }
+  },
+  "edges": [
+    ["fetch_diff", "analyze"],
+    ["analyze", "report"]
+  ]
+}

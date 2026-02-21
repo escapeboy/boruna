@@ -1,0 +1,5 @@
+// Step 2: LLM-powered ticket triage. Assigns severity and routing team.
+fn main() -> Int {
+    // Mock: return severity level (1-5, where 5 is critical)
+    4
+}

@@ -1,0 +1,5 @@
+// Step 2b: Extract named entities from the document.
+fn main() -> Int {
+    // Mock: return entity count
+    7
+}

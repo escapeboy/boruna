@@ -1,0 +1,5 @@
+// Step 2c: Summarize the document.
+fn main() -> Int {
+    // Mock: return summary word count
+    150
+}

@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Module-level lock table. Each lock maps a module path to the holding node ID.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LockTable {
-    pub locks: HashMap<String, LockEntry>,
+    pub locks: BTreeMap<String, LockEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,7 +17,7 @@ pub struct LockEntry {
 impl LockTable {
     pub fn new() -> Self {
         Self {
-            locks: HashMap::new(),
+            locks: BTreeMap::new(),
         }
     }
 

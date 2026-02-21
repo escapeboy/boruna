@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Boruna: a complete, deterministic, capability-safe programming language and framework for building LLM-native applications. Everything is written in Rust. The language compiles to bytecode, runs on a custom VM, and enforces that all side effects are declared and gated.
+Boruna: a deterministic execution platform for enterprise AI workflows. Everything is written in Rust. Workflows are DAG-based, policy-gated, and auditable. Each step compiles to bytecode and runs on a custom VM with capability enforcement. Every run can produce a hash-chained evidence bundle for compliance.
 
 ## Build & Test Commands
 
@@ -12,7 +12,7 @@ Boruna: a complete, deterministic, capability-safe programming language and fram
 # Build everything
 cargo build --workspace
 
-# Run all tests (501+ tests across 9 crates)
+# Run all tests (557+ tests across 9 crates)
 cargo test --workspace
 
 # Run tests for a single crate
@@ -45,6 +45,14 @@ cargo run --bin boruna -- lang repair file.ax
 # Templates
 cargo run --bin boruna -- template list
 cargo run --bin boruna -- template apply crud-admin --args "entity_name=products,fields=name|price" --validate
+
+# Workflow commands
+cargo run --bin boruna -- workflow validate examples/workflows/llm_code_review
+cargo run --bin boruna -- workflow run examples/workflows/llm_code_review --policy allow-all --record
+
+# Evidence commands
+cargo run --bin boruna -- evidence verify <bundle-dir>
+cargo run --bin boruna -- evidence inspect <bundle-dir> --json
 
 # CI/CD — runs on every push/PR (GitHub Actions)
 # Clippy (zero warnings policy)
@@ -85,12 +93,12 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 - **boruna-vm** (dir: crates/llmvm) — Virtual machine. `Vm::new(module, gateway)`, `vm.run() -> Result<Value, VmError>`. Includes `CapabilityGateway` (with `Policy::allow_all()`, `Policy::deny_all()`, `Policy::default()`), `ActorSystem`, `ReplayEngine`, `EventLog`.
 - **boruna-framework** (dir: crates/llmfw) — Framework layer enforcing the App protocol (Elm architecture: init/update/view). `AppValidator`, `AppRuntime`, `TestHarness`, `PolicySet`, state machine diffing.
 - **boruna-effect** (dir: crates/llm-effect) — Token-optimized LLM integration: prompt building, context management, caching, normalization, capability gating for LLM calls.
-- **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template.
+- **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template, workflow, evidence.
 
 ### Supporting Crates
 
 - **boruna-pkg** (dir: packages/, binary: `boruna-pkg`) — Deterministic package ecosystem: `PackageManifest` (package.ax.json), dependency resolution with topological sort, SHA-256 content hashing, lockfile generation, local registry.
-- **boruna-orchestrator** (dir: orchestrator/, binary: `boruna-orch`) — Multi-agent orchestration: engine, patch management, conflict resolution, storage, adapters.
+- **boruna-orchestrator** (dir: orchestrator/, binary: `boruna-orch`) — Enterprise workflow execution: `workflow/` (WorkflowDef, Validator, Runner, DataStore), `audit/` (hash-chained AuditLog, EvidenceBundle, verify), plus multi-agent orchestration (engine, patch management, conflict resolution, storage, adapters).
 - **boruna-tooling** (dir: tooling/) — Developer tooling library:
   - `diagnostics/` — Structured diagnostics with source spans, severity levels, suggested patches
   - `repair/` — Auto-repair tool applying diagnostic suggestions (strategies: best, all, by-id)

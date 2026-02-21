@@ -5,6 +5,9 @@ use crate::normalize::LlmRequest;
 /// LLM-specific policy constraints.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmPolicy {
+    /// Schema version for forward/backward compatibility.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     /// Total token budget across all LLM calls in a session (0 = unlimited).
     pub total_token_budget: u64,
     /// Maximum number of LLM calls per session (0 = unlimited).
@@ -15,6 +18,10 @@ pub struct LlmPolicy {
     pub max_context_bytes: u64,
     /// Allowed prompt IDs (empty = all allowed).
     pub prompt_allowlist: Vec<String>,
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 impl LlmPolicy {

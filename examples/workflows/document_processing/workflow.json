@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "name": "document-processing",
+  "version": "1.0.0",
+  "description": "Document ingestion pipeline: ingest, classify, extract entities, summarize, merge results.",
+  "steps": {
+    "ingest": {
+      "kind": "source",
+      "source": "steps/ingest.ax",
+      "capabilities": [],
+      "outputs": {
+        "document": "String"
+      }
+    },
+    "classify": {
+      "kind": "source",
+      "source": "steps/classify.ax",
+      "capabilities": [],
+      "inputs": {
+        "document": "ingest.result"
+      },
+      "outputs": {
+        "category": "String"
+      }
+    },
+    "extract": {
+      "kind": "source",
+      "source": "steps/extract.ax",
+      "capabilities": [],
+      "inputs": {
+        "document": "ingest.result"
+      },
+      "outputs": {
+        "entities": "String"
+      }
+    },
+    "summarize": {
+      "kind": "source",
+      "source": "steps/summarize.ax",
+      "capabilities": [],
+      "inputs": {
+        "document": "ingest.result"
+      },
+      "outputs": {
+        "summary": "String"
+      }
+    },
+    "merge": {
+      "kind": "source",
+      "source": "steps/merge.ax",
+      "capabilities": [],
+      "inputs": {
+        "category": "classify.result",
+        "entities": "extract.result",
+        "summary": "summarize.result"
+      },
+      "outputs": {
+        "result": "String"
+      },
+      "depends_on": ["classify", "extract", "summarize"]
+    }
+  },
+  "edges": [
+    ["ingest", "classify"],
+    ["ingest", "extract"],
+    ["ingest", "summarize"]
+  ]
+}

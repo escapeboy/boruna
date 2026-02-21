@@ -1,0 +1,5 @@
+// Step 2a: Classify the document category.
+fn main() -> Int {
+    // Mock: return category code (1=invoice, 2=contract, 3=report)
+    2
+}

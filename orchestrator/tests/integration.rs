@@ -8,6 +8,7 @@ use boruna_orchestrator::storage::*;
 #[test]
 fn test_dag_linear_chain() {
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-linear".into(),
         description: "A → B → C".into(),
         nodes: vec![
@@ -40,6 +41,7 @@ fn test_dag_linear_chain() {
 fn test_dag_diamond_dependency() {
     // A → B, A → C, B → D, C → D
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-diamond".into(),
         description: "diamond".into(),
         nodes: vec![
@@ -72,6 +74,7 @@ fn test_dag_diamond_dependency() {
 #[test]
 fn test_dag_cycle_rejected() {
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-cycle".into(),
         description: "cycle".into(),
         nodes: vec![
@@ -87,6 +90,7 @@ fn test_dag_cycle_rejected() {
 #[test]
 fn test_dag_concurrency_enforcement() {
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-conc".into(),
         description: "3 parallel tasks".into(),
         nodes: vec![
@@ -118,6 +122,7 @@ fn test_dag_concurrency_enforcement() {
 #[test]
 fn test_dag_failed_blocks_dependents() {
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-fail".into(),
         description: "failure".into(),
         nodes: vec![
@@ -355,6 +360,7 @@ fn test_full_workflow_with_storage() {
 
     // Create graph
     let graph = WorkGraph {
+        schema_version: 1,
         id: "G-workflow".into(),
         description: "full workflow test".into(),
         nodes: vec![

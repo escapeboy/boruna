@@ -16,7 +16,11 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+tempfile = "3"
 boruna-effect = { path = "../crates/llm-effect" }
+boruna-compiler = { path = "../crates/llmc" }
+boruna-vm = { path = "../crates/llmvm" }
+boruna-bytecode = { path = "../crates/llmbc" }
 
 [dev-dependencies]
 tempfile = "3"

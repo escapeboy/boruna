@@ -1,0 +1,5 @@
+// Step 4: Route the ticket to the assigned team.
+fn main() -> Int {
+    // Mock: return routing confirmation (1 = routed)
+    1
+}

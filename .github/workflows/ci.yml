@@ -36,6 +36,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Validate example workflows
+        run: |
+          for dir in examples/workflows/*/; do
+            cargo run --bin boruna -- workflow validate "$dir"
+          done
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

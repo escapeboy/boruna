@@ -1,0 +1,6 @@
+// Step 1: Fetch code diff for review.
+// In production this would use net.fetch capability; in mock mode returns sample data.
+fn main() -> Int {
+    // Mock: return a sample diff size (line count)
+    42
+}

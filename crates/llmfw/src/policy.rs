@@ -28,6 +28,8 @@ fn extract_string_list(value: &Value) -> Vec<String> {
 /// Application policy set — declares allowed capabilities and resource limits.
 #[derive(Debug, Clone)]
 pub struct PolicySet {
+    /// Schema version for forward/backward compatibility.
+    pub schema_version: u32,
     /// Allowed capability names.
     pub capabilities: Vec<String>,
     /// Max effects per update cycle (0 = unlimited).
@@ -39,6 +41,7 @@ pub struct PolicySet {
 impl Default for PolicySet {
     fn default() -> Self {
         PolicySet {
+            schema_version: 1,
             capabilities: Vec::new(),
             max_effects_per_cycle: 0,
             max_steps: 10_000_000,
@@ -50,6 +53,7 @@ impl PolicySet {
     /// Create a permissive policy.
     pub fn allow_all() -> Self {
         PolicySet {
+            schema_version: 1,
             capabilities: vec![
                 "net.fetch".into(),
                 "fs.read".into(),
@@ -86,6 +90,7 @@ impl PolicySet {
                     _ => 10_000_000,
                 };
                 PolicySet {
+                    schema_version: 1,
                     capabilities,
                     max_effects_per_cycle: max_effects,
                     max_steps,

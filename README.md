@@ -2,27 +2,23 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 
-A deterministic, capability-safe programming language and runtime for building LLM-native applications. Written entirely in Rust.
+Boruna is a **deterministic execution platform for enterprise AI workflows**. It provides policy-gated, auditable workflow execution with built-in governance, replay, and compliance evidence generation. Written entirely in Rust.
 
-Boruna compiles `.ax` source files to bytecode, executes them on a custom VM, and enforces that **every side effect is declared and gated** at compile time. The runtime guarantees deterministic execution: same input always produces the same output.
+## What Boruna Does
 
-## What Boruna Is
-
-- A **statically typed language** with records, enums, pattern matching, and capability annotations
-- A **bytecode VM** with deterministic scheduling, actor system, and replay support
-- An **Elm-architecture framework** (`init` / `update` / `view`) for building stateful apps
-- A **capability gateway** that intercepts and controls all side effects (network, database, filesystem, LLM calls)
-- A **package system** with content-addressed hashing (SHA-256) and deterministic dependency resolution
-- A **multi-agent orchestrator** for coordinating parallel work with patch bundles and conflict resolution
-- A **developer tooling suite** with diagnostics, auto-repair, trace-to-test generation, and app templates
+- **Executes DAG-based workflows** with typed data flow between steps, approval gates, and retry policies
+- **Enforces policies** — capability allowlists, token budgets, model restrictions, and network controls
+- **Produces audit trails** — hash-chained logs and self-contained evidence bundles for compliance
+- **Guarantees determinism** — same inputs + same workflow + same policy = identical outputs, every time
+- **Supports replay** — re-execute from recorded event logs to verify deterministic behavior
+- **Compiles and runs .ax programs** on a custom bytecode VM with capability gating
 
 ## What Boruna Is Not
 
-- Not a general-purpose systems language (no manual memory management, no FFI)
-- Not a replacement for Python, JavaScript, or Rust for everyday programming
-- Not production-ready yet (v0.1.0 — the language and tooling are functional but evolving)
-- Not designed for raw performance (determinism and safety are prioritized over speed)
-- Not a wrapper around an existing language (it has its own syntax, type system, compiler, and VM)
+- Not a general-purpose programming language competing with Rust/Go/Python
+- Not an IDE or editor
+- Not a marketplace or plugin system
+- Not production-ready yet (v0.1.0 — functional but evolving)
 
 ## Quick Start
 
@@ -30,103 +26,136 @@ Boruna compiles `.ax` source files to bytecode, executes them on a custom VM, an
 # Build
 cargo build --workspace
 
-# Run a program
-cargo run --bin boruna -- run examples/hello.ax
+# Validate and run a workflow
+cargo run --bin boruna -- workflow validate examples/workflows/llm_code_review
+cargo run --bin boruna -- workflow run examples/workflows/llm_code_review --policy allow-all --record
 
-# Run all 501 tests
+# Verify evidence bundle
+cargo run --bin boruna -- evidence verify examples/workflows/llm_code_review/evidence/<run-id>
+
+# Run all 557+ tests
 cargo test --workspace
 ```
 
-### Hello World
+## Example: LLM Code Review Workflow
 
-```
-// hello.ax
-fn main() -> Int {
-    let x: Int = 40
-    let y: Int = 2
-    x + y
+```json
+{
+  "name": "llm-code-review",
+  "version": "1.0.0",
+  "steps": {
+    "fetch_diff": { "kind": "source", "source": "steps/fetch_diff.ax" },
+    "analyze":    { "kind": "source", "source": "steps/analyze.ax",
+                    "inputs": { "diff": "fetch_diff.result" } },
+    "report":     { "kind": "source", "source": "steps/report.ax",
+                    "inputs": { "analysis": "analyze.result" } }
+  },
+  "edges": [["fetch_diff", "analyze"], ["analyze", "report"]]
 }
 ```
 
 ```bash
-cargo run --bin boruna -- run examples/hello.ax
+boruna workflow validate examples/workflows/llm_code_review
+# workflow 'llm-code-review' v1.0.0 is valid
+#   steps: 3
+#   execution order: fetch_diff -> analyze -> report
+
+boruna workflow run examples/workflows/llm_code_review --record
+# workflow 'llm-code-review' run: Completed
+#   evidence bundle: evidence/run-llm-code-review-...
 ```
 
-### Fibonacci
+## Example Workflows
+
+| Workflow | Pattern | Demonstrates |
+|----------|---------|-------------|
+| [`llm_code_review`](examples/workflows/llm_code_review/) | Linear (3 steps) | LLM capability, data flow, evidence recording |
+| [`document_processing`](examples/workflows/document_processing/) | Fan-out/merge (5 steps) | Parallel steps, multi-input merge, DAG scheduling |
+| [`customer_support_triage`](examples/workflows/customer_support_triage/) | Approval gate (4 steps) | Human-in-the-loop, conditional pause, audit trail |
+
+## Key Guarantees
+
+### Determinism
+Same bytecode + same inputs = identical outputs. `BTreeMap` ordering throughout, no `HashMap` non-determinism. Time and IO virtualized through capability gateway.
+
+### Policy Enforcement
+Every side effect is declared with `!{capability}` annotations and checked against the active policy. Budget limits, model allowlists, and network restrictions are enforced per step.
+
+### Auditability
+Every workflow run can produce an evidence bundle: hash-chained audit log, workflow/policy snapshots, per-step outputs, environment fingerprint. `boruna evidence verify` checks integrity.
+
+### Replay
+Execution can be recorded and replayed. The `EventLog` captures capability results; `ReplayEngine` verifies that replay produces identical outcomes.
+
+## Architecture
 
 ```
-fn fib(n: Int) -> Int {
-    if n <= 1 {
-        n
-    } else {
-        fib(n - 1) + fib(n - 2)
-    }
-}
-
-fn main() -> Int {
-    fib(10)
-}
+workflow.json → Validator → Runner → Evidence Bundle
+                              ↓
+                          Per step:
+                          .ax source → Compiler → VM → Output
+                                       Policy check
+                                       Audit log entry
 ```
 
-### Capability-Gated Functions
+### Crates
 
-Functions that perform side effects must declare their capabilities:
+| Crate | Directory | Purpose |
+|-------|-----------|---------|
+| `boruna-orchestrator` | `orchestrator` | Workflow engine, audit system, evidence bundles |
+| `boruna-compiler` | `crates/llmc` | Lexer, parser, type checker, code generator |
+| `boruna-vm` | `crates/llmvm` | Virtual machine, capability gateway, actor system, replay |
+| `boruna-bytecode` | `crates/llmbc` | Opcodes, Module, Value, Capability definitions |
+| `boruna-effect` | `crates/llm-effect` | LLM integration, prompt management, caching |
+| `boruna-framework` | `crates/llmfw` | Elm-architecture runtime, validation, test harness |
+| `boruna-cli` | `crates/llmvm-cli` | CLI binary with all subcommands |
+| `boruna-tooling` | `tooling` | Diagnostics, auto-repair, trace-to-tests, templates |
+| `boruna-pkg` | `packages` | Package registry, resolver, lockfiles |
 
-```
-fn fetch_data(url: String) -> String !{net.fetch} {
-    // Only callable when net.fetch is allowed by the active policy
-}
-
-fn save_file(path: String, data: String) -> Bool !{fs.write} {
-    // Only callable when fs.write is allowed
-}
-
-fn pure_add(a: Int, b: Int) -> Int {
-    // No annotation needed — this is pure
-    a + b
-}
-```
-
-### Framework App (Elm Architecture)
-
-```
-type State { count: Int }
-type Msg { tag: String, payload: Int }
-type Effect { kind: String, payload: String, callback_tag: String }
-type UpdateResult { state: State, effects: List<Effect> }
-type UINode { tag: String, text: String }
-
-fn init() -> State {
-    State { count: 0 }
-}
-
-fn update(state: State, msg: Msg) -> UpdateResult {
-    let new_count: Int = if msg.tag == "increment" {
-        state.count + 1
-    } else {
-        if msg.tag == "reset" { 0 } else { state.count }
-    }
-    UpdateResult {
-        state: State { count: new_count },
-        effects: [],
-    }
-}
-
-fn view(state: State) -> UINode {
-    UINode { tag: "counter", text: "count" }
-}
-```
+## CLI Reference
 
 ```bash
-# Validate app structure
-cargo run --bin boruna -- framework validate examples/framework/counter_app.ax
+# Workflow commands
+boruna workflow validate <dir>         # Validate workflow definition
+boruna workflow run <dir> --policy <p> # Execute workflow
+boruna workflow run <dir> --record     # Execute with evidence recording
 
-# Test with message sequence
-cargo run --bin boruna -- framework test examples/framework/counter_app.ax \
-    -m "increment:1,increment:1,reset:0"
+# Evidence commands
+boruna evidence verify <dir>           # Verify bundle integrity
+boruna evidence inspect <dir>          # Show bundle manifest
+boruna evidence inspect <dir> --json   # Machine-readable manifest
+
+# Single-file execution
+boruna compile app.ax                  # Compile to bytecode
+boruna run app.ax --policy allow-all   # Run a program
+boruna trace app.ax                    # Run with tracing
+boruna replay app.axbc trace.json      # Replay from trace
+
+# Framework commands
+boruna framework validate app.ax       # Validate app structure
+boruna framework test app.ax -m "msg:val"  # Test with messages
+
+# Developer tools
+boruna lang check app.ax --json        # Structured diagnostics
+boruna lang repair app.ax              # Auto-repair
+boruna template list                   # List app templates
+boruna template apply <name> --args "k=v"  # Generate from template
 ```
+
+## Enterprise Documentation
+
+| Document | Contents |
+|----------|----------|
+| [`ENTERPRISE_PLATFORM_OVERVIEW.md`](docs/ENTERPRISE_PLATFORM_OVERVIEW.md) | Platform vision, architecture, workflow lifecycle |
+| [`PLATFORM_GOVERNANCE.md`](docs/PLATFORM_GOVERNANCE.md) | Policies, RBAC, budgets, approval gates, audit log |
+| [`OPERATIONS.md`](docs/OPERATIONS.md) | Deploy, run, observe, replay, CI integration |
+| [`SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) | Capabilities, isolation, secrets, threat model |
+| [`COMPLIANCE_EVIDENCE.md`](docs/COMPLIANCE_EVIDENCE.md) | Evidence bundles, audit logs, verification |
+| [`ENTERPRISE_GAPS.md`](docs/ENTERPRISE_GAPS.md) | Known gaps with priority and proposed direction |
 
 ## Language Features
+
+Boruna includes a statically typed language for writing workflow steps:
 
 | Feature | Example |
 |---------|---------|
@@ -136,225 +165,38 @@ cargo run --bin boruna -- framework test examples/framework/counter_app.ax \
 | Record spread | `User { ..old_user, age: 31 }` |
 | Enums | `enum Color { Red, Green, Custom(String) }` |
 | Pattern matching | `match val { "a" => 1, _ => 0 }` |
-| Collections | `List<T>`, `Map<K, V>` |
 | Capability annotations | `fn f() -> T !{net.fetch}` |
-| Contracts | `fn div(a: Int, b: Int) -> Int requires b != 0` |
 | Actors | `spawn`, `send`, `receive` |
-| String concat | `"hello" ++ " world"` |
-
-## Architecture
-
-```
-                    .ax source
-                        |
-                    [Compiler]
-                  lexer -> parser -> typeck -> codegen
-                        |
-                    .axbc bytecode
-                        |
-                      [VM]
-             CapabilityGateway + Policy
-                        |
-            +-----------+-----------+
-            |           |           |
-        [Framework]  [Actors]  [Effects]
-        init/update  spawn     http, db,
-        /view        send/recv fs, llm...
-```
-
-### Crates
-
-| Crate | Directory | Purpose |
-|-------|-----------|---------|
-| `boruna-bytecode` | `crates/llmbc` | Opcodes, Module, Value, Capability definitions |
-| `boruna-compiler` | `crates/llmc` | Lexer, parser, type checker, code generator |
-| `boruna-vm` | `crates/llmvm` | Virtual machine, actor system, replay engine |
-| `boruna-framework` | `crates/llmfw` | Elm-architecture runtime, validation, test harness |
-| `boruna-effect` | `crates/llm-effect` | LLM integration, prompt management, caching |
-| `boruna-cli` | `crates/llmvm-cli` | CLI binary with all subcommands |
-| `boruna-tooling` | `tooling` | Diagnostics, auto-repair, trace-to-tests, templates |
-| `boruna-pkg` | `packages` | Package registry, resolver, lockfiles |
-| `boruna-orchestrator` | `orchestrator` | Multi-agent coordination, patch management |
-
-### Standard Libraries
-
-11 deterministic libraries, all pure-functional with declared capabilities:
-
-| Library | Capabilities | Purpose |
-|---------|-------------|---------|
-| `std-ui` | none | Declarative UI primitives (row, column, button, table...) |
-| `std-forms` | none | Form engine with validation |
-| `std-validation` | none | Reusable validation rules |
-| `std-authz` | none | Role and permission checks |
-| `std-routing` | none | Declarative URL routing |
-| `std-testing` | none | Test helpers and assertions |
-| `std-http` | `net.fetch` | HTTP request abstractions |
-| `std-db` | `db.query` | Database query builder |
-| `std-storage` | `fs.read`, `fs.write` | Local persistence |
-| `std-notifications` | `time.now` | Notification management |
-| `std-sync` | `net.fetch` | Offline-first sync with conflict resolution |
-
-### App Templates
-
-```bash
-cargo run --bin boruna -- template list
-cargo run --bin boruna -- template apply crud-admin \
-    --args "entity_name=products,fields=name|price" --validate
-```
-
-| Template | Description |
-|----------|-------------|
-| `crud-admin` | Full CRUD admin panel with auth and DB |
-| `form-basic` | Simple validated form |
-| `auth-app` | Authentication flow with role management |
-| `realtime-feed` | Live event feed with polling |
-| `offline-sync` | Offline-first app with sync queue |
-
-## Key Guarantees
-
-### Determinism
-
-All execution is deterministic. Same bytecode + same messages = same state transitions, same effects, same UI output. The VM uses `BTreeMap` (not `HashMap`) for ordered iteration. Time, randomness, and I/O are virtualized through the capability gateway.
-
-### Capability Safety
-
-Every side effect must be declared with `!{capability}` annotations. The VM's `CapabilityGateway` checks every call against the active `Policy`. Framework apps enforce that `update()` and `view()` are pure — they cannot make capability calls.
-
-### Replay
-
-Execution can be recorded and replayed deterministically. The `EventLog` captures capability call arguments and results. The `ReplayEngine` feeds recorded results back during replay and verifies that the call sequence is identical.
-
-### Actor Determinism
-
-The actor system uses deterministic round-robin scheduling with sorted message delivery `(target_id, sender_id)`. Bounded execution budgets prevent any single actor from starving others.
-
-## Using Boruna in Existing Projects
-
-Boruna is designed as an embeddable platform. You can integrate its compiler, VM, and framework into existing Rust applications as crate dependencies.
-
-### Embed as a Scripting Engine
-
-```rust
-use boruna_compiler::compile;
-use boruna_vm::{Vm, CapabilityGateway, Policy};
-
-let module = compile("script", source)?;
-let gateway = CapabilityGateway::new(Policy::deny_all()); // sandboxed
-let mut vm = Vm::new(module, gateway);
-let result = vm.run()?;
-```
-
-### Run Framework Apps from Rust
-
-```rust
-use boruna_framework::runtime::{AppRuntime, AppMessage};
-use boruna_bytecode::Value;
-
-let module = compile("app", source)?;
-let mut runtime = AppRuntime::new(module)?;
-runtime.send(AppMessage::new("increment", Value::Int(0)))?;
-```
-
-### Common Integration Patterns
-
-| Pattern | Description |
-|---------|-------------|
-| **Sandboxed scripting** | Run user-provided `.ax` scripts with `Policy::deny_all()` — no side effects possible |
-| **Business rules engine** | Load `.ax` rules at runtime, update without recompiling your host app |
-| **Safe plugin system** | Each plugin declares capabilities in `package.ax.json`, host enforces its own policy |
-| **Deterministic LLM calls** | Use effects + capability gateway for replayable, cached, budget-controlled LLM integration |
-| **Stateful UI components** | Embed Elm-architecture apps with state snapshots, time-travel debugging, and replay verification |
-| **Multi-agent orchestration** | Coordinate parallel agent work with DAG scheduling, patch bundles, and deterministic gates |
-| **Trace-based testing** | Record production traces, generate regression tests, minimize failing cases automatically |
-
-See [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) for detailed examples, API usage, and full integration walkthroughs.
-
-## CLI Reference
-
-```bash
-boruna compile app.ax              # Compile to bytecode
-boruna run app.ax                  # Run a program
-boruna run app.ax --policy allow-all  # Run with all capabilities enabled
-boruna ast app.ax                  # Print AST
-boruna trace app.ax                # Run with execution tracing
-boruna replay app.ax trace.json    # Replay from recorded trace
-boruna inspect app.axbc            # Inspect bytecode module
-
-boruna framework validate app.ax   # Validate app structure
-boruna framework test app.ax -m "msg:val,msg:val"  # Test with messages
-
-boruna lang check app.ax --json    # Structured diagnostics
-boruna lang repair app.ax          # Auto-repair from diagnostics
-
-boruna template list               # List available templates
-boruna template apply <name> --args "k=v"  # Generate from template
-```
 
 ---
 
 ## For LLMs and Coding Agents
 
-Boruna is designed to be understood and operated by LLMs and autonomous coding agents. This section provides the references needed to work with the codebase effectively.
+Boruna is designed to be understood and operated by LLMs and autonomous coding agents.
 
-### Entry Points for Agents
+### Entry Points
 
 | Task | Where to Start |
 |------|---------------|
 | Understand the project | [`CLAUDE.md`](CLAUDE.md) — build commands, architecture, invariants |
-| Integrate into existing apps | [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) — embedding, plugins, LLM integration |
+| Run enterprise workflows | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — validate, run, verify |
+| Understand governance | [`docs/PLATFORM_GOVERNANCE.md`](docs/PLATFORM_GOVERNANCE.md) — policies, budgets, audit |
 | Learn the language | [`docs/language-guide.md`](docs/language-guide.md) — types, syntax, capabilities |
-| Build a framework app | [`docs/FRAMEWORK_API.md`](docs/FRAMEWORK_API.md) — AppRuntime, TestHarness, Effect |
-| Write and run tests | [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) — TestHarness usage, golden tests, CLI testing |
-| Work with effects | [`docs/EFFECTS_GUIDE.md`](docs/EFFECTS_GUIDE.md) — effect lifecycle, capability mapping |
-| Use the actor system | [`docs/ACTORS_GUIDE.md`](docs/ACTORS_GUIDE.md) — spawn, send, receive, supervision |
-| Integrate LLM calls | [`docs/LLM_EFFECT_SPEC.md`](docs/LLM_EFFECT_SPEC.md) — prompt registry, caching, schemas |
-| Understand determinism | [`docs/DETERMINISM_CONTRACT.md`](docs/DETERMINISM_CONTRACT.md) — what is and isn't deterministic |
-| Coordinate multi-agent work | [`docs/ORCHESTRATOR_SPEC.md`](docs/ORCHESTRATOR_SPEC.md) — work graphs, patch bundles, review |
-| Manage packages | [`docs/PACKAGE_SPEC.md`](docs/PACKAGE_SPEC.md) — manifests, lockfiles, resolution |
-| Inspect bytecode | [`docs/bytecode-spec.md`](docs/bytecode-spec.md) — opcodes, module format, binary layout |
-| Use diagnostics/repair | [`docs/DIAGNOSTICS_AND_REPAIR.md`](docs/DIAGNOSTICS_AND_REPAIR.md) — structured diagnostics, auto-fix |
-| Generate tests from traces | [`docs/TRACE_TO_TESTS.md`](docs/TRACE_TO_TESTS.md) — record, minimize, generate |
+| Build framework apps | [`docs/FRAMEWORK_API.md`](docs/FRAMEWORK_API.md) — AppRuntime, TestHarness |
+| Integrate into apps | [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md) — embedding, plugins |
+| Work with effects | [`docs/EFFECTS_GUIDE.md`](docs/EFFECTS_GUIDE.md) — effect lifecycle, capabilities |
+| Use actors | [`docs/ACTORS_GUIDE.md`](docs/ACTORS_GUIDE.md) — spawn, send, supervision |
+| Understand determinism | [`docs/DETERMINISM_CONTRACT.md`](docs/DETERMINISM_CONTRACT.md) — invariants |
+| Manage packages | [`docs/PACKAGE_SPEC.md`](docs/PACKAGE_SPEC.md) — manifests, lockfiles |
 
-### Compiler Pipeline (for code generation agents)
+### Critical Rules for Agents
 
-```
-Source (.ax)
-    → lexer::lex()       → Vec<Token>
-    → parser::parse()    → Program (AST)
-    → typeck::check()    → Result<(), CompileError>
-    → codegen::emit()    → Module (bytecode)
-```
+1. **Never break determinism** — use `BTreeMap`, never `HashMap`. No randomness in pure code.
+2. **Declare all capabilities** — functions with side effects need `!{capability}` annotations.
+3. **Run `cargo test --workspace`** after every change — 541+ tests must pass.
+4. **Run `cargo clippy --workspace -- -D warnings`** — zero warnings allowed.
 
-Entry point: `boruna_compiler::compile(name, source) -> Result<Module, CompileError>`
-
-### VM Execution (for runtime agents)
-
-```rust
-use boruna_compiler::compile;
-use boruna_vm::{Vm, CapabilityGateway, Policy};
-
-let module = compile("app", source)?;
-let gateway = CapabilityGateway::new(Policy::allow_all());
-let mut vm = Vm::new(module, gateway);
-let result = vm.run()?;
-```
-
-### Framework Testing (for test agents)
-
-```rust
-use boruna_framework::testing::TestHarness;
-use boruna_framework::runtime::AppMessage;
-use boruna_bytecode::Value;
-
-let mut harness = TestHarness::from_source(source)?;
-harness.send(AppMessage::new("increment", Value::Int(0)))?;
-assert_eq!(harness.state(), &expected);
-
-// Replay verification
-let identical = harness.replay_verify(source, messages)?;
-```
-
-### Capability List (for policy agents)
+### Capability List
 
 | Capability | ID | Gate |
 |------------|-----|------|
@@ -368,14 +210,6 @@ let identical = harness.replay_verify(source, messages)?;
 | `llm.call` | 7 | LLM API calls |
 | `actor.spawn` | 8 | Spawn child actors |
 | `actor.send` | 9 | Send actor messages |
-
-### Critical Rules for Agents
-
-1. **Never break determinism** — use `BTreeMap`, never `HashMap`. No randomness in pure code.
-2. **Declare all capabilities** — functions with side effects need `!{capability}` annotations.
-3. **Keep `update()` and `view()` pure** — no capability calls allowed in these functions.
-4. **Run `cargo test --workspace`** after every change — 501 tests must pass.
-5. **Run `cargo clippy --workspace -- -D warnings`** — zero warnings allowed.
 
 ## License
 

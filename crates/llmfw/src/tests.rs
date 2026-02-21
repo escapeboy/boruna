@@ -343,6 +343,7 @@ fn policies() -> PolicySet {
     #[test]
     fn test_policy_check_batch_limit() {
         let policy = PolicySet {
+            schema_version: 1,
             capabilities: vec!["net.fetch".into()],
             max_effects_per_cycle: 1,
             max_steps: 0,
@@ -368,6 +369,7 @@ fn policies() -> PolicySet {
     fn test_policy_deny_specific_capability() {
         // Policy only allows net.fetch — db.query should be denied.
         let policy = PolicySet {
+            schema_version: 1,
             capabilities: vec!["net.fetch".into()],
             max_effects_per_cycle: 0,
             max_steps: 0,
@@ -396,6 +398,7 @@ fn policies() -> PolicySet {
     fn test_policy_empty_capabilities_allows_all() {
         // Empty capabilities list means no restrictions.
         let policy = PolicySet {
+            schema_version: 1,
             capabilities: Vec::new(),
             max_effects_per_cycle: 0,
             max_steps: 0,
@@ -411,6 +414,7 @@ fn policies() -> PolicySet {
     #[test]
     fn test_policy_batch_limit_exact_boundary() {
         let policy = PolicySet {
+            schema_version: 1,
             capabilities: Vec::new(),
             max_effects_per_cycle: 2,
             max_steps: 0,
@@ -432,6 +436,7 @@ fn policies() -> PolicySet {
     #[test]
     fn test_policy_json_diagnostic() {
         let policy = PolicySet {
+            schema_version: 1,
             capabilities: vec!["net.fetch".into(), "time.now".into()],
             max_effects_per_cycle: 5,
             max_steps: 100000,

@@ -1,6 +1,6 @@
 use boruna_bytecode::{Capability, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::error::VmError;
 use crate::replay::EventLog;
@@ -25,16 +25,23 @@ impl Default for PolicyRule {
 /// Policy configuration for the capability gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Policy {
-    pub rules: HashMap<String, PolicyRule>,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    pub rules: BTreeMap<String, PolicyRule>,
     /// Default rule for capabilities not explicitly listed.
     pub default_allow: bool,
+}
+
+fn default_schema_version() -> u32 {
+    1
 }
 
 impl Policy {
     /// Create a permissive policy that allows everything.
     pub fn allow_all() -> Self {
         Policy {
-            rules: HashMap::new(),
+            schema_version: 1,
+            rules: BTreeMap::new(),
             default_allow: true,
         }
     }
@@ -72,7 +79,7 @@ impl Policy {
 /// Capability gateway — all side effects go through here.
 pub struct CapabilityGateway {
     policy: Policy,
-    usage: HashMap<String, u64>,
+    usage: BTreeMap<String, u64>,
     /// Host-provided handler for capability calls.
     handler: Box<dyn CapabilityHandler>,
 }
@@ -146,7 +153,7 @@ impl CapabilityGateway {
     pub fn new(policy: Policy) -> Self {
         CapabilityGateway {
             policy,
-            usage: HashMap::new(),
+            usage: BTreeMap::new(),
             handler: Box::new(MockHandler),
         }
     }
@@ -159,7 +166,7 @@ impl CapabilityGateway {
     pub fn with_handler(policy: Policy, handler: Box<dyn CapabilityHandler>) -> Self {
         CapabilityGateway {
             policy,
-            usage: HashMap::new(),
+            usage: BTreeMap::new(),
             handler,
         }
     }
@@ -207,7 +214,7 @@ impl CapabilityGateway {
         Ok(result)
     }
 
-    pub fn usage(&self) -> &HashMap<String, u64> {
+    pub fn usage(&self) -> &BTreeMap<String, u64> {
         &self.usage
     }
 }
