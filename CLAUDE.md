@@ -62,6 +62,10 @@ cargo run --bin boruna -- workflow run examples/workflows/llm_code_review --poli
 cargo run --bin boruna -- evidence verify <bundle-dir>
 cargo run --bin boruna -- evidence inspect <bundle-dir> --json
 
+# MCP Server (AI agent integration)
+cargo run --bin boruna-mcp
+cargo run --bin boruna-mcp -- --templates-dir templates --libs-dir libs
+
 # CI/CD — runs on every push/PR (GitHub Actions)
 # Clippy (zero warnings policy)
 cargo clippy --workspace -- -D warnings
@@ -90,6 +94,7 @@ boruna-bytecode  ←  boruna-compiler  ←  boruna-framework
        boruna-tooling (diagnostics, repair, stdlib, templates)
        boruna-pkg (package registry, resolver, lockfiles)
        boruna-orchestrator (multi-agent coordination)
+       boruna-mcp (MCP server for AI coding agents)
 ```
 
 Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.). See docs/RENAMING.md for the full mapping.
@@ -102,6 +107,7 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 - **boruna-framework** (dir: crates/llmfw) — Framework layer enforcing the App protocol (Elm architecture: init/update/view). `AppValidator`, `AppRuntime`, `TestHarness`, `PolicySet`, state machine diffing.
 - **boruna-effect** (dir: crates/llm-effect) — Token-optimized LLM integration: prompt building, context management, caching, normalization, capability gating for LLM calls.
 - **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template, workflow, evidence.
+- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 10 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
 
 ### Supporting Crates
 
@@ -124,6 +130,48 @@ All are pure-functional (no hidden side effects). Libraries needing capabilities
 ### Templates (templates/)
 
 5 app templates (crud-admin, form-basic, auth-app, realtime-feed, offline-sync). Each has `template.json` manifest and `app.ax.template` with `{{variable}}` placeholders.
+
+## MCP Server (boruna-mcp)
+
+MCP (Model Context Protocol) server that exposes Boruna's toolchain to AI coding agents (Claude Code, Cursor, Codex, etc.) over JSON-RPC stdio transport. Binary: `boruna-mcp`. Crate: `crates/boruna-mcp/`.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `boruna_compile` | Compile `.ax` source → module info or structured errors |
+| `boruna_ast` | Parse `.ax` source → AST JSON (truncated at 100KB) |
+| `boruna_run` | Compile + execute `.ax` source with policy/step-limit/trace |
+| `boruna_check` | Run diagnostics → severity, spans, suggested patches |
+| `boruna_repair` | Auto-repair `.ax` source using diagnostic suggestions |
+| `boruna_validate_app` | Validate App protocol conformance (init/update/view) |
+| `boruna_framework_test` | Run a framework app through a message sequence |
+| `boruna_workflow_validate` | Validate workflow DAG structure + topological order |
+| `boruna_template_list` | List available app templates |
+| `boruna_template_apply` | Apply a template with variable substitution |
+
+### IDE Configuration
+
+Add to `.mcp.json` (Claude Code) or equivalent:
+
+```json
+{
+  "mcpServers": {
+    "boruna": {
+      "command": "cargo",
+      "args": ["run", "--bin", "boruna-mcp", "--manifest-path", "/path/to/ai-lang/Cargo.toml"],
+      "env": {}
+    }
+  }
+}
+```
+
+### Design Conventions
+
+- All tools return structured JSON with `"success": true|false`.
+- Domain errors (compile failures, runtime errors) are returned as successful tool responses with `success: false`, not as MCP errors.
+- Source code is passed as strings, not file paths (1MB limit enforced).
+- Synchronous Boruna APIs run inside `tokio::task::spawn_blocking`.
 
 ## Language Key Facts
 
