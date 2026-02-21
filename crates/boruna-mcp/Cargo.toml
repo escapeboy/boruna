@@ -1,0 +1,24 @@
+[package]
+name = "boruna-mcp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "boruna-mcp"
+path = "src/main.rs"
+
+[dependencies]
+boruna-bytecode = { path = "../llmbc" }
+boruna-compiler = { path = "../llmc" }
+boruna-vm = { path = "../llmvm" }
+boruna-framework = { path = "../llmfw" }
+boruna-tooling = { path = "../../tooling" }
+boruna-orchestrator = { path = "../../orchestrator" }
+
+rmcp = { version = "0.16", features = ["server", "transport-io", "macros", "schemars"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "1.0"
+clap = { workspace = true }
+tempfile = "3"
