@@ -1,0 +1,63 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 100000
+  },
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "compress": false,
+    "headerText": "Boruna — a deterministic, capability-safe programming language and runtime for LLM-native applications. Written in Rust. Compiles .ax source files to bytecode, executes on a custom VM, enforces all side effects are declared and gated at compile time.",
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "showLineNumbers": true,
+    "topFilesLength": 10,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false
+    }
+  },
+  "include": [
+    "**/*.rs",
+    "**/*.ax",
+    "**/*.toml",
+    "**/*.json",
+    "**/*.md",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.template"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "target/**",
+      "llm_cache/**",
+      "context_store/**",
+      "plans/**",
+      "host/**",
+      "prompts/**",
+      "orchestrator/storage/**",
+      "packages/registry/**",
+      "**/*.lock",
+      "**/Cargo.lock",
+      "repomix-output.*",
+      ".git/**",
+      ".github/**",
+      ".DS_Store",
+      "*.swp",
+      "*.swo"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
