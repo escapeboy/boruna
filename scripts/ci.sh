@@ -13,18 +13,21 @@ echo ""
 # 2. Clippy (zero warnings)
 echo "--- Clippy ---"
 cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --features boruna-vm/http -- -D warnings
 echo "PASS: clippy"
 echo ""
 
 # 3. Build
 echo "--- Build ---"
 cargo build --workspace
+cargo build --workspace --features boruna-vm/http
 echo "PASS: build"
 echo ""
 
 # 4. Unit + integration tests
 echo "--- Tests ---"
 cargo test --workspace
+cargo test -p boruna-vm --features http
 echo "PASS: tests"
 echo ""
 
