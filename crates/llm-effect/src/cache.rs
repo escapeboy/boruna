@@ -32,23 +32,37 @@ impl LlmCache {
         })
     }
 
+    /// Validate that a cache key hex portion contains only safe characters.
+    fn validate_key(hex: &str) -> Result<(), String> {
+        if hex.is_empty() {
+            return Err("empty cache key".to_string());
+        }
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "invalid cache key: contains non-hex characters: {hex}"
+            ));
+        }
+        Ok(())
+    }
+
     /// Derive the filename for a cache key.
-    fn entry_path(&self, cache_key: &str) -> PathBuf {
+    fn entry_path(&self, cache_key: &str) -> Result<PathBuf, String> {
         // Strip "sha256:" prefix for filename
         let hex = cache_key.strip_prefix("sha256:").unwrap_or(cache_key);
-        self.cache_dir.join(format!("{hex}.json"))
+        Self::validate_key(hex)?;
+        Ok(self.cache_dir.join(format!("{hex}.json")))
     }
 
     /// Read a cached entry by cache key.
     pub fn read(&self, cache_key: &str) -> Option<CacheEntry> {
-        let path = self.entry_path(cache_key);
+        let path = self.entry_path(cache_key).ok()?;
         let data = fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
     /// Write a cache entry. Uses canonical JSON for determinism.
     pub fn write(&self, entry: &CacheEntry) -> Result<(), String> {
-        let path = self.entry_path(&entry.cache_key);
+        let path = self.entry_path(&entry.cache_key)?;
         // Use sorted keys via BTreeMap-based serialization (serde_json sorts by default with BTreeMap)
         let json = canonical_serialize(entry)?;
         fs::write(&path, json).map_err(|e| format!("cache write error: {e}"))
@@ -56,12 +70,14 @@ impl LlmCache {
 
     /// Check if a cache entry exists.
     pub fn exists(&self, cache_key: &str) -> bool {
-        self.entry_path(cache_key).exists()
+        self.entry_path(cache_key)
+            .map(|p| p.exists())
+            .unwrap_or(false)
     }
 
     /// Delete a cache entry.
     pub fn delete(&self, cache_key: &str) -> Result<(), String> {
-        let path = self.entry_path(cache_key);
+        let path = self.entry_path(cache_key)?;
         if path.exists() {
             fs::remove_file(&path).map_err(|e| format!("cache delete error: {e}"))?;
         }
@@ -238,10 +254,10 @@ mod cache_tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = LlmCache::open(dir.path()).unwrap();
 
-        let entry = make_entry("same_key");
+        let entry = make_entry("aa11bb");
         cache.write(&entry).unwrap();
 
-        let loaded = cache.read("sha256:same_key").unwrap();
+        let loaded = cache.read("sha256:aa11bb").unwrap();
         assert_eq!(loaded.result, entry.result);
     }
 }

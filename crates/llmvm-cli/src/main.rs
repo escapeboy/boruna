@@ -635,8 +635,11 @@ fn external_predicate(
     source_file: &str,
     messages: &[trace2tests::TraceMessage],
 ) -> trace2tests::PredicateOutcome {
-    let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join("boruna_minimize_temp.json");
+    let temp_file = match tempfile::NamedTempFile::new() {
+        Ok(f) => f,
+        Err(_) => return trace2tests::PredicateOutcome::Unresolved,
+    };
+    let temp_path = temp_file.path().to_path_buf();
     let trace_data = serde_json::json!({
         "source_file": source_file,
         "messages": messages,

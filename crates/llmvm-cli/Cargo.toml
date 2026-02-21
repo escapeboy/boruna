@@ -21,5 +21,6 @@ boruna-tooling = { path = "../../tooling" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = "3"
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }

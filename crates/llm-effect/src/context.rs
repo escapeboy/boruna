@@ -16,6 +16,17 @@ impl ContextStore {
         Ok(ContextStore { blobs_dir })
     }
 
+    /// Validate that a hash contains only hex characters (prevents path traversal).
+    fn validate_hash(hash: &str) -> Result<(), String> {
+        if hash.is_empty() {
+            return Err("empty hash".to_string());
+        }
+        if !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("invalid hash: contains non-hex characters: {hash}"));
+        }
+        Ok(())
+    }
+
     /// Store content and return its hash.
     pub fn put(&self, content: &str) -> Result<String, String> {
         let hash = sha256_hex(content);
@@ -26,13 +37,14 @@ impl ContextStore {
 
     /// Retrieve content by hash.
     pub fn get(&self, hash: &str) -> Result<String, String> {
+        Self::validate_hash(hash)?;
         let path = self.blobs_dir.join(hash);
         fs::read_to_string(&path).map_err(|e| format!("blob not found ({hash}): {e}"))
     }
 
     /// Check if a blob exists.
     pub fn exists(&self, hash: &str) -> bool {
-        self.blobs_dir.join(hash).exists()
+        Self::validate_hash(hash).is_ok() && self.blobs_dir.join(hash).exists()
     }
 
     /// Pack multiple blobs into a bounded context, respecting `max_bytes`.

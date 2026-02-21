@@ -88,6 +88,20 @@ impl PatchBundle {
             if patch.file.is_empty() {
                 errors.push(format!("patches[{i}].file is empty"));
             }
+            // Reject path traversal attempts
+            let patch_path = Path::new(&patch.file);
+            if patch_path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+            {
+                errors.push(format!("patches[{i}].file contains '..': {}", patch.file));
+            }
+            if patch_path.is_absolute() {
+                errors.push(format!(
+                    "patches[{i}].file is an absolute path: {}",
+                    patch.file
+                ));
+            }
             if patch.hunks.is_empty() {
                 errors.push(format!("patches[{i}].hunks is empty"));
             }
@@ -121,6 +135,19 @@ impl PatchBundle {
 
         for patch in &self.patches {
             let file_path = base_dir.join(&patch.file);
+            // Defense-in-depth: verify resolved path stays within base_dir
+            let canonical = file_path
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve {}: {e}", patch.file))?;
+            let canonical_base = base_dir
+                .canonicalize()
+                .map_err(|e| format!("cannot resolve base dir: {e}"))?;
+            if !canonical.starts_with(&canonical_base) {
+                return Err(format!(
+                    "path traversal rejected: {} resolves outside workspace",
+                    patch.file
+                ));
+            }
             let content = fs::read_to_string(&file_path)
                 .map_err(|e| format!("cannot read {}: {e}", patch.file))?;
             let lines: Vec<&str> = content.lines().collect();
@@ -313,5 +340,50 @@ mod tests {
         let loaded = PatchBundle::load(&bundle_path).unwrap();
         assert_eq!(loaded.metadata.id, "PB-001");
         assert_eq!(loaded.patches.len(), 1);
+    }
+
+    #[test]
+    fn test_validate_rejects_path_traversal() {
+        let mut bundle = sample_bundle();
+        bundle.patches[0].file = "../../etc/passwd".into();
+        let err = bundle.validate().unwrap_err();
+        assert!(err
+            .iter()
+            .any(|e| e.contains("'..'") || e.contains("path traversal")));
+    }
+
+    #[test]
+    fn test_validate_rejects_absolute_path() {
+        let mut bundle = sample_bundle();
+        bundle.patches[0].file = "/etc/passwd".into();
+        let err = bundle.validate().unwrap_err();
+        assert!(err.iter().any(|e| e.contains("absolute")));
+    }
+
+    #[test]
+    fn test_apply_rejects_path_traversal_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file inside the dir
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "hello\n").unwrap();
+
+        // Also create the traversal target to ensure canonicalize works
+        let parent = dir.path().parent().unwrap();
+        let target = parent.join("traversal_target.txt");
+        fs::write(&target, "secret\n").unwrap();
+
+        let mut bundle = sample_bundle();
+        bundle.patches[0].file = format!("../{}", "traversal_target.txt");
+
+        let result = bundle.apply(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("path traversal rejected") || err.contains("resolves outside"),
+            "expected path traversal error, got: {err}"
+        );
+
+        // Clean up
+        let _ = fs::remove_file(&target);
     }
 }
