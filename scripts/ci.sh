@@ -43,25 +43,29 @@ TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
 # Linear workflow: should complete
-cargo run --bin boruna -- workflow run examples/workflows/llm_code_review \
-    --policy allow-all --record --evidence-dir "$TMPDIR/evidence" 2>&1 | grep -q "Completed"
+OUTPUT=$(cargo run --bin boruna -- workflow run examples/workflows/llm_code_review \
+    --policy allow-all --record --evidence-dir "$TMPDIR/evidence" 2>&1)
+echo "$OUTPUT" | grep -q "Completed"
 echo "  PASS: llm_code_review (completed)"
 
 # Fan-out workflow: should complete
-cargo run --bin boruna -- workflow run examples/workflows/document_processing \
-    --policy allow-all 2>&1 | grep -q "Completed"
+OUTPUT=$(cargo run --bin boruna -- workflow run examples/workflows/document_processing \
+    --policy allow-all 2>&1)
+echo "$OUTPUT" | grep -q "Completed"
 echo "  PASS: document_processing (completed)"
 
 # Approval gate workflow: should pause
-cargo run --bin boruna -- workflow run examples/workflows/customer_support_triage \
-    --policy allow-all 2>&1 | grep -q "Paused"
+OUTPUT=$(cargo run --bin boruna -- workflow run examples/workflows/customer_support_triage \
+    --policy allow-all 2>&1)
+echo "$OUTPUT" | grep -q "Paused"
 echo "  PASS: customer_support_triage (paused at approval)"
 
 # 7. Evidence verification
 echo ""
 echo "--- Evidence Verification ---"
 BUNDLE_DIR=$(ls -d "$TMPDIR/evidence"/run-* | head -1)
-cargo run --bin boruna -- evidence verify "$BUNDLE_DIR" 2>&1 | grep -q "VALID"
+OUTPUT=$(cargo run --bin boruna -- evidence verify "$BUNDLE_DIR" 2>&1)
+echo "$OUTPUT" | grep -q "VALID"
 echo "  PASS: evidence bundle verified"
 
 echo ""
