@@ -97,7 +97,7 @@ boruna-bytecode  ←  boruna-compiler  ←  boruna-framework
        boruna-mcp (MCP server for AI coding agents)
 ```
 
-Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.). See docs/RENAMING.md for the full mapping.
+Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.). The full mapping is in the memory file and in the Architecture section below.
 
 ### Core Crates (crates/)
 
@@ -181,6 +181,40 @@ Add to `.mcp.json` (Claude Code) or equivalent:
 - Capability annotations on functions: `fn fetch(url: String) -> String !{net.fetch}`.
 - Framework apps must define: `init() -> State`, `update(State, Msg) -> UpdateResult`, `view(State) -> UINode`. Types: `State`, `Msg`, `Effect`, `UpdateResult`, `UINode`, `PolicySet`.
 - Every `.ax` file needs a `fn main() -> Int` for standalone execution.
+
+## Repository Layout (key files)
+
+```
+README.md                     Portal README — start here
+AGENTS.md                     AI coding agent integration guide (MCP server, rules)
+CHANGELOG.md                  User-facing release history (keep-a-changelog format)
+CONTRIBUTING.md               Contribution guide
+SECURITY.md                   Vulnerability reporting policy
+LICENSE                       MIT
+
+docs/
+  README.md                   Documentation index
+  QUICKSTART.md               10-minute onboarding (ends with evidence verify)
+  concepts/
+    determinism.md            Why and how determinism is enforced
+    capabilities.md           Side effect declaration and policy gating
+    evidence-bundles.md       Hash-chained audit logs and replay
+  guides/
+    first-workflow.md         Build a workflow from scratch
+  reference/
+    cli.md                    All boruna CLI commands and flags
+    ax-language.md            .ax syntax, types, capabilities reference
+  stability.md                Stability tiers (stable/experimental/alpha/planned)
+  roadmap.md                  0.2.0 through 1.0.0
+  faq.md                      Common questions
+  limitations.md              Real constraints, stated honestly
+  archive/                    Internal development docs (not for external readers)
+
+examples/workflows/
+  llm_code_review/            Linear 3-step LLM workflow + README
+  document_processing/        Fan-out 5-step workflow + README
+  customer_support_triage/    Approval-gate workflow + README
+```
 
 ## Critical Invariants
 
