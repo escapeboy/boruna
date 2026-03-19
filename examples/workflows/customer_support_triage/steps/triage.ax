@@ -1,5 +1,18 @@
-// Step 2: LLM-powered ticket triage. Assigns severity and routing team.
+// Step 2: LLM-powered triage — assigns severity (1-5) and routing team.
+//
+// Analyzes ticket content and determines severity, routing team, and whether
+// an approval gate is required before routing.
+//
+// In live mode (--live): would invoke llm.call with a triage prompt.
+// In demo mode (default): returns deterministic triage for the demo ticket.
+//
+// Capability: llm.call (declared for live mode; gated by policy)
+
+fn demo_triage() -> String {
+    "{\"severity\": 5, \"team\": \"platform-oncall\", \"reason\": \"Production outage affecting enterprise customer with 50k users - immediate escalation required\", \"requires_approval\": true, \"sla_breach_risk\": true, \"suggested_action\": \"Page on-call engineer and create incident bridge\"}"
+}
+
 fn main() -> Int {
-    // Mock: return severity level (1-5, where 5 is critical)
-    4
+    let result: String = demo_triage()
+    0
 }

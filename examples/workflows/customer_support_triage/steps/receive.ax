@@ -1,5 +1,15 @@
-// Step 1: Receive and parse a support ticket.
+// Step 1: Receive and parse an incoming support ticket.
+//
+// In live mode (--live): would read from a queue or webhook via net.fetch.
+// In demo mode (default): returns a representative high-severity production outage ticket.
+//
+// Capability: net.fetch (declared for live mode; gated by policy)
+
+fn demo_ticket() -> String {
+    "{\"id\": \"TKT-20260315-0042\", \"customer\": \"Enterprise Corp\", \"tier\": \"enterprise\", \"subject\": \"Production API returning 503 - all services down\", \"body\": \"Entire integration stopped at 09:15 UTC. All API calls return 503. Production outage affecting 50,000 users.\", \"channel\": \"email\", \"sla_tier\": \"platinum\"}"
+}
+
 fn main() -> Int {
-    // Mock: return ticket ID
-    12345
+    let ticket: String = demo_ticket()
+    0
 }

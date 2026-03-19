@@ -1,6 +1,15 @@
-// Step 1: Fetch code diff for review.
-// In production this would use net.fetch capability; in mock mode returns sample data.
+// Step 1: Fetch the pull request diff for review.
+//
+// In live mode (--live): would call net.fetch against a PR API endpoint.
+// In demo mode (default): returns a representative auth module diff.
+//
+// Capability: net.fetch (declared for live mode; gated by policy)
+
+fn demo_diff() -> String {
+    "--- a/src/auth.rs +++ b/src/auth.rs @@ -38,9 +38,8 @@ impl AuthService { - fn generate_token(&self, user_id: UserId) -> Token { - let token = random_hex(32); - self.sessions.insert(token.clone(), user_id); + fn issue_token(&self, user_id: UserId, expires_at: Timestamp) -> Token { + let token = Token::new(user_id, expires_at); + self.sessions.insert(token.id(), token.clone()); }"
+}
+
 fn main() -> Int {
-    // Mock: return a sample diff size (line count)
-    42
+    let diff: String = demo_diff()
+    0
 }

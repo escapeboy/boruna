@@ -2,9 +2,9 @@
 
 ## Project Name
 
-**Boruna** — a deterministic, capability-safe programming language and framework for building LLM-native applications.
+**Boruna** — a deterministic execution platform for enterprise AI workflows with policy-gated capabilities, evidence bundles, and replay.
 
-**Tagline**: Boruna — Deterministic Agent-Native Execution Platform
+**Tagline**: Deterministic, policy-gated workflow execution for AI systems that must be auditable.
 
 ## CLI Commands
 

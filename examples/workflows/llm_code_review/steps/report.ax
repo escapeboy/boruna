@@ -1,5 +1,10 @@
-// Step 3: Generate a review report from the analysis.
+// Step 3: Format the analysis findings as a structured code review report.
+
+fn build_report() -> String {
+    "## Automated Code Review Report\n\nPR: example/repo#42 - auth: replace random token with Token::new\nStatus: PASS - no blocking issues found\n\n### Findings\n- [MEDIUM] security - Line 41: Token expiry via expires_at - verify all callers set this\n- [LOW] correctness - Line 45: is_expired() filter in validate() - verify clock skew tolerance\n\n### Summary\n2 findings (0 critical, 1 medium, 1 low). Recommend merging after confirming expires_at is non-optional.\n\nAnalyzed by: gpt-4 | Tokens used: 312 | Policy: allow-all"
+}
+
 fn main() -> Int {
-    // Mock: return report status (1 = pass, 0 = fail)
-    1
+    let report: String = build_report()
+    0
 }

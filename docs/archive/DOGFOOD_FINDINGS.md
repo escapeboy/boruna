@@ -86,7 +86,7 @@ another nesting level.
 **Workaround**: Structure code with consistent indentation and comments.
 
 **Recommendation**: Support string matching in `match` expressions:
-```llm
+```ax
 match msg.tag {
     "create_user" => ...,
     "delete_user" => ...,
@@ -108,7 +108,7 @@ transition repeats all 11 field assignments even when only 1 changes.
 field assignments between branches.
 
 **Recommendation**: Add record update syntax:
-```llm
+```ax
 State { ..state, status: "ok" }
 ```
 

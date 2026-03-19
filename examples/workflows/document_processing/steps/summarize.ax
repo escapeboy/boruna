@@ -1,5 +1,16 @@
-// Step 2c: Summarize the document.
+// Step 2c: Generate a concise summary of the document.
+//
+// Produces a human-readable summary suitable for review queues.
+// In live mode (--live): would use llm.call with a summarization prompt.
+// In demo mode (default): returns a representative summary.
+//
+// Capability: llm.call (declared for live mode; gated by policy)
+
+fn demo_summary() -> String {
+    "12-month service agreement between Acme Corp (provider) and Beta Inc (client), effective February 1, 2026. Monthly fee: USD 15,000, net 30 payment terms. Scope: software development services per Schedule A. Includes confidentiality obligations. Governed by Delaware law. Requires legal review before execution."
+}
+
 fn main() -> Int {
-    // Mock: return summary word count
-    150
+    let summary: String = demo_summary()
+    0
 }

@@ -1,6 +1,15 @@
-// Step 2: Analyze the diff using LLM.
-// In production this would call llm.prompt capability; in mock mode returns deterministic result.
+// Step 2: Analyze the diff for security and style issues.
+//
+// In live mode (--live): would invoke llm.call with the diff as prompt context.
+// In demo mode (default): returns structured findings representative of LLM output.
+//
+// Capability: llm.call (declared for live mode; gated by policy)
+
+fn demo_analysis() -> String {
+    "{\"findings\": [{\"severity\": \"medium\", \"category\": \"security\", \"message\": \"Token expiry via expires_at: verify this is always set by callers\", \"line\": 41}, {\"severity\": \"low\", \"category\": \"correctness\", \"message\": \"is_expired() filter in validate(): ensure clock skew tolerance is acceptable\", \"line\": 45}], \"summary\": \"2 findings. Auth hardening direction is correct.\", \"model\": \"gpt-4\", \"tokens_used\": 312}"
+}
+
 fn main() -> Int {
-    // Mock: return analysis score (0-100)
-    85
+    let analysis: String = demo_analysis()
+    0
 }

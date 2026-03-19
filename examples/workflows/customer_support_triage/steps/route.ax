@@ -1,5 +1,18 @@
-// Step 4: Route the ticket to the assigned team.
+// Step 4: Route the approved ticket to the assigned team.
+//
+// Executes after the approval gate clears. Sends routing notification
+// and creates an incident record.
+//
+// In live mode (--live): would call net.fetch to notify the team's incident system.
+// In demo mode (default): returns a routing confirmation record.
+//
+// Capability: net.fetch (declared for live mode; gated by policy)
+
+fn demo_routing() -> String {
+    "{\"ticket_id\": \"TKT-20260315-0042\", \"routed_to\": \"platform-oncall\", \"incident_id\": \"INC-2026-0087\", \"notification_sent\": true, \"status\": \"active\", \"bridge_url\": \"https://incidents.example.com/INC-2026-0087\"}"
+}
+
 fn main() -> Int {
-    // Mock: return routing confirmation (1 = routed)
-    1
+    let result: String = demo_routing()
+    0
 }

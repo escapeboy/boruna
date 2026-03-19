@@ -16,3 +16,8 @@ Thumbs.db
 
 # Repomix
 repomix-output.*
+repomix.config.json
+
+# Runtime-generated artifact directories
+context_store/
+llm_cache/

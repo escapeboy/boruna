@@ -1,5 +1,15 @@
-// Step 1: Ingest a document.
+// Step 1: Ingest a document from storage.
+//
+// In live mode (--live): would call fs.read to load document bytes.
+// In demo mode (default): returns a representative service agreement.
+//
+// Capability: fs.read (declared for live mode; gated by policy)
+
+fn demo_document() -> String {
+    "SERVICE AGREEMENT entered into January 15, 2026 between Acme Corp (Service Provider) and Beta Inc (Client). Services: software development per Schedule A. Payment: USD 15,000/month net 30. Term: 12 months from February 1, 2026. Confidentiality: strict. Governing law: Delaware."
+}
+
 fn main() -> Int {
-    // Mock: return document length
-    1500
+    let content: String = demo_document()
+    0
 }

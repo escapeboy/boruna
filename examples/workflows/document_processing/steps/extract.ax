@@ -1,5 +1,16 @@
 // Step 2b: Extract named entities from the document.
+//
+// Identifies parties, dates, monetary amounts, and key obligations.
+// In live mode (--live): would use llm.call for entity extraction.
+// In demo mode (default): returns representative entities for the demo contract.
+//
+// Capability: llm.call (declared for live mode; gated by policy)
+
+fn demo_entities() -> String {
+    "{\"entities\": [{\"kind\": \"party\", \"value\": \"Acme Corp\", \"role\": \"Service Provider\"}, {\"kind\": \"party\", \"value\": \"Beta Inc\", \"role\": \"Client\"}, {\"kind\": \"date\", \"value\": \"January 15, 2026\", \"context\": \"agreement_date\"}, {\"kind\": \"amount\", \"value\": \"USD 15,000\", \"frequency\": \"monthly\"}, {\"kind\": \"duration\", \"value\": \"12 months\"}], \"entity_count\": 5}"
+}
+
 fn main() -> Int {
-    // Mock: return entity count
-    7
+    let result: String = demo_entities()
+    0
 }

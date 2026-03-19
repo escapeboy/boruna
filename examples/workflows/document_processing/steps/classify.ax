@@ -1,5 +1,15 @@
-// Step 2a: Classify the document category.
+// Step 2a: Classify the document type and priority.
+//
+// In live mode (--live): would use llm.call for classification.
+// In demo mode (default): returns classification for the demo contract.
+//
+// Capability: llm.call (declared for live mode; gated by policy)
+
+fn demo_classification() -> String {
+    "{\"category\": \"contract\", \"subcategory\": \"service-agreement\", \"priority\": \"normal\", \"confidence\": 94, \"requires_legal_review\": true}"
+}
+
 fn main() -> Int {
-    // Mock: return category code (1=invoice, 2=contract, 3=report)
-    2
+    let result: String = demo_classification()
+    0
 }
