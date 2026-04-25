@@ -157,7 +157,7 @@ impl BorunaMcpServer {
     // ── Run Tool ──
 
     #[tool(
-        description = "Compile and execute .ax source code. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded) are returned as JSON with success=false."
+        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy) are returned as JSON with success=false."
     )]
     async fn boruna_run(
         &self,

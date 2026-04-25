@@ -71,6 +71,16 @@ This builds and publishes a Release named `vX.Y.Z-rc1`. Delete the rc release af
 - **macOS** targets compile natively on Apple-hosted runners (`macos-13` for x86_64, `macos-14` for arm64). No `cross` needed.
 - The `http` feature is **not** enabled in release builds — releases are the deterministic, no-network default. Integrators who want real HTTP rebuild from source with `--features boruna-vm/http`.
 
+### Why release builds use GitHub-hosted runners
+
+`ci.yml` runs on a `self-hosted` runner (likely Linux). Release builds intentionally stay on `ubuntu-latest`, `macos-13`, and `macos-14` because:
+
+1. macOS targets cannot run on a Linux self-hosted runner.
+2. Release builds benefit from a clean ephemeral environment (deterministic, no leftover toolchain state from prior CI runs).
+3. They run rarely (only on `v*` tags) so hosted-runner cost is negligible.
+
+Do not switch the release runners to `self-hosted` without first standing up macOS arm64 / x86_64 self-hosted runners with the matching label, plus a Linux runner that has `cross` and the musl targets pre-installed.
+
 ## What to do if the release workflow fails
 
 - **`cross` build fails on aarch64-musl**: usually a transient cargo registry issue — re-run the failed job.
