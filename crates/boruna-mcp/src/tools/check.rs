@@ -1,6 +1,8 @@
 use boruna_tooling::diagnostics::collector::DiagnosticCollector;
 use boruna_tooling::repair::{RepairStrategy, RepairTool};
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 /// Run diagnostics on source and return structured JSON.
 pub fn check_source(source: &str, file_name: &str) -> String {
     let collector = DiagnosticCollector::new(file_name, source);
@@ -42,6 +44,7 @@ pub fn check_source(source: &str, file_name: &str) -> String {
 
     serde_json::json!({
         "success": true,
+        "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
         "file": ds.file,
         "diagnostics_count": diagnostics.len(),
         "diagnostics": diagnostics,
@@ -98,6 +101,7 @@ pub fn repair_source(
 
     serde_json::json!({
         "success": true,
+        "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
         "repaired_source": repaired_source,
         "patches_applied": applied.len(),
         "patches_skipped": skipped.len(),

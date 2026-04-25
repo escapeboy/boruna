@@ -3,6 +3,8 @@ use boruna_vm::capability_gateway::{CapabilityGateway, Policy};
 use boruna_vm::vm::Vm;
 use serde_json::Value as JsonValue;
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 const TRACE_LIMIT: usize = 500;
 
 /// Compile and execute source, returning JSON with result or errors.
@@ -27,6 +29,7 @@ pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trac
         Err(msg) => {
             return serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "invalid_policy",
                 "message": msg,
             })
@@ -44,6 +47,7 @@ pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trac
         Ok(value) => {
             let mut json = serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "result": format_value(&value),
                 "steps": vm.step_count(),
                 "ui_output": vm.ui_output.iter().map(format_value).collect::<Vec<_>>(),
@@ -63,6 +67,7 @@ pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trac
         }
         Err(e) => serde_json::json!({
             "success": false,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
             "error_kind": "runtime_error",
             "message": format!("{e}"),
             "steps": vm.step_count(),

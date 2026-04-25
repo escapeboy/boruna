@@ -26,6 +26,7 @@ Both `--templates-dir` and `--libs-dir` are optional. Defaults are `templates` a
 The tools below share several conventions:
 
 - **All tools return JSON inside an MCP `Content::text` payload.** Responses are pretty-printed.
+- **Every response — success and failure — carries `protocol_version: 1`.** This is the wire-format version of the response envelope. It bumps **only** on a breaking shape change (field rename, removal, type change, or `error_kind` semantics change). Additive changes keep the version. Integrators should reject any response whose `protocol_version` exceeds the version they were built against, and may safely upgrade their parsers when the field stays the same. See the [Stability section](#stability) for the full versioning policy.
 - **Domain errors are returned as `success: false` JSON, not as MCP errors.** This includes compile failures, runtime errors, validation errors, parse errors, etc. MCP-protocol errors (returned as `McpError`) are reserved for transport-level problems — most commonly when a `source` argument exceeds the **1 MB limit** enforced by every source-accepting tool.
 - **Source code is passed as a string**, not a file path. Tool callers are responsible for reading files themselves.
 - **Synchronous Boruna APIs run inside `tokio::task::spawn_blocking`.** That means tool calls don't starve the MCP event loop, but each call is single-threaded.
@@ -33,6 +34,8 @@ The tools below share several conventions:
 - **`error_kind` values are stable strings.** Integrators may switch on them safely. New `error_kind` values may be added in a non-breaking way; existing ones are not renamed.
 
 ## Tools
+
+> **Note on the JSON examples below:** for brevity, the per-tool examples show only the body fields. Every actual response — success and failure — also includes `"protocol_version": 1` immediately after `"success"`. See the [Conventions](#conventions) and [Stability](#stability) sections for the full contract.
 
 ### `boruna_compile`
 
@@ -437,12 +440,28 @@ The `validation` object is present only when `validate: true`. If validation fai
 
 ## Stability
 
+- **`protocol_version: 1`** is the wire-format version of the response envelope, present on every tool response (success and failure). Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`; a regression test (`protocol_version_tests` — 16 cases covering both success and failure paths of all 10 tools) asserts coverage. Bumped only on a breaking shape change anywhere in the envelope; additive changes keep the version.
 - **Tool names** (`boruna_compile`, `boruna_run`, ...) are stable. Renames require a major version bump.
 - **`error_kind` values** are stable strings. New ones may be added; existing ones are not renamed.
-- **Top-level response fields** (`success`, named result fields) are stable. New fields are additive.
+- **Top-level response fields** (`success`, `protocol_version`, named result fields) are stable. New fields are additive.
 - **Value encoding inside `result`** (the tagged shapes for `Option` / `Result` / records / enums) is locked.
 
-A formal cross-tool `protocol_version` field is planned for a future release ([#6](https://github.com/escapeboy/boruna/issues/6)). Until that lands, integrators should treat the shapes documented here as the de-facto contract.
+### Versioning policy for `protocol_version`
+
+| Change | Bump? |
+|---|---|
+| Adding a new optional response field | **No** |
+| Adding a new `error_kind` value | **No** |
+| Adding a new tool | **No** |
+| Renaming an existing field | **Yes** |
+| Removing an existing field | **Yes** |
+| Changing the type of an existing field | **Yes** |
+| Changing what an existing `error_kind` means | **Yes** |
+| Changing the `result` value encoding (Option/Result/record tagged shapes) | **Yes** |
+
+When `protocol_version` bumps, integrators see `protocol_version: 2` (or higher) and can branch on the version to support both shapes during a migration window.
+
+Pairs with [`Policy.schema_version`](./policy-schema.md) (currently `1`) — together they cover both the request-side policy schema and the response-side envelope.
 
 ## See also
 

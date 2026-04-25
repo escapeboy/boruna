@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 /// List available templates in directory.
 pub fn list_templates(dir: &str) -> String {
     let path = Path::new(dir);
@@ -21,6 +23,7 @@ pub fn list_templates(dir: &str) -> String {
                 .collect();
             serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "templates": list,
                 "count": list.len(),
             })
@@ -28,6 +31,7 @@ pub fn list_templates(dir: &str) -> String {
         }
         Err(e) => serde_json::json!({
             "success": false,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
             "error_kind": "template_error",
             "message": e,
         })
@@ -47,6 +51,7 @@ pub fn apply_template(dir: &str, name: &str, args: &[String], validate: bool) ->
         } else {
             return serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "invalid_args",
                 "message": format!("argument must be key=value format, got: {arg}"),
             })
@@ -58,6 +63,7 @@ pub fn apply_template(dir: &str, name: &str, args: &[String], validate: bool) ->
         Ok(result) => {
             let mut json = serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "template_name": result.template_name,
                 "output_file": result.output_file,
                 "source": result.source,
@@ -80,6 +86,7 @@ pub fn apply_template(dir: &str, name: &str, args: &[String], validate: bool) ->
         }
         Err(e) => serde_json::json!({
             "success": false,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
             "error_kind": "template_error",
             "message": e,
         })

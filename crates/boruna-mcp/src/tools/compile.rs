@@ -1,5 +1,7 @@
 use boruna_compiler::CompileError;
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 const AST_SIZE_LIMIT: usize = 102_400; // 100 KB
 
 /// Compile source and return JSON with module info or errors.
@@ -8,6 +10,7 @@ pub fn compile_source(source: &str, name: &str) -> String {
         Ok(module) => {
             let info = serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "module": {
                     "name": module.name,
                     "version": module.version,
@@ -44,6 +47,7 @@ pub fn parse_ast(source: &str) -> String {
         Err(e) => {
             return serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "serialization_error",
                 "message": format!("{e}")
             })
@@ -55,6 +59,7 @@ pub fn parse_ast(source: &str) -> String {
         let truncated = &json[..AST_SIZE_LIMIT];
         serde_json::json!({
             "success": true,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
             "truncated": true,
             "ast_size": json.len(),
             "ast": truncated,
@@ -63,6 +68,7 @@ pub fn parse_ast(source: &str) -> String {
     } else {
         serde_json::json!({
             "success": true,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
             "truncated": false,
             "ast": serde_json::from_str::<serde_json::Value>(&json).unwrap_or(serde_json::Value::Null),
         })
@@ -107,6 +113,7 @@ pub fn compile_error_json(err: &CompileError) -> String {
 
     serde_json::json!({
         "success": false,
+        "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
         "errors": [error],
     })
     .to_string()

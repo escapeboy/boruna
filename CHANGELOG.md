@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`protocol_version: 1` field on every `boruna-mcp` tool response**
+  ([#6](https://github.com/escapeboy/boruna/issues/6), sprint `0.5-S4`,
+  pulled forward from 0.5.0 because FleetQ blocked on it for their
+  validate-on-save UX). Wire-format version of the response envelope; bumps
+  only on breaking shape changes (additive changes keep the version).
+  Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`
+  and a 16-case regression test asserting every tool's success and failure
+  path carries it. Versioning policy and bump rules documented in
+  `docs/reference/mcp-server.md` under "Stability". Pairs with
+  `Policy.schema_version` shipped in 0.2.0.
 - **MCP Server Tool Reference** documentation at `docs/reference/mcp-server.md` —
   wire contract for all 10 `boruna-mcp` tools: parameter names and types,
   return shapes, `error_kind` values, encoding rules, and limits. Driven by
