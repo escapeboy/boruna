@@ -8,6 +8,62 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Persistent workflow runs survive process restarts** (sprint `0.3-S2b`).
+  Wires the SQLite-backed `RunCheckpointStore` shipped in `0.3-S2a` into
+  `WorkflowRunner`. New `boruna workflow run --data-dir <PATH>` writes a
+  `runs.db` and a checkpoint at every step transition. New
+  `boruna workflow resume <run-id>` picks up where a crashed or paused run
+  left off — already-`Completed` steps are restored from persisted output;
+  `Running`-status checkpoints (mid-step crashes) are re-executed since
+  the runner trusts only `Completed`. `Failed` step checkpoints in a
+  non-terminal run halt the resume rather than silently advancing past
+  them (review-driven regression). New `--ephemeral` flag opts out of
+  persistence; `--data-dir` falls back to `$BORUNA_DATA_DIR` then
+  `./.boruna/data`. Refuses to resume against a workflow whose hash has
+  drifted (`error_kind: workflow_hash_mismatch`) and against a missing
+  `run_id` (`run_not_found`). The `boruna workflow approve` CLI shipping
+  in `0.3-S2c` will let operators advance approval gates; until then a
+  paused approval-gate run resumes by re-pausing.
+- **Deterministic `run_id` derivation**
+  (project-conventions §16). Replaces the wall-clock-keyed
+  `format!("run-{name}-{utc now}")` with
+  `sha256(workflow_hash || ":" || inputs_hash || ":" || counter)[..16]`
+  hex. The counter is `COUNT(*) FROM runs WHERE workflow_hash = ?` read
+  inside an explicit `BEGIN IMMEDIATE` transaction (review-driven from
+  the initial `unchecked_transaction` DEFERRED-default race) so concurrent
+  writers either see distinct counter values or hit `BUSY` and retry.
+  Locked by a multi-thread regression test that fans out 8 concurrent
+  `insert_run_with_derived_id` calls and asserts all 8 produce distinct
+  ids. Algorithm locked by a golden-vector test computed externally.
+- **`RunRecord` and `RunOperational` view structs** on
+  `RunCheckpointStore`. Replay-verified columns vs. operational metadata
+  are now structurally distinct types: audit/replay code paths consume
+  `RunRecord` (no `started_at`, no `updated_at`, terminal-only `Option<RunStatus>`);
+  status dashboards consume `RunOperational`. Closes the H1 review finding
+  from `0.3-S2a`. The original `RunRow` is retained for back-compat
+  callers.
+- New `WorkflowRunner` API: `run_persistent(def, options, data_dir)`,
+  `resume(run_id, data_dir, options)`, and `ResumeOptions { policy,
+  record, live, workflow_dir_override }`. `ResumeOptions::policy = None`
+  defaults to the persisted policy from the original run (review-driven
+  H2 fix; without this default the CLI's `--policy` omission silently
+  collapsed to deny-all).
+- New `boruna-cli` feature flag `persist-sqlite` (on by default) that
+  forwards to `boruna-orchestrator/persist-sqlite`. CLI surfaces a typed
+  error rather than silently downgrading when the flag is off and a
+  persistent run is requested (project-conventions §1).
+
+### Fixed
+
+- **Reject-at-parse footgun on persistent runs without the SQLite feature.**
+  Previously, `cargo build --no-default-features` produced a CLI that
+  silently ran `boruna workflow run dir --data-dir /tmp/x` ephemerally,
+  creating no `runs.db` and giving the operator no signal. Now the CLI
+  errors with a clear "rebuild with default features, or pass `--ephemeral`"
+  message.
+
+### Added
+
 - **Versioned capability identity** ([#3](https://github.com/escapeboy/boruna/issues/3),
   sprint `0.3-S11`). New `boruna capability list [--json]` CLI subcommand and
   `boruna_capability_list` MCP tool report a stable `capability_set_hash` over
