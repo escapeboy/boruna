@@ -199,6 +199,78 @@ impl WorkflowValidator {
         }
     }
 
+    /// Compute topological **levels** of steps for wave-based concurrent
+    /// execution: a `Vec<Vec<String>>` where each inner Vec is a "wave"
+    /// — all steps in level N have all their dependencies at levels < N.
+    /// Within a wave, steps can execute in parallel.
+    ///
+    /// Returns `Err` if the graph has a cycle (same condition as
+    /// `topological_order`). Within each wave, step IDs are sorted
+    /// alphabetically — deterministic output regardless of how the
+    /// underlying BTreeMap iterators surface ties.
+    ///
+    /// Example: a fan-out workflow `ingest → {classify, extract,
+    /// summarize} → merge` produces:
+    /// ```text
+    /// [["ingest"], ["classify", "extract", "summarize"], ["merge"]]
+    /// ```
+    /// Sequential execution would visit each step in order. Concurrent
+    /// execution at level 1 runs the three branches in parallel.
+    ///
+    /// Introduced in `0.3-S4` for the wave-based scheduler.
+    pub fn topological_levels(def: &WorkflowDef) -> Result<Vec<Vec<String>>, String> {
+        let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
+        let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for id in def.steps.keys() {
+            in_degree.entry(id.clone()).or_insert(0);
+        }
+        let all_edges = Self::all_edges(def);
+        for (from, to) in &all_edges {
+            dependents.entry(from.clone()).or_default().push(to.clone());
+            *in_degree.entry(to.clone()).or_insert(0) += 1;
+        }
+
+        let mut levels: Vec<Vec<String>> = Vec::new();
+        let mut current: Vec<String> = in_degree
+            .iter()
+            .filter_map(|(id, &deg)| if deg == 0 { Some(id.clone()) } else { None })
+            .collect();
+        current.sort();
+        let mut total = 0usize;
+
+        while !current.is_empty() {
+            total += current.len();
+            // Compute next level: any step that loses its last incoming
+            // dependency this round.
+            let mut next: Vec<String> = Vec::new();
+            for id in &current {
+                if let Some(deps) = dependents.get(id) {
+                    for d in deps {
+                        if let Some(deg) = in_degree.get_mut(d) {
+                            *deg -= 1;
+                            if *deg == 0 {
+                                next.push(d.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            next.sort();
+            levels.push(current);
+            current = next;
+        }
+
+        if total == def.steps.len() {
+            Ok(levels)
+        } else {
+            Err(format!(
+                "cycle detected: resolved {total} of {} steps",
+                def.steps.len()
+            ))
+        }
+    }
+
     /// Collect all edges from both the edges list and depends_on fields.
     fn all_edges(def: &WorkflowDef) -> Vec<(String, String)> {
         let mut edges: BTreeSet<(String, String)> = BTreeSet::new();
@@ -401,6 +473,99 @@ mod tests {
         assert!(WorkflowValidator::validate(&def).is_ok());
         let order = WorkflowValidator::topological_order(&def).unwrap();
         assert_eq!(order, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn topological_levels_linear() {
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "linear".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps: BTreeMap::from([
+                ("a".into(), simple_source_step("a.ax")),
+                ("b".into(), simple_source_step("b.ax")),
+                ("c".into(), simple_source_step("c.ax")),
+            ]),
+            edges: vec![("a".into(), "b".into()), ("b".into(), "c".into())],
+        };
+        let levels = WorkflowValidator::topological_levels(&def).unwrap();
+        assert_eq!(levels, vec![vec!["a"], vec!["b"], vec!["c"]]);
+    }
+
+    #[test]
+    fn topological_levels_fan_out() {
+        // ingest → {classify, extract, summarize} → merge.
+        // Three middle steps share level 1; "merge" alone in level 2.
+        let mut classify = simple_source_step("classify.ax");
+        classify.depends_on = vec!["ingest".into()];
+        let mut extract = simple_source_step("extract.ax");
+        extract.depends_on = vec!["ingest".into()];
+        let mut summarize = simple_source_step("summarize.ax");
+        summarize.depends_on = vec!["ingest".into()];
+        let mut merge = simple_source_step("merge.ax");
+        merge.depends_on = vec!["classify".into(), "extract".into(), "summarize".into()];
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "fan-out".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps: BTreeMap::from([
+                ("ingest".into(), simple_source_step("ingest.ax")),
+                ("classify".into(), classify),
+                ("extract".into(), extract),
+                ("summarize".into(), summarize),
+                ("merge".into(), merge),
+            ]),
+            edges: vec![],
+        };
+        let levels = WorkflowValidator::topological_levels(&def).unwrap();
+        assert_eq!(levels.len(), 3);
+        assert_eq!(levels[0], vec!["ingest"]);
+        // Level 1 sorted alphabetically: classify, extract, summarize.
+        assert_eq!(levels[1], vec!["classify", "extract", "summarize"]);
+        assert_eq!(levels[2], vec!["merge"]);
+    }
+
+    #[test]
+    fn topological_levels_diamond() {
+        let mut b = simple_source_step("b.ax");
+        b.depends_on = vec!["a".into()];
+        let mut c = simple_source_step("c.ax");
+        c.depends_on = vec!["a".into()];
+        let mut d = simple_source_step("d.ax");
+        d.depends_on = vec!["b".into(), "c".into()];
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "diamond".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps: BTreeMap::from([
+                ("a".into(), simple_source_step("a.ax")),
+                ("b".into(), b),
+                ("c".into(), c),
+                ("d".into(), d),
+            ]),
+            edges: vec![],
+        };
+        let levels = WorkflowValidator::topological_levels(&def).unwrap();
+        assert_eq!(levels, vec![vec!["a"], vec!["b", "c"], vec!["d"]]);
+    }
+
+    #[test]
+    fn topological_levels_cycle_errors() {
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "cycle".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps: BTreeMap::from([
+                ("a".into(), simple_source_step("a.ax")),
+                ("b".into(), simple_source_step("b.ax")),
+            ]),
+            edges: vec![("a".into(), "b".into()), ("b".into(), "a".into())],
+        };
+        assert!(WorkflowValidator::topological_levels(&def).is_err());
     }
 
     #[test]

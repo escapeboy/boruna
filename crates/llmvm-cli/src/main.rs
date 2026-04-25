@@ -259,6 +259,13 @@ enum WorkflowCommand {
         /// `runs.db` created. Cannot be combined with `--data-dir`.
         #[arg(long, conflicts_with = "data_dir")]
         ephemeral: bool,
+        /// Maximum steps to run concurrently within a topological
+        /// level. `1` = sequential (default — preserves prior
+        /// behavior). Higher values speed up fan-out workflows; the
+        /// per-step output_hash is bit-identical to a sequential run.
+        /// Persistent path only; ignored on `--ephemeral`.
+        #[arg(long, default_value = "1")]
+        concurrency: usize,
     },
     /// Approve a paused approval-gate step. Records an approval sentinel
     /// in the run's metadata; the operator must run `boruna workflow
@@ -326,6 +333,10 @@ enum WorkflowCommand {
         /// Use real HTTP handler for net.fetch (requires `http` feature).
         #[arg(long)]
         live: bool,
+        /// Maximum steps to run concurrently within a topological
+        /// level on resumed waves. Default `1` = sequential.
+        #[arg(long, default_value = "1")]
+        concurrency: usize,
     },
 }
 
@@ -1488,7 +1499,11 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             live,
             data_dir,
             ephemeral,
+            concurrency,
         } => {
+            if concurrency == 0 {
+                return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
+            }
             let def_path = dir.join("workflow.json");
             let json = fs::read_to_string(&def_path)
                 .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
@@ -1509,6 +1524,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 record,
                 workflow_dir: dir.display().to_string(),
                 live,
+                concurrency,
             };
 
             let result = if ephemeral {
@@ -1607,7 +1623,11 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             workflow_dir,
             policy,
             live,
+            concurrency,
         } => {
+            if concurrency == 0 {
+                return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
+            }
             #[cfg(feature = "persist-sqlite")]
             {
                 use boruna_orchestrator::workflow::ResumeOptions;
@@ -1629,6 +1649,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                     record: false,
                     live,
                     workflow_dir_override: workflow_dir.map(|p| p.display().to_string()),
+                    concurrency,
                 };
                 let result = WorkflowRunner::resume(&run_id, &resolved, &options)
                     .map_err(|e| format!("{e}"))?;

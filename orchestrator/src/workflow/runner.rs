@@ -29,6 +29,28 @@ pub struct RunOptions {
     pub workflow_dir: String,
     /// Use real HTTP handler instead of mock (requires `http` feature).
     pub live: bool,
+    /// Maximum steps to run concurrently within a single wave (a
+    /// "wave" is a topological level in the workflow DAG). `1` means
+    /// sequential — preserves the pre-`0.3-S4` behavior. Higher values
+    /// fan out fan-out workflows; speedup is proportional to the
+    /// number of steps in the largest wave that exceed concurrency.
+    /// Honored only on the persistent path (`run_persistent` /
+    /// `resume`); the ephemeral `run` path stays single-threaded.
+    /// Default `1`.
+    #[cfg_attr(not(feature = "persist-sqlite"), allow(dead_code))]
+    pub concurrency: usize,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            policy: None,
+            record: false,
+            workflow_dir: String::new(),
+            live: false,
+            concurrency: 1,
+        }
+    }
 }
 
 /// Options for resuming a previously-paused or crashed workflow run.
@@ -39,12 +61,28 @@ pub struct RunOptions {
 /// `workflow_dir` is read from persisted metadata by default but can be
 /// overridden via `workflow_dir_override` for relocated checkouts.
 #[cfg(feature = "persist-sqlite")]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResumeOptions {
     pub policy: Option<Policy>,
     pub record: bool,
     pub live: bool,
     pub workflow_dir_override: Option<String>,
+    /// Maximum steps to run concurrently per wave. Default `1` =
+    /// sequential. See [`RunOptions::concurrency`].
+    pub concurrency: usize,
+}
+
+#[cfg(feature = "persist-sqlite")]
+impl Default for ResumeOptions {
+    fn default() -> Self {
+        Self {
+            policy: None,
+            record: false,
+            live: false,
+            workflow_dir_override: None,
+            concurrency: 1,
+        }
+    }
 }
 
 /// Persisted metadata blob stored in the `runs.metadata_json` column. Owned
@@ -249,16 +287,33 @@ impl WorkflowRunner {
         let mut data_store =
             DataStore::new(&run_data_dir).map_err(|e| WorkflowRunError::Io(e.to_string()))?;
 
-        let result = Self::execute_steps(
-            def,
-            &order,
-            options,
-            &run_id,
-            &mut data_store,
-            BTreeSet::new(),
-            &BTreeMap::new(),
-            Some(&store),
-        );
+        let result = if options.concurrency > 1 {
+            // Wave-based concurrent execution. Compute levels once;
+            // the wave loop handles dispatch + halt semantics.
+            let levels =
+                WorkflowValidator::topological_levels(def).map_err(WorkflowRunError::Validation)?;
+            Self::execute_steps_concurrent(
+                def,
+                &levels,
+                options,
+                &run_id,
+                &mut data_store,
+                BTreeSet::new(),
+                &BTreeMap::new(),
+                &store,
+            )
+        } else {
+            Self::execute_steps(
+                def,
+                &order,
+                options,
+                &run_id,
+                &mut data_store,
+                BTreeSet::new(),
+                &BTreeMap::new(),
+                Some(&store),
+            )
+        };
 
         // Persist terminal run status whether the body returned Ok or Err.
         // On Err we treat the run as Failed for status purposes; the typed
@@ -637,6 +692,7 @@ impl WorkflowRunner {
             record: options.record,
             workflow_dir,
             live: options.live,
+            concurrency: options.concurrency.max(1),
         };
 
         // Reset run status to Running for the resume window.
@@ -644,16 +700,31 @@ impl WorkflowRunner {
             .update_run_status(run_id, PersistRunStatus::Running, now_unix_ms())
             .map_err(WorkflowRunError::from)?;
 
-        let result = Self::execute_steps(
-            &def,
-            &order,
-            &synthesized_options,
-            run_id,
-            &mut data_store,
-            already_completed,
-            &prior_results,
-            Some(&store),
-        );
+        let result = if synthesized_options.concurrency > 1 {
+            let levels = WorkflowValidator::topological_levels(&def)
+                .map_err(WorkflowRunError::Validation)?;
+            Self::execute_steps_concurrent(
+                &def,
+                &levels,
+                &synthesized_options,
+                run_id,
+                &mut data_store,
+                already_completed,
+                &prior_results,
+                &store,
+            )
+        } else {
+            Self::execute_steps(
+                &def,
+                &order,
+                &synthesized_options,
+                run_id,
+                &mut data_store,
+                already_completed,
+                &prior_results,
+                Some(&store),
+            )
+        };
 
         // Persist terminal run status. If this update fails, log it and
         // return the actual workflow result anyway — the trailing status
@@ -755,6 +826,376 @@ impl WorkflowRunner {
     /// persisted and should NOT be re-executed (resume's skip set).
     /// `prior_results` carries the StepResult shape for those skipped
     /// steps so the returned WorkflowRunResult reports them correctly.
+    #[allow(clippy::too_many_arguments)]
+    /// Wave-based concurrent step execution. Persistent path only —
+    /// the ephemeral [`run`](Self::run) path stays sequential.
+    ///
+    /// Each topological level (a "wave") is processed in parallel up
+    /// to `options.concurrency` workers. Within a wave, source steps
+    /// are dispatched to short-lived `std::thread::spawn`'d workers
+    /// that compile + run a fresh VM and return the resulting `Value`.
+    /// The coordinator (this function, on the calling thread) owns
+    /// all SQLite + DataStore mutation: it writes the `Running`
+    /// checkpoint before dispatch and the `Completed`/`Failed`
+    /// checkpoint after collecting the worker's result. Workers hold
+    /// no shared mutable state — every Value flows back via the
+    /// `JoinHandle`.
+    ///
+    /// Approval gates inside a wave are NOT dispatched to workers —
+    /// the coordinator detects them inline and pauses the run.
+    ///
+    /// **Determinism contract:** for any concurrency level ≥ 1, the
+    /// per-step `output_hash` and the persisted `output_json` are
+    /// bit-identical to a sequential run. Wall-clock fields
+    /// (`started_at_ms`, `ended_at_ms`, run-level `total_duration_ms`)
+    /// vary — they're operational-only per project-conventions §15.
+    ///
+    /// Introduced in `0.3-S4`.
+    #[cfg(feature = "persist-sqlite")]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_steps_concurrent(
+        def: &WorkflowDef,
+        levels: &[Vec<String>],
+        options: &RunOptions,
+        run_id: &str,
+        data_store: &mut DataStore,
+        already_completed: BTreeSet<String>,
+        prior_results: &BTreeMap<String, StepResult>,
+        store: &RunCheckpointStore,
+    ) -> Result<WorkflowRunResult, WorkflowRunError> {
+        let run_start = Instant::now();
+        let mut step_results: BTreeMap<String, StepResult> = prior_results.clone();
+        let mut workflow_status = WorkflowStatus::Running;
+        let max_concurrency = options.concurrency.max(1);
+
+        'outer: for level in levels {
+            // Filter out skip-on-resume steps and partition into
+            // approval gates vs source steps. Approval gates are
+            // sequential by definition (they pause the run).
+            let mut gates: Vec<&str> = Vec::new();
+            let mut sources: Vec<&str> = Vec::new();
+            for id in level {
+                if already_completed.contains(id) {
+                    continue;
+                }
+                let step_def = def
+                    .steps
+                    .get(id)
+                    .ok_or_else(|| WorkflowRunError::Internal(format!("step not found: {id}")))?;
+                match &step_def.kind {
+                    StepKind::ApprovalGate { .. } => gates.push(id.as_str()),
+                    StepKind::Source { .. } => sources.push(id.as_str()),
+                }
+            }
+
+            // Process the first approval gate inline. If the wave
+            // contains a gate, the run pauses there — any other gate
+            // or source step in the same wave is left for resume to
+            // discover (correctness equivalent to sequential
+            // semantics, which encounter at most one gate per wave in
+            // topological order). Multiple gates at the same level is
+            // structurally unusual but legal; only the first pauses.
+            if let Some(gate_id) = gates.first() {
+                let step_def = &def.steps[*gate_id];
+                let role = match &step_def.kind {
+                    StepKind::ApprovalGate { required_role, .. } => required_role.clone(),
+                    _ => unreachable!(),
+                };
+                let now = now_unix_ms();
+                store
+                    .upsert_step_checkpoint(&StepCheckpoint {
+                        run_id: run_id.to_string(),
+                        step_id: gate_id.to_string(),
+                        status: PersistStepStatus::AwaitingApproval,
+                        output_json: None,
+                        output_hash: None,
+                        started_at_ms: Some(now),
+                        ended_at_ms: None,
+                        error_msg: None,
+                    })
+                    .map_err(WorkflowRunError::from)?;
+                step_results.insert(
+                    gate_id.to_string(),
+                    StepResult {
+                        step_id: gate_id.to_string(),
+                        status: StepStatus::AwaitingApproval,
+                        output_hash: None,
+                        duration_ms: 0,
+                        capabilities_used: vec![],
+                        error: None,
+                    },
+                );
+                workflow_status = WorkflowStatus::Paused;
+                eprintln!(
+                    "Awaiting approval for step '{}' (role: {}). \
+                     Run: boruna workflow approve {} {}",
+                    gate_id, role, run_id, gate_id
+                );
+                break 'outer;
+            }
+
+            // Source steps: pre-validate ALL chunk inputs, then mark
+            // every chunk member Running atomically (no half-marked
+            // state on input failure), then dispatch + join + process.
+            //
+            // Reviewed 0.3-S4 (correctness #1, #2, #3):
+            // - #2: prior code marked steps Running interleaved with
+            //   per-step input validation, so an input failure mid-
+            //   chunk left earlier members Running on disk forever.
+            //   Fixed via two-pass validation.
+            // - #1: prior `?`-on-error inside the join loop dropped
+            //   subsequent JoinHandles, detaching their threads.
+            //   Fixed by collecting all join results into a Vec first.
+            // - #3: panic handler now tries `String` payloads first
+            //   (the common shape from `panic!("{}", ...)`), and we
+            //   carry the step_id alongside each JoinHandle so a
+            //   panic produces a Failed checkpoint instead of leaving
+            //   the step Running forever.
+            for chunk in sources.chunks(max_concurrency) {
+                // Pass 1: validate inputs for EVERY chunk member
+                // before any side effect. If any fails, halt without
+                // marking anyone Running.
+                let mut input_failures: Vec<(String, String)> = Vec::new();
+                for &step_id in chunk {
+                    let step_def = &def.steps[step_id];
+                    if let Err(e) = data_store.resolve_step_inputs(&step_def.inputs) {
+                        input_failures
+                            .push((step_id.to_string(), format!("input resolution: {e}")));
+                    }
+                }
+                if !input_failures.is_empty() {
+                    // Persist Failed for every step that failed input
+                    // validation; record the FIRST failure as the run's
+                    // failure cause. Don't touch other chunk members:
+                    // they remain unstarted (no Running checkpoint).
+                    for (failed_id, err_msg) in &input_failures {
+                        store
+                            .upsert_step_checkpoint(&StepCheckpoint {
+                                run_id: run_id.to_string(),
+                                step_id: failed_id.clone(),
+                                status: PersistStepStatus::Failed,
+                                output_json: None,
+                                output_hash: None,
+                                started_at_ms: None,
+                                ended_at_ms: Some(now_unix_ms()),
+                                error_msg: Some(err_msg.clone()),
+                            })
+                            .map_err(WorkflowRunError::from)?;
+                        step_results.insert(
+                            failed_id.clone(),
+                            StepResult {
+                                step_id: failed_id.clone(),
+                                status: StepStatus::Failed,
+                                output_hash: None,
+                                duration_ms: 0,
+                                capabilities_used: vec![],
+                                error: Some(err_msg.clone()),
+                            },
+                        );
+                    }
+                    workflow_status = WorkflowStatus::Failed;
+                    break 'outer;
+                }
+
+                // Pass 2: mark every chunk member Running. Build the
+                // dispatch list. After this pass every step is in the
+                // Running state on disk; the post-join loop is
+                // responsible for transitioning EACH ONE to a terminal
+                // state.
+                let mut dispatches: Vec<(String, StepDef, String)> = Vec::new();
+                for &step_id in chunk {
+                    let step_def = def.steps[step_id].clone();
+                    let started_at_ms = now_unix_ms();
+                    store
+                        .mark_step_running_clearing_output(run_id, step_id, started_at_ms)
+                        .map_err(WorkflowRunError::from)?;
+                    let source_path = match &step_def.kind {
+                        StepKind::Source { source } => source.clone(),
+                        _ => unreachable!(),
+                    };
+                    dispatches.push((step_id.to_string(), step_def, source_path));
+                }
+
+                // Spawn workers, tracking step_id alongside each
+                // handle so a panicking thread can be attributed
+                // back to its step. Workers hold no shared state.
+                let workflow_dir = options.workflow_dir.clone();
+                let policy = options.policy.clone();
+                let live = options.live;
+                let handles: Vec<(String, StepDef, std::thread::JoinHandle<_>)> = dispatches
+                    .into_iter()
+                    .map(|(step_id, step_def, source)| {
+                        let workflow_dir = workflow_dir.clone();
+                        let policy = policy.clone();
+                        let id_for_thread = step_id.clone();
+                        let def_for_thread = step_def.clone();
+                        let start = Instant::now();
+                        let h = std::thread::spawn(move || {
+                            let result = Self::compile_and_run_step(
+                                &id_for_thread,
+                                &source,
+                                &def_for_thread,
+                                &workflow_dir,
+                                &policy,
+                                live,
+                            );
+                            (result, start.elapsed().as_millis() as u64)
+                        });
+                        (step_id, step_def, h)
+                    })
+                    .collect();
+
+                // Join EVERY handle into a results Vec before
+                // processing. This guarantees no thread is left
+                // detached on early-exit paths and that the
+                // coordinator never returns to its caller while
+                // workers are still touching the workflow_dir.
+                #[allow(clippy::type_complexity)]
+                let joined: Vec<(
+                    String,
+                    StepDef,
+                    std::thread::Result<(Result<boruna_bytecode::Value, WorkflowRunError>, u64)>,
+                )> = handles
+                    .into_iter()
+                    .map(|(step_id, step_def, h)| (step_id, step_def, h.join()))
+                    .collect();
+
+                // Process results. First failure (panic, runtime, or
+                // worker error) sets chunk_failed; others continue to
+                // be persisted in the same chunk so the on-disk state
+                // honestly reflects what actually ran. Sequential
+                // execution would have stopped at the first failure
+                // and produced a smaller step_results map; that
+                // divergence is documented in the design doc as
+                // expected behavior for failed runs at concurrency >
+                // 1 (review-driven 0.3-S4 finding #4).
+                let mut chunk_failed = false;
+                for (step_id, step_def, join_res) in joined {
+                    match join_res {
+                        Ok((Ok(value), duration_ms)) => {
+                            let output_hash = DataStore::hash_value(&value);
+                            data_store
+                                .store_output(&step_id, "result", &value)
+                                .map_err(|e| {
+                                    WorkflowRunError::StepFailed(step_id.clone(), e.to_string())
+                                })?;
+                            let output_json = serde_json::to_string(&value).map_err(|e| {
+                                WorkflowRunError::Internal(format!("output serialize: {e}"))
+                            })?;
+                            store
+                                .upsert_step_checkpoint(&StepCheckpoint {
+                                    run_id: run_id.to_string(),
+                                    step_id: step_id.clone(),
+                                    status: PersistStepStatus::Completed,
+                                    output_json: Some(output_json),
+                                    output_hash: Some(output_hash.clone()),
+                                    started_at_ms: None,
+                                    ended_at_ms: Some(now_unix_ms()),
+                                    error_msg: None,
+                                })
+                                .map_err(WorkflowRunError::from)?;
+                            step_results.insert(
+                                step_id.clone(),
+                                StepResult {
+                                    step_id,
+                                    status: StepStatus::Completed,
+                                    output_hash: Some(output_hash),
+                                    duration_ms,
+                                    capabilities_used: step_def.capabilities.clone(),
+                                    error: None,
+                                },
+                            );
+                        }
+                        Ok((Err(e), duration_ms)) => {
+                            let err_msg = e.to_string();
+                            store
+                                .upsert_step_checkpoint(&StepCheckpoint {
+                                    run_id: run_id.to_string(),
+                                    step_id: step_id.clone(),
+                                    status: PersistStepStatus::Failed,
+                                    output_json: None,
+                                    output_hash: None,
+                                    started_at_ms: None,
+                                    ended_at_ms: Some(now_unix_ms()),
+                                    error_msg: Some(err_msg.clone()),
+                                })
+                                .map_err(WorkflowRunError::from)?;
+                            step_results.insert(
+                                step_id.clone(),
+                                StepResult {
+                                    step_id,
+                                    status: StepStatus::Failed,
+                                    output_hash: None,
+                                    duration_ms,
+                                    capabilities_used: vec![],
+                                    error: Some(err_msg),
+                                },
+                            );
+                            chunk_failed = true;
+                        }
+                        Err(panic_payload) => {
+                            // Try String first (the common shape from
+                            // `panic!("...{var}...")`), then &'static
+                            // str (the literal-only path), then
+                            // fallback. We KNOW the step_id here via
+                            // the carried tuple, so the failed
+                            // checkpoint is correctly attributed.
+                            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>()
+                            {
+                                s.clone()
+                            } else if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+                                s.to_string()
+                            } else {
+                                "<non-string panic>".to_string()
+                            };
+                            let err_msg = format!("worker panicked: {panic_msg}");
+                            store
+                                .upsert_step_checkpoint(&StepCheckpoint {
+                                    run_id: run_id.to_string(),
+                                    step_id: step_id.clone(),
+                                    status: PersistStepStatus::Failed,
+                                    output_json: None,
+                                    output_hash: None,
+                                    started_at_ms: None,
+                                    ended_at_ms: Some(now_unix_ms()),
+                                    error_msg: Some(err_msg.clone()),
+                                })
+                                .map_err(WorkflowRunError::from)?;
+                            step_results.insert(
+                                step_id.clone(),
+                                StepResult {
+                                    step_id,
+                                    status: StepStatus::Failed,
+                                    output_hash: None,
+                                    duration_ms: 0,
+                                    capabilities_used: vec![],
+                                    error: Some(err_msg),
+                                },
+                            );
+                            chunk_failed = true;
+                        }
+                    }
+                }
+                if chunk_failed {
+                    workflow_status = WorkflowStatus::Failed;
+                    break 'outer;
+                }
+            }
+        }
+
+        if workflow_status == WorkflowStatus::Running {
+            workflow_status = WorkflowStatus::Completed;
+        }
+
+        Ok(WorkflowRunResult {
+            run_id: run_id.to_string(),
+            workflow_name: def.name.clone(),
+            status: workflow_status,
+            step_results,
+            total_duration_ms: run_start.elapsed().as_millis() as u64,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn execute_steps(
         def: &WorkflowDef,
@@ -970,7 +1411,48 @@ impl WorkflowRunner {
         data_store: &mut DataStore,
         live: bool,
     ) -> Result<StepResult, WorkflowRunError> {
-        // Read source file
+        // Resolve inputs (validated; the .ax step is self-contained
+        // today, but we still verify upstream outputs exist so a
+        // misconfigured workflow surfaces a useful error here rather
+        // than a downstream NPE).
+        let _resolved_inputs = data_store
+            .resolve_step_inputs(&step_def.inputs)
+            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e))?;
+
+        let value =
+            Self::compile_and_run_step(step_id, source, step_def, workflow_dir, policy, live)?;
+
+        let output_hash = DataStore::hash_value(&value);
+        data_store
+            .store_output(step_id, "result", &value)
+            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e.to_string()))?;
+
+        Ok(StepResult {
+            step_id: step_id.to_string(),
+            status: StepStatus::Completed,
+            output_hash: Some(output_hash),
+            duration_ms: 0, // filled in by caller
+            capabilities_used: step_def.capabilities.clone(),
+            error: None,
+        })
+    }
+
+    /// Compile + run a single step's `.ax` source and return the
+    /// resulting `Value`. Pure compute path: no DataStore mutation, no
+    /// SQLite writes. Shared between the sequential `execute_source_step`
+    /// (which then stores the output) and the concurrent worker thread
+    /// (which returns the Value to the coordinator for storage).
+    ///
+    /// Extracted in `0.3-S4` so worker threads can call into the same
+    /// compile+run path without holding any shared mutable state.
+    fn compile_and_run_step(
+        step_id: &str,
+        source: &str,
+        step_def: &StepDef,
+        workflow_dir: &str,
+        policy: &Option<Policy>,
+        live: bool,
+    ) -> Result<boruna_bytecode::Value, WorkflowRunError> {
         let source_path = Path::new(workflow_dir).join(source);
         let source_code = std::fs::read_to_string(&source_path).map_err(|e| {
             WorkflowRunError::StepFailed(
@@ -979,20 +1461,15 @@ impl WorkflowRunner {
             )
         })?;
 
-        // Resolve inputs (validated, available for future step parameter injection)
-        let _resolved_inputs = data_store
-            .resolve_step_inputs(&step_def.inputs)
-            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e))?;
-
-        // Compile
         let module = boruna_compiler::compile(step_id, &source_code).map_err(|e| {
             WorkflowRunError::StepFailed(step_id.to_string(), format!("compile error: {e}"))
         })?;
 
-        // Build policy for this step
         let step_policy = Self::build_step_policy(policy, step_def);
 
-        // Create VM and run — use HttpHandler when live mode is enabled
+        // Each call builds its own gateway. In the concurrent path,
+        // workers each construct their own gateway/VM — no shared
+        // gateway state.
         let gateway = if live {
             #[cfg(feature = "http")]
             {
@@ -1013,27 +1490,8 @@ impl WorkflowRunner {
             CapabilityGateway::new(step_policy)
         };
         let mut vm = Vm::new(module, gateway);
-
-        let result = vm.run().map_err(|e| {
+        vm.run().map_err(|e| {
             WorkflowRunError::StepFailed(step_id.to_string(), format!("runtime error: {e}"))
-        })?;
-
-        // Store output
-        let output_hash = DataStore::hash_value(&result);
-        data_store
-            .store_output(step_id, "result", &result)
-            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e.to_string()))?;
-
-        // Collect capabilities used from event log
-        let caps_used: Vec<String> = step_def.capabilities.clone();
-
-        Ok(StepResult {
-            step_id: step_id.to_string(),
-            status: StepStatus::Completed,
-            output_hash: Some(output_hash),
-            duration_ms: 0, // filled in by caller
-            capabilities_used: caps_used,
-            error: None,
         })
     }
 
@@ -1563,6 +2021,7 @@ mod tests {
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
+            concurrency: 1,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -1585,6 +2044,7 @@ mod tests {
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
+            concurrency: 1,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -1632,6 +2092,7 @@ mod tests {
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
+            concurrency: 1,
         };
 
         // With allow_all, should succeed
@@ -1707,6 +2168,7 @@ mod tests {
             record: false,
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
+            concurrency: 1,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -1735,6 +2197,7 @@ mod tests {
             record: false,
             workflow_dir: "/tmp".into(),
             live: false,
+            concurrency: 1,
         };
         assert!(WorkflowRunner::run(&def, &options).is_err());
     }
@@ -1770,6 +2233,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
 
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -1796,6 +2260,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
             let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             let r2 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -1844,6 +2309,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -1873,6 +2339,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
 
             // Insert a run row with a deliberately-altered workflow_hash
@@ -2241,6 +2708,7 @@ mod tests {
                     record: false,
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
+                    concurrency: 1,
                 },
                 data_dir.path(),
             )
@@ -2334,6 +2802,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
             let err = WorkflowRunner::run_persistent(&def, &options, Path::new("/"))
                 .expect_err("must reject /");
@@ -2343,6 +2812,345 @@ mod tests {
                 }
                 other => panic!("wrong variant: {other:?}"),
             }
+        }
+
+        // ── 0.3-S4: concurrent execution ──
+
+        fn fan_out_workflow() -> (WorkflowDef, tempfile::TempDir) {
+            // ingest → {classify, extract, summarize} → merge.
+            // All produce deterministic Int outputs (steps are pure).
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("ingest.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("classify.ax"), "fn main() -> Int { 10 }").unwrap();
+            std::fs::write(steps_dir.join("extract.ax"), "fn main() -> Int { 20 }").unwrap();
+            std::fs::write(steps_dir.join("summarize.ax"), "fn main() -> Int { 30 }").unwrap();
+            std::fs::write(steps_dir.join("merge.ax"), "fn main() -> Int { 100 }").unwrap();
+
+            let mk = |name: &str, deps: Vec<String>| StepDef {
+                kind: StepKind::Source {
+                    source: format!("steps/{name}.ax"),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: deps,
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "fan-out".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("ingest".into(), mk("ingest", vec![])),
+                    ("classify".into(), mk("classify", vec!["ingest".into()])),
+                    ("extract".into(), mk("extract", vec!["ingest".into()])),
+                    ("summarize".into(), mk("summarize", vec!["ingest".into()])),
+                    (
+                        "merge".into(),
+                        mk(
+                            "merge",
+                            vec!["classify".into(), "extract".into(), "summarize".into()],
+                        ),
+                    ),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            (def, dir)
+        }
+
+        #[test]
+        fn concurrency_n_produces_identical_output_hashes_to_concurrency_1() {
+            // The headline determinism contract for 0.3-S4: running a
+            // workflow at concurrency=4 produces per-step output_hash
+            // values bit-identical to a sequential run. Wall-clock
+            // fields (started_at_ms, ended_at_ms, total_duration_ms)
+            // legitimately vary; the replay-verified subset must not.
+            let (def, wf_dir) = fan_out_workflow();
+            let make_options = |c| RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: c,
+            };
+            let dir1 = tempfile::tempdir().unwrap();
+            let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
+            let dir4 = tempfile::tempdir().unwrap();
+            let r4 = WorkflowRunner::run_persistent(&def, &make_options(4), dir4.path()).unwrap();
+            assert_eq!(r1.status, WorkflowStatus::Completed);
+            assert_eq!(r4.status, WorkflowStatus::Completed);
+            // Same set of steps completed.
+            let ids1: BTreeSet<&str> = r1.step_results.keys().map(|k| k.as_str()).collect();
+            let ids4: BTreeSet<&str> = r4.step_results.keys().map(|k| k.as_str()).collect();
+            assert_eq!(ids1, ids4);
+            // Per-step output_hash bit-identical.
+            for step_id in ids1 {
+                let h1 = r1.step_results[step_id].output_hash.as_deref();
+                let h4 = r4.step_results[step_id].output_hash.as_deref();
+                assert_eq!(
+                    h1, h4,
+                    "step '{step_id}' hash differs between concurrency=1 and concurrency=4: {h1:?} vs {h4:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn concurrent_run_persists_all_step_checkpoints() {
+            let (def, wf_dir) = fan_out_workflow();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 4,
+            };
+            let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(result.status, WorkflowStatus::Completed);
+            let store = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+            assert_eq!(cps.len(), 5);
+            assert!(cps.iter().all(|c| c.status == PersistStepStatus::Completed));
+            assert!(cps.iter().all(|c| c.output_json.is_some()));
+            assert!(cps.iter().all(|c| c.output_hash.is_some()));
+        }
+
+        #[test]
+        fn concurrent_run_with_failure_halts_and_other_in_flight_complete() {
+            // Build a wave where one step fails (compile error) and
+            // others succeed. The wave should fully complete (other
+            // workers join), but the run should be Failed afterwards.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("ok1.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("ok2.ax"), "fn main() -> Int { 2 }").unwrap();
+            std::fs::write(steps_dir.join("bad.ax"), "fn main( { }").unwrap(); // syntax err
+
+            let mk = |name: &str| StepDef {
+                kind: StepKind::Source {
+                    source: format!("steps/{name}.ax"),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "fail-wave".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("ok1".into(), mk("ok1")),
+                    ("ok2".into(), mk("ok2")),
+                    ("bad".into(), mk("bad")),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 4,
+            };
+            let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(result.status, WorkflowStatus::Failed);
+            // ok1 + ok2 + bad all started in the same wave; all join.
+            assert_eq!(result.step_results["bad"].status, StepStatus::Failed);
+            assert_eq!(result.step_results["ok1"].status, StepStatus::Completed);
+            assert_eq!(result.step_results["ok2"].status, StepStatus::Completed);
+        }
+
+        #[test]
+        fn concurrent_resume_honors_already_completed() {
+            // A run completed at concurrency=1 has all step
+            // checkpoints persisted as Completed. Resuming at
+            // concurrency=4 should be a no-op terminal-state path.
+            let (def, wf_dir) = fan_out_workflow();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(r1.status, WorkflowStatus::Completed);
+            // Resume with concurrency=4 — terminal Completed is
+            // returned via reconstruct_terminal_result, which doesn't
+            // re-execute regardless of concurrency.
+            let resumed = WorkflowRunner::resume(
+                &r1.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    concurrency: 4,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+            assert_eq!(resumed.step_results.len(), 5);
+        }
+
+        #[test]
+        fn concurrent_input_failure_does_not_leave_siblings_running() {
+            // 0.3-S4 review-driven regression #2: a chunk with one
+            // input-resolution failure used to mark earlier siblings
+            // Running before discovering the failure, then halt — the
+            // siblings stayed Running on disk forever and would be
+            // re-executed by the next resume even though sequential
+            // semantics never started them.
+            //
+            // Construct a 2-step layer where one step references a
+            // non-existent upstream output. Both steps share the same
+            // dependency-free level (level 0). At concurrency=2, the
+            // pre-validation pass MUST detect the bad input before
+            // marking anything Running. After the run halts, the
+            // bad-input step is Failed and the good step has NO
+            // checkpoint at all.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("good.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("bad_input.ax"), "fn main() -> Int { 2 }").unwrap();
+
+            // bad_input references an output from a non-existent step.
+            let mut bad = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/bad_input.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            bad.inputs.insert("missing".into(), "ghost.result".into());
+            // We need to bypass workflow validation (which would reject
+            // the unknown step ref) — but the unknown-input check uses
+            // step_ids; if we name the ghost step but don't include
+            // it... actually the validator catches unknown_input.
+            // Instead, construct a workflow where the bad step
+            // references a step that EXISTS but produces no output
+            // accessible via the requested name. The data_store's
+            // resolve_step_inputs will fail at runtime even though
+            // validation passes.
+            //
+            // Simpler: make bad_input depend on good (so good runs in
+            // level 0), and bad's input references good but with a
+            // wrong output name. Validation only checks step_ids, not
+            // output names, so this slips through to runtime.
+            bad.depends_on = vec!["good".into()];
+            bad.inputs.clear();
+            bad.inputs
+                .insert("data".into(), "good.nonexistent_output".into());
+
+            let good = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/good.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            // Add a third step at level 1, sibling of bad_input, that
+            // shares the same input-failure pattern OR depends on
+            // good. Use a clean parallel sibling at level 1 whose only
+            // job is to be in the same chunk as bad_input.
+            std::fs::write(steps_dir.join("sibling.ax"), "fn main() -> Int { 99 }").unwrap();
+            let mut sibling = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/sibling.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec!["good".into()],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            sibling.inputs.clear();
+
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "input-fail".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("good".into(), good),
+                    ("bad_input".into(), bad),
+                    ("sibling".into(), sibling),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 4,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+
+            assert_eq!(result.status, WorkflowStatus::Failed);
+            // good ran (level 0). bad_input failed input resolution
+            // at level 1 (its `good.nonexistent_output` reference
+            // doesn't resolve). sibling — also at level 1 — must NOT
+            // be left Running on disk. Pre-validation pass means it
+            // either ran (if validation passed) or has no checkpoint
+            // at all.
+            let store = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+            // Every persisted checkpoint must be in a TERMINAL state.
+            // Specifically, no `running` left behind.
+            for cp in &cps {
+                assert_ne!(
+                    cp.status,
+                    PersistStepStatus::Running,
+                    "step '{}' left Running on disk after run halted",
+                    cp.step_id
+                );
+            }
+            // bad_input is recorded as Failed.
+            let bad_cp = cps
+                .iter()
+                .find(|c| c.step_id == "bad_input")
+                .expect("bad_input checkpoint recorded");
+            assert_eq!(bad_cp.status, PersistStepStatus::Failed);
         }
     }
 
@@ -2425,6 +3233,7 @@ mod tests {
                 record: false,
                 workflow_dir: wf_dir.to_string_lossy().to_string(),
                 live: false,
+                concurrency: 1,
             };
             let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -3133,6 +3942,7 @@ mod tests {
                     record: false,
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
+                    concurrency: 1,
                 },
                 data_dir.path(),
             )
@@ -3173,6 +3983,7 @@ mod tests {
                     record: false,
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
+                    concurrency: 1,
                 },
                 data_dir.path(),
             )
@@ -3217,6 +4028,7 @@ mod tests {
                     record: false,
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
+                    concurrency: 1,
                 },
                 data_dir.path(),
             )
@@ -3264,6 +4076,7 @@ mod tests {
                     record: false,
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
+                    concurrency: 1,
                 },
                 data_dir.path(),
             )
