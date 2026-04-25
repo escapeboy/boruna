@@ -6,6 +6,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`boruna_orchestrator::persistence::RunCheckpointStore`** — SQLite-backed
+  workflow checkpoint store (sprint `0.3-S2a`). Implements ADR 001 step
+  1–5: schema, Connection setup with mandatory PRAGMAs (`journal_mode=WAL`,
+  `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`), CRUD
+  operations (`insert_run`, `update_run_status`, `get_run`,
+  `list_runs_by_status`, `upsert_step_checkpoint`,
+  `list_step_checkpoints`), and a `BEGIN IMMEDIATE` retry policy that
+  handles both `SQLITE_BUSY` and `SQLITE_LOCKED` with exponential
+  backoff (10ms→50ms→250ms→1.25s) before failing with
+  `PersistenceError::Busy`. **Not yet wired into `WorkflowRunner` —
+  that integration lands in `0.3-S2b`** (along with `boruna workflow
+  resume <run-id>` and `--data-dir`).
+- New `persist-sqlite` Cargo feature on `boruna-orchestrator` (default-on).
+  Adds `rusqlite = "0.32"` with the `bundled` feature so SQLite compiles
+  from C source — preserves the musl-static-binary story per ADR 001.
+- Schema embedded via `include_str!("schema_v1.sql")`. Single-row
+  `schema_version` table with `CHECK (id = 1)` constraint structurally
+  prevents stale-row accumulation across migration attempts.
+- `PersistenceError::NotFound { entity, key }` returned by
+  `update_run_status` when the target `run_id` does not exist (review-
+  driven; silent-no-op was rejected as a footgun for the resume path).
+- `upsert_step_checkpoint` uses `COALESCE(excluded.X, existing.X)` for
+  `started_at`, `output_json`, `output_hash` so a partial upsert (e.g.
+  step transition from Running to Completed without re-supplying
+  started_at) preserves the original value rather than clobbering to
+  NULL (review-driven; locked by two regression tests).
+- `docs/design-persistence-store.md` — sprint scope split rationale,
+  acceptance criteria, schema annotation conventions.
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.

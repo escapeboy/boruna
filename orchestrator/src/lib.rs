@@ -4,5 +4,7 @@ pub mod cli;
 pub mod conflict;
 pub mod engine;
 pub mod patch;
+#[cfg(feature = "persist-sqlite")]
+pub mod persistence;
 pub mod storage;
 pub mod workflow;
