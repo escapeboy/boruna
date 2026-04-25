@@ -110,11 +110,10 @@ impl TypeChecker {
 
     fn check_expr(&self, expr: &Expr, locals: &HashSet<String>) -> Result<(), CompileError> {
         match expr {
-            Expr::Ident(name) => {
-                if !locals.contains(name) && !self.functions.contains_key(name) {
-                    return Err(CompileError::Type(format!("undefined variable: {name}")));
-                }
+            Expr::Ident(name) if !locals.contains(name) && !self.functions.contains_key(name) => {
+                return Err(CompileError::Type(format!("undefined variable: {name}")));
             }
+            Expr::Ident(_) => {}
             Expr::Binary { left, right, .. } => {
                 self.check_expr(left, locals)?;
                 self.check_expr(right, locals)?;

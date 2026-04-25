@@ -25,15 +25,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux musl targets run on the project's self-hosted runner
+          # (boruna-runner, Linux X64). Same machine as ci.yml — warm cargo
+          # cache makes these builds <1 min after the first one.
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: self-hosted
             use_cross: true
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: self-hosted
             use_cross: true
-          - target: x86_64-apple-darwin
-            os: macos-13
-            use_cross: false
+          # macOS arm64 runs on a GitHub-hosted runner. Apple Silicon is the
+          # only Mac target shipped — Intel macOS users build from source.
           - target: aarch64-apple-darwin
             os: macos-14
             use_cross: false
