@@ -8,6 +8,51 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Concurrent step execution within a workflow run** (sprint `0.3-S4`).
+  New `--concurrency <N>` flag on `boruna workflow run` and
+  `boruna workflow resume`. Default `1` = sequential (preserves prior
+  behavior); higher values parallelize fan-out workflows. The
+  per-step `output_hash` is bit-identical across concurrency levels
+  for successful runs — the determinism contract holds. Locked by a
+  regression test that runs the same workflow at concurrency=1 and
+  concurrency=4 and asserts every step's hash matches.
+- Implementation: wave-based scheduler. `WorkflowValidator::topological_levels`
+  partitions the DAG into "waves" where each level's steps have all
+  dependencies in earlier levels. Within a wave, source steps fan out
+  to short-lived `std::thread::spawn`'d workers (no tokio, no async
+  runtime). Workers are pure compile+run paths returning a `Value`;
+  the coordinator owns all DataStore + SQLite mutation.
+- New library API: `RunOptions::concurrency: usize`,
+  `ResumeOptions::concurrency: usize`,
+  `WorkflowValidator::topological_levels`. `RunOptions::default()`
+  and `ResumeOptions::default()` initialize concurrency to `1`.
+- Persistent path only — `WorkflowRunner::run` (ephemeral) stays
+  single-threaded. The CLI rejects `--concurrency 0` at parse.
+
+### Fixed
+
+- **Concurrent chunk halt no longer detaches sibling workers**
+  (review-driven 0.3-S4 finding #1). Prior code used `?` inside the
+  join loop, which dropped subsequent JoinHandles and detached their
+  threads — those workers continued executing the workflow_dir even
+  after `run_persistent` returned. Now the join loop collects all
+  `JoinHandle::join()` results into a Vec before processing,
+  guaranteeing no thread is left running once the function returns.
+- **Pre-validate all chunk inputs before marking any Running**
+  (review-driven 0.3-S4 finding #2). Prior code interleaved input
+  validation with `mark_step_running_clearing_output`, so an input
+  failure mid-chunk left earlier siblings Running on disk forever
+  and the next resume re-executed them silently. Now a two-pass
+  structure: pass 1 validates every chunk member's inputs (no side
+  effects); pass 2 marks all Running atomically and dispatches.
+- **Worker panics now produce attributed Failed checkpoints**
+  (review-driven 0.3-S4 finding #3). Prior panic handler only
+  matched `&'static str` payloads (so `panic!("step {} bad", id)`
+  fell through to a generic message) and lost the step_id, leaving
+  the panicked step at status=Running on disk. Now: tries `String`
+  payloads first, carries the step_id alongside each JoinHandle, and
+  records a Failed checkpoint with the panic message.
+
 - **`boruna workflow show <run-id>` CLI** (sprint `0.3-S3`). Operator
   inspection of a single run's full state: row, step checkpoints with
   truncated output preview, and approval sentinels. Plain-mode tabular
