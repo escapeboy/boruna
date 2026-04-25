@@ -8,6 +8,37 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Retry policies with exponential backoff** (sprint `0.3-S5`).
+  `RetryPolicy { max_attempts, on_transient }` on a step is now
+  honored properly: the runner loops up to `max_attempts` total
+  attempts with `100ms × 2^N` (capped at 5s) backoff between. Both
+  sequential and concurrent execution paths share a single
+  `retry_with_backoff` helper, so retry semantics don't drift between
+  paths. Final-attempt failure surfaces as
+  `"failed after N attempts: <reason>"` for operator triage.
+- New library API: `boruna_orchestrator::workflow::retry_with_backoff`
+  and `retry_backoff_ms` (pub(crate); used by tests).
+- Operators see retry attempts logged to stderr (gated under
+  `cfg(not(test))` so the unit suite stays silent).
+
+### Fixed
+
+- **Retry semantics no longer cap at "retry once."** Prior code
+  (`should_retry = ... && r.max_attempts > 1`) re-attempted exactly
+  once regardless of the configured `max_attempts`. Now honored as
+  documented: a `max_attempts: 5` policy retries up to 4 times.
+- **`retry_with_backoff`'s eprintln gated under `cfg(not(test))`**
+  (review-driven 0.3-S5 finding #1). Prior unconditional eprintln
+  polluted unit-test stderr and any embedder capturing process
+  stderr.
+- **Integration test `tests/retry_timing.rs` locks real wall-clock
+  backoff** (review-driven 0.3-S5 finding #2). Unit tests skip
+  sleeps under `cfg(test)`; this integration test runs in a context
+  where `cfg(test)` is NOT set on the orchestrator lib build, so the
+  real sleeps fire and the test asserts `elapsed >= 250ms` for a
+  3-attempt retry. Catches future regressions that accidentally
+  remove the sleep.
+
 - **Concurrent step execution within a workflow run** (sprint `0.3-S4`).
   New `--concurrency <N>` flag on `boruna workflow run` and
   `boruna workflow resume`. Default `1` = sequential (preserves prior

@@ -1031,7 +1031,14 @@ impl WorkflowRunner {
                         let def_for_thread = step_def.clone();
                         let start = Instant::now();
                         let h = std::thread::spawn(move || {
-                            let result = Self::compile_and_run_step(
+                            // Workers honor the same RetryPolicy as
+                            // sequential execution. The retry happens
+                            // INSIDE the worker thread; the chunk
+                            // wave waits for ALL workers (including
+                            // ones still retrying) before moving on.
+                            // Wall-clock backoff is bounded by the
+                            // policy's max_attempts.
+                            let result = Self::compile_and_run_step_with_retry(
                                 &id_for_thread,
                                 &source,
                                 &def_for_thread,
@@ -1284,34 +1291,15 @@ impl WorkflowRunner {
                     );
                     let duration_ms = step_start.elapsed().as_millis() as u64;
 
+                    // Retry semantics now live inside
+                    // `execute_source_step` → `compile_and_run_step_with_retry`.
+                    // 0.3-S5 replaced the prior chunk-level "retry once
+                    // regardless of max_attempts" primitive with the
+                    // shared `retry_with_backoff` helper. So here we
+                    // surface the result as-is.
                     let outcome: Result<StepResult, WorkflowRunError> = match result {
                         Ok(sr) => Ok(StepResult { duration_ms, ..sr }),
-                        Err(e) => {
-                            let should_retry = step_def
-                                .retry
-                                .as_ref()
-                                .is_some_and(|r| r.max_attempts > 1 && r.on_transient);
-                            if should_retry {
-                                Self::execute_source_step(
-                                    step_id,
-                                    source,
-                                    step_def,
-                                    &options.workflow_dir,
-                                    &options.policy,
-                                    data_store,
-                                    options.live,
-                                )
-                                .map(|sr| StepResult { duration_ms, ..sr })
-                                .map_err(|retry_err| {
-                                    WorkflowRunError::StepFailed(
-                                        step_id.clone(),
-                                        retry_err.to_string(),
-                                    )
-                                })
-                            } else {
-                                Err(WorkflowRunError::StepFailed(step_id.clone(), e.to_string()))
-                            }
-                        }
+                        Err(e) => Err(WorkflowRunError::StepFailed(step_id.clone(), e.to_string())),
                     };
 
                     match outcome {
@@ -1419,8 +1407,17 @@ impl WorkflowRunner {
             .resolve_step_inputs(&step_def.inputs)
             .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e))?;
 
-        let value =
-            Self::compile_and_run_step(step_id, source, step_def, workflow_dir, policy, live)?;
+        // Compute path is wrapped in retry. On retry success, the
+        // returned Value is stored once (idempotent for the on-disk
+        // file, since `store_output` overwrites atomically per 0.3-S3).
+        let value = Self::compile_and_run_step_with_retry(
+            step_id,
+            source,
+            step_def,
+            workflow_dir,
+            policy,
+            live,
+        )?;
 
         let output_hash = DataStore::hash_value(&value);
         data_store
@@ -1434,6 +1431,35 @@ impl WorkflowRunner {
             duration_ms: 0, // filled in by caller
             capabilities_used: step_def.capabilities.clone(),
             error: None,
+        })
+    }
+
+    /// Wrap [`Self::compile_and_run_step`] in the step's `RetryPolicy`.
+    /// Implements the contract documented in
+    /// [`retry_with_backoff`]:
+    ///
+    /// - `step_def.retry == None` OR `on_transient == false` OR
+    ///   `max_attempts <= 1` → single attempt, no retry.
+    /// - Otherwise: up to `max_attempts` total attempts with
+    ///   exponential backoff between (100ms * 2^N capped at 5s).
+    /// - On final exhaustion, the returned `WorkflowRunError` is the
+    ///   last attempt's error wrapped to include the attempt count
+    ///   in the user-facing message.
+    ///
+    /// Shared between sequential `execute_source_step` and the
+    /// concurrent worker closure inside [`Self::execute_steps_concurrent`].
+    /// Introduced in `0.3-S5` (closes the prior "retry once
+    /// regardless of max_attempts" primitive).
+    fn compile_and_run_step_with_retry(
+        step_id: &str,
+        source: &str,
+        step_def: &StepDef,
+        workflow_dir: &str,
+        policy: &Option<Policy>,
+        live: bool,
+    ) -> Result<boruna_bytecode::Value, WorkflowRunError> {
+        retry_with_backoff(step_def.retry.as_ref(), step_id, |_attempt| {
+            Self::compile_and_run_step(step_id, source, step_def, workflow_dir, policy, live)
         })
     }
 
@@ -1513,6 +1539,112 @@ impl WorkflowRunner {
             }
             None => Policy::deny_all(),
         }
+    }
+}
+
+/// Base for the exponential-backoff schedule: 100ms × 2^N. Pulled out
+/// as a constant so tests can verify the formula without sleeping.
+const RETRY_BASE_BACKOFF_MS: u64 = 100;
+/// Cap for the backoff schedule. Without a cap, attempt 7 would sleep
+/// 12.8s and attempt 10 would sleep 102.4s — way past operator
+/// tolerance. 5s gives ~6 retries before saturating.
+const RETRY_MAX_BACKOFF_MS: u64 = 5_000;
+
+/// Pre-attempt sleep duration in ms for `attempt` (0-indexed: the
+/// sleep that happens BEFORE attempt N+1). Defined as a free function
+/// so tests can verify the curve without invoking the closure.
+pub(crate) fn retry_backoff_ms(prev_attempt: u32) -> u64 {
+    RETRY_BASE_BACKOFF_MS
+        .saturating_mul(2u64.saturating_pow(prev_attempt))
+        .min(RETRY_MAX_BACKOFF_MS)
+}
+
+/// Run `attempt_fn` up to `policy.max_attempts` times with exponential
+/// backoff. Returns the first success, or the final attempt's `Err`
+/// (wrapped to include the attempt count) on exhaustion.
+///
+/// # Retry eligibility
+///
+/// `policy = None` OR `policy.on_transient == false` OR
+/// `policy.max_attempts <= 1` → single attempt, no retry.
+///
+/// # Backoff
+///
+/// Pre-attempt sleeps: 100ms before attempt 2, 200ms before attempt 3,
+/// 400ms before attempt 4, ... capped at 5s. See [`retry_backoff_ms`].
+///
+/// # Determinism
+///
+/// Backoff is wall-clock-keyed (project-conventions §17). A successful
+/// retry's `output_hash` is bit-identical to a successful first
+/// attempt — the determinism contract holds. The number of attempts
+/// and per-attempt durations are operational only.
+///
+/// # Test ergonomics
+///
+/// Sleeps are skipped entirely under `cfg(test)` so the unit suite
+/// runs fast. Real backoff is exercised by integration tests on
+/// demand.
+pub(crate) fn retry_with_backoff<T, F>(
+    policy: Option<&RetryPolicy>,
+    step_id: &str,
+    mut attempt_fn: F,
+) -> Result<T, WorkflowRunError>
+where
+    F: FnMut(u32) -> Result<T, WorkflowRunError>,
+{
+    let max_attempts = match policy {
+        Some(p) if p.on_transient && p.max_attempts > 1 => p.max_attempts,
+        _ => 1,
+    };
+    let mut last_err: Option<WorkflowRunError> = None;
+    for attempt in 1..=max_attempts {
+        if attempt > 1 {
+            let prev_attempt = attempt - 2; // attempt is 1-indexed
+            let sleep_ms = retry_backoff_ms(prev_attempt);
+            // Skip real sleeps under cfg(test) so the unit suite is
+            // fast. The backoff curve is independently tested via
+            // `retry_backoff_ms`; real wall-clock backoff is locked
+            // by an integration test in `orchestrator/tests/` where
+            // cfg(test) is NOT set on the orchestrator lib build.
+            #[cfg(not(test))]
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            #[cfg(test)]
+            let _ = sleep_ms;
+            // Operator-facing retry log. Gated under `cfg(not(test))`
+            // so the unit test suite stays silent — embedders capturing
+            // stderr (e.g. the MCP server speaking JSON-RPC over
+            // stdio) shouldn't see test-suite noise either way, but
+            // production embedders DO want this log line so they can
+            // see retries happening. Reviewed 0.3-S5 (finding #1):
+            // prior unconditional eprintln polluted unit-test output.
+            #[cfg(not(test))]
+            eprintln!(
+                "step '{step_id}' attempt {attempt}/{max_attempts} \
+                 (retrying after {sleep_ms}ms backoff)"
+            );
+            #[cfg(test)]
+            let _ = (step_id, attempt, max_attempts);
+        }
+        match attempt_fn(attempt) {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+    // Exhausted. Wrap the last error to include the attempt count.
+    let final_err = last_err.expect("loop runs at least once");
+    if max_attempts > 1 {
+        Err(WorkflowRunError::StepFailed(
+            step_id.to_string(),
+            format!("failed after {max_attempts} attempts: {final_err}"),
+        ))
+    } else {
+        // Single-attempt path: preserve the exact error shape so
+        // existing test fixtures and operator scripts that match on
+        // error strings don't break.
+        Err(final_err)
     }
 }
 
@@ -2200,6 +2332,197 @@ mod tests {
             concurrency: 1,
         };
         assert!(WorkflowRunner::run(&def, &options).is_err());
+    }
+
+    // ── 0.3-S5: retry policy ──
+
+    mod retry {
+        use super::*;
+        use crate::workflow::runner::{retry_backoff_ms, retry_with_backoff};
+        use std::cell::RefCell;
+
+        fn policy(max_attempts: u32, on_transient: bool) -> RetryPolicy {
+            RetryPolicy {
+                max_attempts,
+                on_transient,
+            }
+        }
+
+        #[test]
+        fn backoff_curve_doubles_until_capped() {
+            // Curve: 100, 200, 400, 800, 1600, 3200, then capped at 5000.
+            assert_eq!(retry_backoff_ms(0), 100);
+            assert_eq!(retry_backoff_ms(1), 200);
+            assert_eq!(retry_backoff_ms(2), 400);
+            assert_eq!(retry_backoff_ms(3), 800);
+            assert_eq!(retry_backoff_ms(4), 1600);
+            assert_eq!(retry_backoff_ms(5), 3200);
+            assert_eq!(retry_backoff_ms(6), 5000);
+            assert_eq!(retry_backoff_ms(7), 5000);
+            // Saturating arithmetic for very large values.
+            assert_eq!(retry_backoff_ms(63), 5000);
+        }
+
+        #[test]
+        fn retry_succeeds_on_first_attempt_no_loop() {
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> =
+                retry_with_backoff(Some(&policy(5, true)), "step", |attempt| {
+                    *calls.borrow_mut() += 1;
+                    assert_eq!(attempt, 1, "first attempt is 1-indexed");
+                    Ok(42)
+                });
+            assert_eq!(result.unwrap(), 42);
+            assert_eq!(*calls.borrow(), 1, "no retries on success");
+        }
+
+        #[test]
+        fn retry_succeeds_after_two_failures() {
+            // Closure fails on attempts 1 and 2, succeeds on 3.
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> =
+                retry_with_backoff(Some(&policy(3, true)), "step", |attempt| {
+                    *calls.borrow_mut() += 1;
+                    if attempt < 3 {
+                        Err(WorkflowRunError::StepFailed(
+                            "step".into(),
+                            format!("transient failure on attempt {attempt}"),
+                        ))
+                    } else {
+                        Ok(99)
+                    }
+                });
+            assert_eq!(result.unwrap(), 99);
+            assert_eq!(*calls.borrow(), 3);
+        }
+
+        #[test]
+        fn retry_exhausts_attempts_and_wraps_error() {
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> =
+                retry_with_backoff(Some(&policy(3, true)), "step", |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(WorkflowRunError::StepFailed(
+                        "step".into(),
+                        "permanent failure".to_string(),
+                    ))
+                });
+            let err = result.unwrap_err();
+            assert_eq!(*calls.borrow(), 3, "all 3 attempts exhausted");
+            // Wrapped error includes attempt count.
+            let msg = err.to_string();
+            assert!(
+                msg.contains("failed after 3 attempts"),
+                "error msg should include attempt count; got: {msg}"
+            );
+            assert!(
+                msg.contains("permanent failure"),
+                "error msg should include the underlying error; got: {msg}"
+            );
+        }
+
+        #[test]
+        fn no_retry_when_on_transient_false() {
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> = retry_with_backoff(
+                Some(&policy(5, false)), // on_transient = false
+                "step",
+                |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(WorkflowRunError::StepFailed(
+                        "step".into(),
+                        "boom".to_string(),
+                    ))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(*calls.borrow(), 1, "on_transient=false disables retry");
+            // Single-attempt error preserves exact original shape (no
+            // "failed after N attempts" wrapper).
+            assert!(!result.unwrap_err().to_string().contains("attempts"));
+        }
+
+        #[test]
+        fn no_retry_when_max_attempts_le_1() {
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> = retry_with_backoff(
+                Some(&policy(1, true)), // max_attempts = 1
+                "step",
+                |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(WorkflowRunError::StepFailed(
+                        "step".into(),
+                        "boom".to_string(),
+                    ))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(*calls.borrow(), 1);
+        }
+
+        #[test]
+        fn no_retry_when_no_policy() {
+            let calls = RefCell::new(0);
+            let result: Result<i32, _> = retry_with_backoff(None, "step", |_attempt| {
+                *calls.borrow_mut() += 1;
+                Err(WorkflowRunError::StepFailed(
+                    "step".into(),
+                    "boom".to_string(),
+                ))
+            });
+            assert!(result.is_err());
+            assert_eq!(*calls.borrow(), 1);
+        }
+
+        #[test]
+        fn compile_error_step_with_retry_eventually_fails() {
+            // Integration-style: a workflow with a syntactically-bad
+            // step + RetryPolicy { max_attempts: 3, on_transient: true }
+            // exhausts all 3 attempts and surfaces a Failed result
+            // with the attempt count in the error message.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("bad.ax"), "fn main( { }").unwrap();
+            let mut bad = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/bad.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: Some(RetryPolicy {
+                    max_attempts: 3,
+                    on_transient: true,
+                }),
+                budget: None,
+            };
+            bad.inputs.clear();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "retry-fail".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([("bad".into(), bad)]),
+                edges: vec![],
+            };
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let result = WorkflowRunner::run(&def, &options).unwrap();
+            assert_eq!(result.status, WorkflowStatus::Failed);
+            let err = result.step_results["bad"].error.as_deref().unwrap();
+            assert!(
+                err.contains("failed after 3 attempts"),
+                "expected attempt-count in error message; got: {err}"
+            );
+        }
     }
 
     // ── 0.3-S2b: persistent runs + resume ──
