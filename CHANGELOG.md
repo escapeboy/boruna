@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Server Tool Reference** documentation at `docs/reference/mcp-server.md` —
+  wire contract for all 10 `boruna-mcp` tools: parameter names and types,
+  return shapes, `error_kind` values, encoding rules, and limits. Driven by
+  FleetQ implementer feedback (post-v0.2.0 follow-up): integrators previously
+  had to read `crates/boruna-mcp/src/server.rs` to learn that `boruna_run`'s
+  parameter is `source` (not `script`) and that there is no `input` parameter.
+  Linked from `docs/README.md`.
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.
