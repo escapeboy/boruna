@@ -55,6 +55,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   enforcement is wall-clock-keyed and therefore non-deterministic on
   overrun by construction — `max_steps` remains the deterministic
   ceiling; `max_wall_ms` is the operational guardrail.
+- **Output JSON Schema validation gate in `boruna_run`**
+  ([#8](https://github.com/escapeboy/boruna/issues/8), sprint `0.5-S6`,
+  pulled forward from 0.5.0 because FleetQ wanted it in their pipeline).
+  New optional `output_schema` parameter on the MCP `boruna_run` tool
+  accepting any JSON Schema 2020-12 object. The script's `result` is
+  validated post-execution; mismatches return
+  `error_kind: "validation_failed", phase: "output_validation"` with
+  per-path JSON Pointer errors. Malformed or oversized schemas (>256 KB)
+  return `error_kind: "invalid_output_schema"`. Schemas declaring a
+  non-2020-12 `$schema` are rejected (same "reject at parse, don't
+  silently override" pattern as `0.3-S10`'s `unsupported_limit`). Error
+  array capped at 100 entries with `truncated` and `total_errors`
+  fields. **Known limitation:** records/enums emit as wrapper objects;
+  schemas for the natural shape will fail. Best for primitive returns.
+  See `docs/design-output-schema.md`.
+- New `jsonschema = "0.30"` dependency in `boruna-mcp` (default features
+  off — no `resolve-http` or `resolve-file`, so `$ref` to remote URLs
+  cannot trigger SSRF or arbitrary file reads).
 
 ### Decided
 

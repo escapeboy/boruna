@@ -22,3 +22,4 @@ serde_json = { workspace = true }
 schemars = "1.0"
 clap = { workspace = true }
 tempfile = "3"
+jsonschema = { version = "0.30", default-features = false }

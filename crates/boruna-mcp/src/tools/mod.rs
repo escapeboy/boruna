@@ -74,20 +74,34 @@ mod protocol_version_tests {
 
     #[test]
     fn run_success_carries_protocol_version() {
-        let out = run::run_source("fn main() -> Int { 1 + 2 }\n", None, 1_000_000, false, None);
+        let out = run::run_source(
+            "fn main() -> Int { 1 + 2 }\n",
+            None,
+            1_000_000,
+            false,
+            None,
+            None,
+        );
         assert_protocol_version(&out, "run success");
     }
 
     #[test]
     fn run_invalid_policy_carries_protocol_version() {
         let bad = serde_json::json!(42);
-        let out = run::run_source("fn main() -> Int { 1 }\n", Some(&bad), 1_000_000, false, None);
+        let out = run::run_source(
+            "fn main() -> Int { 1 }\n",
+            Some(&bad),
+            1_000_000,
+            false,
+            None,
+            None,
+        );
         assert_protocol_version(&out, "run invalid_policy");
     }
 
     #[test]
     fn run_compile_failure_carries_protocol_version() {
-        let out = run::run_source("@@@ not valid", None, 1_000_000, false, None);
+        let out = run::run_source("@@@ not valid", None, 1_000_000, false, None, None);
         assert_protocol_version(&out, "run compile failure");
     }
 

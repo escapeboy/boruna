@@ -53,6 +53,13 @@ struct RunParams {
     /// limit_kind="<wall_ms|output_bytes>". See docs/reference/mcp-server.md.
     #[serde(default)]
     limits: Option<RunLimitsParams>,
+    /// Optional JSON Schema 2020-12 object. When set, the script's `result`
+    /// is validated against the schema after a successful run. A failure
+    /// returns success=false, error_kind="validation_failed", phase=
+    /// "output_validation", with per-path errors. A malformed schema returns
+    /// error_kind="invalid_output_schema". See docs/design-output-schema.md.
+    #[serde(default)]
+    output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -197,8 +204,16 @@ impl BorunaMcpServer {
             max_output_bytes: l.max_output_bytes,
             max_memory_mb: l.max_memory_mb,
         });
+        let output_schema = params.output_schema;
         let result = tokio::task::spawn_blocking(move || {
-            tools::run::run_source(&source, policy.as_ref(), max_steps, trace, limits.as_ref())
+            tools::run::run_source(
+                &source,
+                policy.as_ref(),
+                max_steps,
+                trace,
+                limits.as_ref(),
+                output_schema.as_ref(),
+            )
         })
         .await
         .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;

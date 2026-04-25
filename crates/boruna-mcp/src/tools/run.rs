@@ -8,6 +8,20 @@ use super::TOOL_RESPONSE_PROTOCOL_VERSION;
 
 const TRACE_LIMIT: usize = 500;
 
+/// Cap on the per-call output_schema size (bytes of compact JSON).
+/// Schemas larger than this are rejected with `invalid_output_schema` before
+/// any compilation or execution work, mirroring the spirit of the 1 MB source
+/// limit on the `source` parameter. Documented in `docs/design-output-schema.md`.
+const MAX_OUTPUT_SCHEMA_SIZE: usize = 256 * 1024;
+
+/// Cap on the per-call number of validation errors reported back. Matches the
+/// shape of `TRACE_LIMIT` — pathological schemas (e.g. a wide `oneOf` against
+/// an `additionalProperties: false` object) can produce thousands of errors,
+/// each with a verbose message. We cap so a single bad schema can't blow the
+/// MCP transport. When truncated, the response carries `truncated: true` and
+/// `total_errors: N` so the integrator knows there were more.
+const MAX_VALIDATION_ERRORS: usize = 100;
+
 /// Structured resource limits applied to a single `boruna_run` invocation.
 ///
 /// `None` on any field = no limit. Hitting any returns
@@ -43,12 +57,18 @@ pub struct RunLimits {
 ///
 /// `limits` plumbs structured resource limits into the VM and the response
 /// serializer. `None` = no limits beyond `max_steps`.
+///
+/// `output_schema` accepts an optional JSON Schema 2020-12 object. When set,
+/// the script's `result` is validated post-execution; mismatches return
+/// `error_kind: "validation_failed"` with per-path JSON Pointer errors. See
+/// [`validate_output_against_schema`] and `docs/design-output-schema.md`.
 pub fn run_source(
     source: &str,
     policy: Option<&JsonValue>,
     max_steps: u64,
     trace: bool,
     limits: Option<&RunLimits>,
+    output_schema: Option<&JsonValue>,
 ) -> String {
     // Reject unsupported limits BEFORE compiling, so an integrator who
     // misconfigures (e.g. sets max_memory_mb expecting it to bound memory)
@@ -127,6 +147,18 @@ pub fn run_source(
                     *r = r.saturating_sub(serialized_size(&tree_json) as u64);
                 }
                 ui_output_json.push(tree_json);
+            }
+
+            // Output-schema gate (post-execution + post-budget; only runs on
+            // successful runs whose output fit within max_output_bytes).
+            // Validation failure or malformed schema short-circuits with its
+            // own typed envelope. See docs/design-output-schema.md.
+            if let Some(schema) = output_schema {
+                if let Some(failure) =
+                    validate_output_against_schema(schema, &result_json, vm.step_count())
+                {
+                    return failure;
+                }
             }
 
             let mut json = serde_json::json!({
@@ -267,6 +299,120 @@ fn format_value_capped(
 /// payload an integrator actually pays for, not the indentation we add later.
 fn serialized_size(value: &serde_json::Value) -> usize {
     serde_json::to_vec(value).map(|v| v.len()).unwrap_or(0)
+}
+
+/// Validate the script's serialized `result` against an integrator-supplied
+/// JSON Schema. Returns `Some(json_response)` if validation fails, the schema
+/// is malformed, or the schema is oversized; `None` if the result passes.
+///
+/// Enforces **JSON Schema Draft 2020-12.** Schemas with no `$schema` URI
+/// default to 2020-12; schemas declaring a non-2020-12 `$schema` are
+/// **rejected** rather than silently honoured at older-draft semantics.
+/// Same "reject at parse, don't silently override" pattern as 0.3-S10's
+/// `unsupported_limit` for `max_memory_mb`.
+///
+/// **Wrapper-format limitation:** `format_value` emits Boruna records/enums/
+/// Some/Ok as wrapper objects. A schema written for the natural shape will
+/// fail validation. The gate is most useful for primitive return types
+/// (Int, String, Bool) and homogeneous List/Map containers. See
+/// `docs/design-output-schema.md`.
+fn validate_output_against_schema(
+    schema: &JsonValue,
+    result: &JsonValue,
+    steps: u64,
+) -> Option<String> {
+    // Cheap pre-check: bound the schema size before we hand it to jsonschema's
+    // compiler, which can OOM on a large/recursive schema.
+    let schema_size = serde_json::to_vec(schema).map(|v| v.len()).unwrap_or(0);
+    if schema_size > MAX_OUTPUT_SCHEMA_SIZE {
+        return Some(
+            serde_json::json!({
+                "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
+                "error_kind": "invalid_output_schema",
+                "message": format!(
+                    "output_schema exceeds {} bytes (got {})",
+                    MAX_OUTPUT_SCHEMA_SIZE, schema_size
+                ),
+            })
+            .to_string(),
+        );
+    }
+
+    // Reject schemas that explicitly declare a non-2020-12 draft via `$schema`.
+    if let Some(JsonValue::String(s)) = schema.get("$schema") {
+        let normalized = s.trim_end_matches('#');
+        if !normalized.contains("2020-12") && !normalized.contains("draft/2020-12") {
+            return Some(
+                serde_json::json!({
+                    "success": false,
+                    "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
+                    "error_kind": "invalid_output_schema",
+                    "message": format!(
+                        "output_schema declares $schema='{s}'; only JSON Schema Draft 2020-12 \
+                         is supported. Either omit $schema (we default to 2020-12) or set it \
+                         to 'https://json-schema.org/draft/2020-12/schema'."
+                    ),
+                })
+                .to_string(),
+            );
+        }
+    }
+
+    // Compile the schema. with_draft is the FALLBACK draft when $schema is
+    // absent (jsonschema honors $schema if present); the check above already
+    // rejected non-2020-12 $schema declarations.
+    let validator = match jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(schema)
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(
+                serde_json::json!({
+                    "success": false,
+                    "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
+                    "error_kind": "invalid_output_schema",
+                    "message": format!("output_schema is not a valid JSON Schema: {e}"),
+                })
+                .to_string(),
+            );
+        }
+    };
+
+    // Collect per-path errors with a hard cap.
+    let errors: Vec<serde_json::Value> = validator
+        .iter_errors(result)
+        .take(MAX_VALIDATION_ERRORS)
+        .map(|err| {
+            serde_json::json!({
+                "path": err.instance_path.to_string(),
+                "message": err.to_string(),
+            })
+        })
+        .collect();
+
+    if errors.is_empty() {
+        return None;
+    }
+
+    let total_errors = validator.iter_errors(result).count();
+    let truncated = total_errors > MAX_VALIDATION_ERRORS;
+
+    Some(
+        serde_json::json!({
+            "success": false,
+            "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
+            "error_kind": "validation_failed",
+            "phase": "output_validation",
+            "message": "result does not match output_schema",
+            "errors": errors,
+            "truncated": truncated,
+            "total_errors": total_errors,
+            "steps": steps,
+        })
+        .to_string(),
+    )
 }
 
 /// Parse the MCP `policy` argument into a [`Policy`].
@@ -430,7 +576,7 @@ mod tests {
 
     #[test]
     fn run_source_default_policy_pure_program() {
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, None);
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, None, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -441,7 +587,7 @@ mod tests {
             "default_allow": true,
             "rules": { "fs.write": { "allow": false, "budget": 0 } }
         });
-        let out = run_source(PURE_SOURCE, Some(&policy), 1_000_000, false, None);
+        let out = run_source(PURE_SOURCE, Some(&policy), 1_000_000, false, None, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -449,7 +595,7 @@ mod tests {
     #[test]
     fn run_source_invalid_policy_returns_error_kind() {
         let bad = json!(42);
-        let out = run_source(PURE_SOURCE, Some(&bad), 1_000_000, false, None);
+        let out = run_source(PURE_SOURCE, Some(&bad), 1_000_000, false, None, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], false);
         assert_eq!(v["error_kind"], "invalid_policy");
@@ -462,7 +608,7 @@ mod tests {
         // Sanity: passing Some(RunLimits::default()) with all fields None
         // should be indistinguishable from passing None.
         let limits = RunLimits::default();
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -475,7 +621,7 @@ mod tests {
             max_output_bytes: Some(4096),
             ..Default::default()
         };
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -488,7 +634,7 @@ mod tests {
             max_output_bytes: Some(0),
             ..Default::default()
         };
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], false, "output: {out}");
         assert_eq!(v["error_kind"], "limit_exceeded");
@@ -510,7 +656,7 @@ mod tests {
             max_output_bytes: Some(1),
             ..Default::default()
         };
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["success"], true,
@@ -527,7 +673,7 @@ mod tests {
             max_memory_mb: Some(256),
             ..Default::default()
         };
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v["success"], false,
@@ -561,7 +707,7 @@ mod tests {
         // the existing runtime_error kind. Force a runtime error via a
         // step-limit-exceeded path (max_steps=1 on a non-trivial program).
         let limits = RunLimits::default();
-        let out = run_source(PURE_SOURCE, None, 1, false, Some(&limits));
+        let out = run_source(PURE_SOURCE, None, 1, false, Some(&limits), None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], false);
         assert_eq!(
