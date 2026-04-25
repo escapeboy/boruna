@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-bytecode"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "boruna-bytecode",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-compiler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-vm",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-effect"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "serde",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-framework"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-pkg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-tooling"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "boruna-bytecode",
  "serde",

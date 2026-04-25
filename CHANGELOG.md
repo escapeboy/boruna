@@ -6,6 +6,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-25
+
+Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.
+
 ### Added
 
 - MCP `boruna_run` tool now accepts a structured `Policy` object for the `policy`
@@ -17,12 +21,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - New documentation: `docs/reference/policy-schema.md` (prose + examples) and
   `docs/reference/policy.schema.json` (machine-readable JSON Schema 2020-12)
   for integrators rendering capability matrices in their own UIs.
+- The `boruna_run` MCP tool description now advertises the structured-policy
+  capability so AI agents discover it from the tool list directly.
 - Multi-target release workflow (`.github/workflows/release.yml`) that publishes
   static binaries on every `v*` tag for `x86_64-unknown-linux-musl`,
   `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`,
   plus a combined `SHA256SUMS` checksum file. Linux builds use musl so the
   binaries run on Alpine and other libc-minimal distributions.
-- `docs/releasing.md` — release process and verification guide.
+- `docs/releasing.md` — release process, verification, and rationale for using
+  GitHub-hosted runners (vs. the self-hosted runner used by `ci.yml`).
 - README install section showing curl-and-verify install.
 
 ### Changed
@@ -57,5 +64,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`, `std-notifications`, `std-testing`
 - 557+ tests across 9 crates
 
-[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/escapeboy/boruna/releases/tag/v0.2.0
 [0.1.0]: https://github.com/escapeboy/boruna/releases/tag/v0.1.0
