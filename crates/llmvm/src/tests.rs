@@ -238,6 +238,228 @@ mod tests {
         assert!(vm.run().is_err());
     }
 
+    // ── 0.4-S5: capability span emission ──
+
+    /// Test helper: a span-capture layer keyed by span Id (proper matching,
+    /// not the best-effort matcher the first draft used). Records both
+    /// `on_new_span` (initial attributes) and `on_record` (later
+    /// `Span::record` calls) into per-span buckets.
+    #[derive(Default, Clone)]
+    struct CapturedSpan {
+        name: String,
+        cap_name: Option<String>,
+        bytes_in: Option<u64>,
+        bytes_out: Option<u64>,
+        budget_remaining: Option<u64>,
+        error_kind: Option<String>,
+    }
+
+    fn run_with_capture<F: FnOnce()>(work: F) -> Vec<CapturedSpan> {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Id, Record};
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        struct V<'a>(&'a mut CapturedSpan);
+        impl Visit for V<'_> {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                match field.name() {
+                    "cap.name" => self.0.cap_name = Some(value.to_string()),
+                    "error.kind" => self.0.error_kind = Some(value.to_string()),
+                    _ => {}
+                }
+            }
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                match field.name() {
+                    "bytes_in" => self.0.bytes_in = Some(value),
+                    "bytes_out" => self.0.bytes_out = Some(value),
+                    "cap.budget_remaining" => self.0.budget_remaining = Some(value),
+                    _ => {}
+                }
+            }
+            fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+        }
+
+        struct CaptureLayer {
+            by_id: Arc<Mutex<HashMap<u64, CapturedSpan>>>,
+            order: Arc<Mutex<Vec<u64>>>,
+        }
+        impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer<S>
+            for CaptureLayer
+        {
+            fn on_new_span(
+                &self,
+                attrs: &Attributes<'_>,
+                id: &Id,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut span = CapturedSpan {
+                    name: attrs.metadata().name().to_string(),
+                    ..Default::default()
+                };
+                attrs.record(&mut V(&mut span));
+                let key = id.into_u64();
+                self.by_id.lock().unwrap().insert(key, span);
+                self.order.lock().unwrap().push(key);
+            }
+            fn on_record(
+                &self,
+                id: &Id,
+                values: &Record<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let key = id.into_u64();
+                let mut by_id = self.by_id.lock().unwrap();
+                if let Some(span) = by_id.get_mut(&key) {
+                    values.record(&mut V(span));
+                }
+            }
+        }
+
+        let by_id: Arc<Mutex<HashMap<u64, CapturedSpan>>> = Arc::new(Mutex::new(HashMap::new()));
+        let order: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let layer = CaptureLayer {
+            by_id: by_id.clone(),
+            order: order.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, work);
+
+        let spans = by_id.lock().unwrap();
+        let order = order.lock().unwrap();
+        order
+            .iter()
+            .filter_map(|id| spans.get(id).cloned())
+            .collect()
+    }
+
+    #[test]
+    fn test_capability_call_emits_boruna_cap_span_with_attributes() {
+        let spans = run_with_capture(|| {
+            let mut gateway = CapabilityGateway::new(Policy::allow_all());
+            let mut log = EventLog::new();
+            gateway
+                .call(&Capability::TimeNow, &[], &mut log)
+                .expect("must succeed under allow-all");
+        });
+
+        let cap = spans
+            .iter()
+            .find(|s| s.name == "boruna.cap")
+            .expect("expected boruna.cap span");
+        assert_eq!(cap.cap_name.as_deref(), Some("time.now"));
+        assert_eq!(cap.bytes_in, Some(0), "TimeNow has no args");
+        assert_eq!(
+            cap.bytes_out,
+            Some(0),
+            "TimeNow returns Int (no string payload) → bytes_out=0 (not None — the field MUST have been recorded)"
+        );
+        assert_eq!(
+            cap.error_kind, None,
+            "successful call leaves error.kind unrecorded"
+        );
+    }
+
+    #[test]
+    fn test_capability_call_records_bytes_out_for_string_returning_handler() {
+        // Calls a capability whose mock handler returns a Value::String — so
+        // bytes_out should be the string's UTF-8 length. NetFetch's mock
+        // returns a JSON-ish string with the URL embedded. Pick FsRead
+        // because its mock returns `"mock file content for {path}"` — a
+        // predictable shape we can size.
+        let spans = run_with_capture(|| {
+            let mut gateway = CapabilityGateway::new(Policy::allow_all());
+            let mut log = EventLog::new();
+            gateway
+                .call(
+                    &Capability::FsRead,
+                    &[Value::String("/tmp/x".into())],
+                    &mut log,
+                )
+                .expect("must succeed");
+        });
+        let cap = spans
+            .iter()
+            .find(|s| s.name == "boruna.cap")
+            .expect("expected span");
+        // Args: ["/tmp/x"] → 6 bytes
+        assert_eq!(cap.bytes_in, Some(6));
+        // Output: "mock file content for /tmp/x" → 28 bytes
+        let out = cap.bytes_out.expect("bytes_out must be recorded");
+        assert!(
+            out > 0,
+            "string-returning handler must produce non-zero bytes_out, got {out}"
+        );
+    }
+
+    #[test]
+    fn test_capability_call_records_error_kind_denied() {
+        let spans = run_with_capture(|| {
+            let mut gateway = CapabilityGateway::new(Policy::deny_all());
+            let mut log = EventLog::new();
+            let _ = gateway.call(&Capability::NetFetch, &[], &mut log);
+        });
+        let cap = spans
+            .iter()
+            .find(|s| s.name == "boruna.cap")
+            .expect("expected span");
+        assert_eq!(
+            cap.error_kind.as_deref(),
+            Some("denied"),
+            "deny-all policy must record error.kind=denied"
+        );
+    }
+
+    #[test]
+    fn test_capability_call_records_error_kind_budget_exceeded() {
+        let spans = run_with_capture(|| {
+            let mut policy = Policy::allow_all();
+            // Budget of 1 — first call OK, second rejected.
+            policy.allow(&Capability::TimeNow, 1);
+            let mut gateway = CapabilityGateway::new(policy);
+            let mut log = EventLog::new();
+            // First call: succeeds, span has cap.budget_remaining=0
+            gateway.call(&Capability::TimeNow, &[], &mut log).unwrap();
+            // Second call: rejected, span has error.kind=budget_exceeded
+            let _ = gateway.call(&Capability::TimeNow, &[], &mut log);
+        });
+        // Two boruna.cap spans — the second one is the rejection.
+        let caps: Vec<_> = spans.iter().filter(|s| s.name == "boruna.cap").collect();
+        assert_eq!(caps.len(), 2, "expected 2 boruna.cap spans");
+        assert_eq!(
+            caps[0].budget_remaining,
+            Some(0),
+            "first call: budget exhausted post-call"
+        );
+        assert_eq!(caps[0].error_kind, None, "first call succeeded");
+        assert_eq!(
+            caps[1].error_kind.as_deref(),
+            Some("budget_exceeded"),
+            "second call must record budget_exceeded"
+        );
+        assert_eq!(
+            caps[1].budget_remaining,
+            Some(0),
+            "rejected call also reports 0 remaining"
+        );
+    }
+
+    #[test]
+    fn test_capability_call_works_without_subscriber_installed() {
+        // The "zero-cost when no subscriber" path: making capability calls
+        // with no tracing subscriber installed must not panic, must not
+        // allocate gratuitously, and must return the expected result. This
+        // is the baseline for the always-on instrumentation contract.
+        let mut gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut log = EventLog::new();
+        let result = gateway
+            .call(&Capability::TimeNow, &[], &mut log)
+            .expect("must succeed without a subscriber");
+        assert!(matches!(result, Value::Int(_)));
+    }
+
     #[test]
     fn test_wall_time_limit_fires_on_long_running_program() {
         // 0.3-S10: max_wall_ms enforcement.

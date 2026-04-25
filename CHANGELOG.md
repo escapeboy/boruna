@@ -100,6 +100,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   silently drift in arg interpretation.
 - Documentation: `docs/design-net-record-replay.md` (tape format, match
   strategy, CLI surface, known limitations).
+- **Per-call OpenTelemetry observability** ([#9](https://github.com/escapeboy/boruna/issues/9),
+  sprint `0.4-S5`, the LAST FleetQ ask). Always-on `tracing` instrumentation
+  in `CapabilityGateway::call` emits `boruna.cap` spans with attributes
+  `cap.name`, `bytes_in`, `bytes_out`, `cap.budget_remaining`, `error.kind`
+  (set on the failure path: `denied` / `budget_exceeded` / `runtime_error`).
+  When no subscriber is installed (the default), span macros are essentially
+  no-ops — zero runtime cost.
+- **`telemetry` Cargo feature** on `boruna-vm` (and mirror feature on
+  `boruna-cli`) adds an OpenTelemetry OTLP-over-HTTP exporter
+  (`opentelemetry 0.27` + `opentelemetry-otlp 0.27` + `tracing-opentelemetry
+  0.28`). New helper `boruna_vm::init_telemetry()` reads
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (and optional `OTEL_SERVICE_NAME`,
+  defaulting to `"boruna"`); returns a `Disabled` no-op handle when the
+  endpoint is unset (Boruna behaves identically to a non-telemetry build),
+  installs the exporter when set. Returns a `TelemetryHandle` whose `Drop`
+  flushes pending spans.
+- **CLI integration:** `boruna-cli` built with `--features telemetry` starts
+  a tokio runtime in `main`, calls `init_telemetry()` BEFORE parsing CLI
+  args, holds the handle for the binary lifetime, and on shutdown drops
+  the handle THEN drains the runtime with a 5-second timeout (so
+  in-flight OTel HTTP POSTs complete instead of being killed by
+  `process::exit`).
+- New documentation: `docs/design-otel.md` (span shape, attribute table,
+  determinism contract, library-version pin set, BYO-subscriber fallback
+  path).
 
 ### Decided
 
@@ -111,6 +136,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   connection PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`,
   `busy_timeout=5000`), and an illustrative schema. Unblocks `0.3-S2`
   through `0.3-S9` — the entire 0.3.0 critical path. Sprint `0.3-S1`.
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.

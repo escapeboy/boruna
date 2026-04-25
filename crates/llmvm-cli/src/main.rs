@@ -350,6 +350,62 @@ enum FrameworkCommand {
     },
 }
 
+/// CLI entry point.
+///
+/// **Telemetry feature:** when built with `--features telemetry`, `main`
+/// starts a tokio runtime (required by the OTel batch exporter) and calls
+/// `boruna_vm::init_telemetry()` BEFORE parsing CLI args. The init function
+/// reads `OTEL_EXPORTER_OTLP_ENDPOINT`; when unset the telemetry handle is
+/// `Disabled` and behaves identically to a non-telemetry build (zero
+/// allocations, zero spans exported). When set, capability spans
+/// (`boruna.cap` with `cap.name`, `bytes_in`, `bytes_out`,
+/// `cap.budget_remaining`, `error.kind` attributes) are exported via
+/// OTLP-over-HTTP. The `TelemetryHandle` is dropped at the end of `main`
+/// so pending spans flush before the binary exits.
+///
+/// **Without `telemetry` feature:** `main` is plain sync; capability spans
+/// are still emitted (the `tracing` dep is non-optional in `boruna-vm`)
+/// but go nowhere because no subscriber is installed. Zero overhead.
+#[cfg(feature = "telemetry")]
+fn main() {
+    let runtime = tokio::runtime::Runtime::new()
+        .expect("failed to start tokio runtime for telemetry feature");
+    // Enter the runtime BEFORE init_telemetry — the OTel batch exporter
+    // spawns its background task into the current runtime context.
+    let _runtime_guard = runtime.enter();
+
+    // Init may return Err on a hard config problem (malformed endpoint URL,
+    // global subscriber already installed). Treat as warning, not fatal —
+    // the rest of the CLI works fine without telemetry.
+    let _telemetry_handle = match boruna_vm::init_telemetry() {
+        Ok(h) => Some(h),
+        Err(e) => {
+            eprintln!("warning: telemetry init failed: {e}");
+            None
+        }
+    };
+
+    let cli = Cli::parse();
+    let result = run(cli);
+
+    // Drop the telemetry handle BEFORE shutting down the runtime so
+    // force_flush has somewhere to enqueue. The handle's Drop calls
+    // `force_flush()` which returns immediately — actual HTTP POSTs run
+    // on tokio tasks. We then shut down the runtime with a bounded
+    // timeout so those tasks get a chance to complete; otherwise
+    // `process::exit` below would kill them mid-flight and silently lose
+    // the last batch of spans.
+    drop(_telemetry_handle);
+    drop(_runtime_guard);
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
 fn main() {
     let cli = Cli::parse();
 
