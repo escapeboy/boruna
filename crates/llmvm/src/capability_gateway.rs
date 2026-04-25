@@ -235,7 +235,7 @@ impl CapabilityGateway {
             None => self.policy.default_allow,
         };
         if !allowed {
-            return Err(VmError::CapabilityDenied(cap.clone()));
+            return Err(VmError::CapabilityDenied(*cap));
         }
 
         // Check budget
@@ -243,7 +243,7 @@ impl CapabilityGateway {
         *count += 1;
         if let Some(r) = rule {
             if r.budget > 0 && *count > r.budget {
-                return Err(VmError::CapabilityBudgetExceeded(cap.clone()));
+                return Err(VmError::CapabilityBudgetExceeded(*cap));
             }
         }
 

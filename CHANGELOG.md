@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Versioned capability identity** ([#3](https://github.com/escapeboy/boruna/issues/3),
+  sprint `0.3-S11`). New `boruna capability list [--json]` CLI subcommand and
+  `boruna_capability_list` MCP tool report a stable `capability_set_hash` over
+  the binary's capability surface. Integrators use it as part of a cache key —
+  `(source_hash, policy_hash, capability_set_hash, policy.schema_version)` — to
+  safely memoize deterministic run results across binary upgrades. Algorithm,
+  caching recipe, and per-capability versioning rules documented in
+  `docs/reference/capability-identity.md`. All 10 shipped capabilities start at
+  contract version `"1"`.
+- New library API in `boruna-bytecode`:
+  `Capability::ALL` (canonical sorted iteration), `Capability::version()`,
+  `CapabilityIdentity`, `CapabilitySetReport`,
+  `compute_capability_set_hash()`, `capability_set_report()`.
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.

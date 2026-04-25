@@ -297,6 +297,23 @@ impl BorunaMcpServer {
         .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
+
+    // ── Capability Identity Tool ──
+
+    #[tool(
+        description = "List all capabilities this Boruna binary exposes, with a stable `capability_set_hash`. \
+                       Use the hash as part of a cache key — `(source_hash, policy_hash, capability_set_hash)` — \
+                       to safely memoize deterministic run results across binary upgrades. \
+                       The hash changes only when the capability contract surface changes (new capability added, \
+                       or an existing capability's argument/return shape changes). \
+                       See docs/reference/capability-identity.md for the algorithm and caching recipe."
+    )]
+    async fn boruna_capability_list(&self) -> Result<CallToolResult, McpError> {
+        let result = tokio::task::spawn_blocking(tools::capability::list_capabilities)
+            .await
+            .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
 }
 
 #[tool_handler]
