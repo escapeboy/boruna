@@ -39,45 +39,12 @@ impl HttpHandler {
     }
 
     pub fn handle_net_fetch(&self, args: &[Value]) -> Result<Value, String> {
-        let url_str = args
-            .first()
-            .map(|v| match v {
-                Value::String(s) => s.clone(),
-                other => format!("{other}"),
-            })
+        let parsed_args = parse_net_fetch_args(args)
             .ok_or_else(|| "net.fetch requires at least a URL argument".to_string())?;
-
-        let method = args
-            .get(1)
-            .map(|v| match v {
-                Value::String(s) => s.clone(),
-                other => format!("{other}"),
-            })
-            .unwrap_or_else(|| "GET".to_string())
-            .to_uppercase();
-
-        let body = args.get(2).and_then(|v| match v {
-            Value::String(s) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        });
-
-        let headers: BTreeMap<String, String> = args
-            .get(3)
-            .and_then(|v| match v {
-                Value::Map(m) => {
-                    let mut headers = BTreeMap::new();
-                    for (k, v) in m {
-                        let val = match v {
-                            Value::String(s) => s.clone(),
-                            other => format!("{other}"),
-                        };
-                        headers.insert(k.clone(), val);
-                    }
-                    Some(headers)
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
+        let url_str = parsed_args.url;
+        let method = parsed_args.method;
+        let body = parsed_args.body;
+        let headers = parsed_args.headers;
 
         // Parse and validate URL
         let parsed = Url::parse(&url_str).map_err(|e| format!("invalid URL '{url_str}': {e}"))?;
@@ -134,6 +101,66 @@ impl CapabilityHandler for HttpHandler {
             other => self.fallback.handle(other, args),
         }
     }
+}
+
+/// Parsed `net.fetch` arguments. Shared between the real handler and the
+/// recording layer so both interpret args identically — drift here would
+/// produce false-positive replay mismatches.
+pub struct ParsedNetFetchArgs {
+    pub url: String,
+    pub method: String,
+    pub body: Option<String>,
+    pub headers: BTreeMap<String, String>,
+}
+
+/// Parse the `net.fetch` arg list into a structured request descriptor.
+/// Returns `None` if the URL argument is missing (caller decides how to
+/// surface the error). Method defaults to `"GET"` (uppercased). Body is
+/// `None` when the script passed an empty string or omitted the arg.
+pub fn parse_net_fetch_args(args: &[Value]) -> Option<ParsedNetFetchArgs> {
+    let url = match args.first()? {
+        Value::String(s) => s.clone(),
+        other => format!("{other}"),
+    };
+
+    let method = args
+        .get(1)
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => format!("{other}"),
+        })
+        .unwrap_or_else(|| "GET".to_string())
+        .to_uppercase();
+
+    let body = args.get(2).and_then(|v| match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    });
+
+    let headers: BTreeMap<String, String> = args
+        .get(3)
+        .and_then(|v| match v {
+            Value::Map(m) => {
+                let mut headers = BTreeMap::new();
+                for (k, v) in m {
+                    let val = match v {
+                        Value::String(s) => s.clone(),
+                        other => format!("{other}"),
+                    };
+                    headers.insert(k.clone(), val);
+                }
+                Some(headers)
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    Some(ParsedNetFetchArgs {
+        url,
+        method,
+        body,
+        headers,
+    })
 }
 
 /// Reject URLs that target private/internal networks (SSRF protection).

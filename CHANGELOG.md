@@ -6,6 +6,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Record/replay for `net.fetch`** ([#7](https://github.com/escapeboy/boruna/issues/7),
+  sprint `0.5-S7`, pulled forward from 0.5.0). Boruna scripts are
+  deterministic by design; external HTTP is not. New CLI flags on
+  `boruna run`:
+  - `--record-net-to <FILE>` (requires `--live`) makes real HTTP calls and
+    persists each `(method, url, request_body) → response_body`
+    transaction to a sidecar JSON tape file.
+  - `--replay-net-from <FILE>` serves responses from a loaded tape with
+    no real network access. Strict ordered match on
+    `(method, url, request_body)`; mismatch returns a typed error
+    naming the position and differing field; tape exhaustion returns a
+    typed error; under-consumption is silently OK.
+  - Mutually exclusive (clap `conflicts_with`). If `--live` is set
+    alongside `--replay-net-from`, replay wins (no real calls happen).
+- New module `boruna_vm::net_record_replay` (feature-gated under
+  `http`) exposing `NetTransaction`, `NetTape`, `RecordingHttpHandler`,
+  `ReplayingHttpHandler`, and `TAPE_FORMAT_VERSION`.
+- `RecordingHttpHandler::with_save_path()` arms save-on-drop; the CLI
+  also probes write access on the tape path **before** the run starts
+  so a CI pipeline like `record-net-to fixtures/x.tape && verify x.tape`
+  fails fast on disk errors instead of silently producing a stale
+  fixture (review-driven hardening).
+- New shared parser `boruna_vm::http_handler::parse_net_fetch_args()`
+  used by both the real handler and the recording layer so they can't
+  silently drift in arg interpretation.
+- Documentation: `docs/design-net-record-replay.md` (tape format, match
+  strategy, CLI surface, known limitations).
+- **Known limitations** (documented in design doc + doc comments):
+  request headers are NOT in the match key (auth tokens change between
+  sessions); response status/headers are not recorded (handler returns
+  body only); failed transactions and non-UTF-8 bodies are not taped;
+  tape file size is unbounded (~2× JSON-pretty multiplier); a panic
+  during recording may lose the tape if Drop doesn't run.
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.
