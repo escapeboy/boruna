@@ -9,10 +9,15 @@ name = "boruna"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["persist-sqlite"]
 serve = ["dep:axum", "dep:tokio"]
 http = ["boruna-vm/http"]
 telemetry = ["boruna-vm/telemetry", "dep:tokio"]
+# Forwards to boruna-orchestrator's persist-sqlite feature so the CLI's
+# `workflow run` / `workflow resume` paths can use the SQLite checkpoint
+# store. On by default (matching boruna-orchestrator). Build with
+# `--no-default-features` to drop SQLite from the binary.
+persist-sqlite = ["boruna-orchestrator/persist-sqlite"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }

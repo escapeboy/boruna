@@ -250,6 +250,35 @@ enum WorkflowCommand {
         /// Use real HTTP handler for net.fetch (requires `http` feature).
         #[arg(long)]
         live: bool,
+        /// Persistent data directory for `runs.db` and per-run output.
+        /// Falls back to $BORUNA_DATA_DIR, then `./.boruna/data`. Pass
+        /// `--ephemeral` to run without writing checkpoints.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Run without persistence — no checkpoints written, no
+        /// `runs.db` created. Cannot be combined with `--data-dir`.
+        #[arg(long, conflicts_with = "data_dir")]
+        ephemeral: bool,
+    },
+    /// Resume a previously-paused or crashed workflow run by id.
+    Resume {
+        /// Run id (16-hex-character deterministic id from `boruna workflow run`).
+        run_id: String,
+        /// Persistent data directory holding `runs.db`. Same fallback
+        /// chain as `boruna workflow run`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Override the workflow definition directory. Defaults to the
+        /// path stored in the run's metadata at the original run.
+        #[arg(long)]
+        workflow_dir: Option<PathBuf>,
+        /// Capability policy override. Defaults to the policy from the
+        /// original run.
+        #[arg(short, long)]
+        policy: Option<String>,
+        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        #[arg(long)]
+        live: bool,
     },
 }
 
@@ -1410,6 +1439,8 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             record,
             evidence_dir,
             live,
+            data_dir,
+            ephemeral,
         } => {
             let def_path = dir.join("workflow.json");
             let json = fs::read_to_string(&def_path)
@@ -1433,7 +1464,32 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 live,
             };
 
-            let result = WorkflowRunner::run(&def, &options).map_err(|e| format!("{e}"))?;
+            let result = if ephemeral {
+                WorkflowRunner::run(&def, &options).map_err(|e| format!("{e}"))?
+            } else {
+                #[cfg(feature = "persist-sqlite")]
+                {
+                    let resolved = resolve_data_dir(data_dir.as_ref());
+                    println!("  data_dir: {}", resolved.display());
+                    WorkflowRunner::run_persistent(&def, &options, &resolved)
+                        .map_err(|e| format!("{e}"))?
+                }
+                // Reject-at-parse per project-conventions §1: a binary
+                // built without `persist-sqlite` cannot honor a
+                // persistent run; rather than silently downgrading to
+                // ephemeral (and creating no `runs.db`), surface the
+                // contract mismatch as an error so the operator can
+                // either rebuild with the feature or pass `--ephemeral`.
+                #[cfg(not(feature = "persist-sqlite"))]
+                {
+                    let _ = data_dir;
+                    return Err(format!(
+                        "persistent runs require the `persist-sqlite` feature \
+                         (rebuild with default features, or pass `--ephemeral`)"
+                    )
+                    .into());
+                }
+            };
 
             println!("workflow '{}' run: {:?}", def.name, result.status);
             println!("  run_id: {}", result.run_id);
@@ -1498,8 +1554,76 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 println!("  files: {}", manifest.file_checksums.len());
             }
         }
+        WorkflowCommand::Resume {
+            run_id,
+            data_dir,
+            workflow_dir,
+            policy,
+            live,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::ResumeOptions;
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                println!("resuming run '{run_id}' from {}", resolved.display());
+
+                let policy_obj = match policy.as_deref() {
+                    None => None,
+                    Some("allow-all") => Some(Policy::allow_all()),
+                    Some("deny-all") => Some(Policy::deny_all()),
+                    Some(path) => {
+                        let pjson = fs::read_to_string(path)?;
+                        Some(serde_json::from_str(&pjson)?)
+                    }
+                };
+
+                let options = ResumeOptions {
+                    policy: policy_obj,
+                    record: false,
+                    live,
+                    workflow_dir_override: workflow_dir.map(|p| p.display().to_string()),
+                };
+                let result = WorkflowRunner::resume(&run_id, &resolved, &options)
+                    .map_err(|e| format!("{e}"))?;
+                println!(
+                    "workflow '{}' resume: {:?}",
+                    result.workflow_name, result.status
+                );
+                println!("  run_id: {}", result.run_id);
+                println!("  duration: {}ms", result.total_duration_ms);
+                for (id, sr) in &result.step_results {
+                    println!("  step '{id}': {:?} ({}ms)", sr.status, sr.duration_ms);
+                    if let Some(err) = &sr.error {
+                        println!("    error: {err}");
+                    }
+                }
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, data_dir, workflow_dir, policy, live);
+                return Err("`workflow resume` requires the `persist-sqlite` feature \
+                            (on by default in boruna-orchestrator)"
+                    .into());
+            }
+        }
     }
     Ok(())
+}
+
+/// Resolve the persistent `--data-dir` argument with the documented
+/// fallback chain: explicit flag → `BORUNA_DATA_DIR` env var → `./.boruna/data`
+/// in the current working directory.
+#[cfg(feature = "persist-sqlite")]
+fn resolve_data_dir(flag: Option<&PathBuf>) -> PathBuf {
+    if let Some(p) = flag {
+        return p.clone();
+    }
+    if let Ok(env) = std::env::var("BORUNA_DATA_DIR") {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    PathBuf::from("./.boruna/data")
 }
 
 fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> {

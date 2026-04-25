@@ -183,6 +183,52 @@ pub struct RunRow {
     pub metadata_json: String,
 }
 
+/// Replay-verified subset of a [`RunRow`]. Audit, replay, and any code
+/// path whose output enters a hash chain MUST consume `RunRecord` rather
+/// than `RunRow`. Operational columns (`started_at_ms`, `updated_at_ms`,
+/// transient `status` values) are structurally absent so that
+/// `ORDER BY started_at` and similar non-deterministic sorts cannot
+/// compile against this type.
+///
+/// `terminal_status` is `Some` only for terminal lifecycle states
+/// (`Completed`, `Failed`). Transient states map to `None` — replay code
+/// MUST branch on `Some(_)` to assert a run actually finished, never
+/// pattern-match a `RunStatus` directly.
+///
+/// Introduced in sprint `0.3-S2b` per the H1 review finding from `0.3-S2a`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRecord {
+    pub run_id: String,
+    pub workflow_name: String,
+    /// **REPLAY-VERIFIED** — SHA-256 of the on-disk workflow definition.
+    pub workflow_hash: String,
+    /// `Some` only for terminal states (`Completed`, `Failed`); `None`
+    /// otherwise. Replay code reads this to decide whether to compare
+    /// outputs.
+    pub terminal_status: Option<RunStatus>,
+    /// **REPLAY-VERIFIED** — serialized capability `Policy`.
+    pub policy_json: String,
+    /// Caller-defined free-form JSON (workflow_dir, inputs_hash, etc).
+    pub metadata_json: String,
+}
+
+/// Operational-only subset of a [`RunRow`]. Status dashboards, progress
+/// trackers, and alerting consume this. NEVER feeds an audit hash; NEVER
+/// orders a replay-relevant query.
+///
+/// `transient_status` carries any [`RunStatus`] including transients
+/// (`Running`, `Paused`). Audit code that needs to assert a run completed
+/// MUST go through [`RunRecord::terminal_status`] instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOperational {
+    pub run_id: String,
+    pub transient_status: RunStatus,
+    /// **OPERATIONAL ONLY** — Unix epoch ms.
+    pub started_at_ms: i64,
+    /// **OPERATIONAL ONLY** — Unix epoch ms.
+    pub updated_at_ms: i64,
+}
+
 /// One row in the `step_checkpoints` table. The `(run_id, step_id)`
 /// composite key permits ordered scans for resume.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -413,6 +459,178 @@ impl RunCheckpointStore {
         })
     }
 
+    /// Replay-verified view of a run row. See [`RunRecord`] for why this
+    /// exists separately from [`get_run`].
+    ///
+    /// `terminal_status` is `Some` only when the persisted status is
+    /// `Completed` or `Failed`; transient states (`Running`, `Paused`)
+    /// return `None` so replay code cannot accidentally treat a still-
+    /// running workflow as comparable.
+    pub fn get_run_record(&self, run_id: &str) -> Result<Option<RunRecord>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, workflow_name, workflow_hash, status, policy_json, metadata_json \
+             FROM runs WHERE run_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(parse_run_record(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Operational view of a run row. See [`RunOperational`].
+    pub fn get_run_operational(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<RunOperational>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, status, started_at, updated_at \
+             FROM runs WHERE run_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![run_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(parse_run_operational(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Count of existing runs for a given `workflow_hash`. Used by
+    /// `0.3-S2b`'s deterministic `run_id` derivation as the per-workflow
+    /// counter input. Inside a `BEGIN IMMEDIATE` transaction this read +
+    /// the subsequent insert are atomic against concurrent writers.
+    pub fn count_runs_for_workflow(&self, workflow_hash: &str) -> Result<i64, PersistenceError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM runs WHERE workflow_hash = ?1")?;
+        let count: i64 = stmt.query_row(params![workflow_hash], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Derive a run_id and insert a new run atomically. The counter is
+    /// read inside a `BEGIN IMMEDIATE` transaction so concurrent writers
+    /// see distinct counter values (and therefore distinct `run_id`s)
+    /// without a UNIQUE collision.
+    ///
+    /// Returns the freshly-derived `run_id`. The caller passes
+    /// `workflow_hash` and `inputs_hash` as the deterministic inputs;
+    /// `policy_json`, `metadata_json`, and timestamps round out the row.
+    ///
+    /// **Determinism contract:** given an empty database (or one with no
+    /// prior runs of this `workflow_hash`), the returned `run_id` is
+    /// bit-identical across machines for the same `(workflow_hash,
+    /// inputs_hash)`. The wall-clock timestamps stored in the row are
+    /// operational-only and do NOT feed the `run_id` derivation.
+    pub fn insert_run_with_derived_id(
+        &self,
+        workflow_name: &str,
+        workflow_hash: &str,
+        inputs_hash: &str,
+        policy_json: &str,
+        metadata_json: &str,
+        started_at_ms: i64,
+    ) -> Result<String, PersistenceError> {
+        with_busy_retry(|| {
+            // `BEGIN IMMEDIATE` acquires the RESERVED writer lock at
+            // transaction start so the `SELECT COUNT(*)` below is
+            // serialized against any concurrent inserter.
+            // `Connection::unchecked_transaction()` defaults to DEFERRED,
+            // which would let two writers both observe the same counter
+            // value, derive the same `run_id`, and race to INSERT —
+            // producing a UNIQUE constraint violation (NOT a busy retry)
+            // for the loser. Reviewed in 0.3-S2b. We can't use
+            // `Connection::transaction_with_behavior` because that
+            // requires `&mut self` and the store holds `&self` methods;
+            // an explicit BEGIN IMMEDIATE / COMMIT / ROLLBACK pair works
+            // on `&self`. The `with_busy_retry` wrapper retries this
+            // whole closure on `SQLITE_BUSY`/`SQLITE_LOCKED` so an
+            // immediate-lock contention surfaces correctly as a busy
+            // retry, not a UNIQUE collision.
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<String, PersistenceError> {
+                let counter: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE workflow_hash = ?1",
+                    params![workflow_hash],
+                    |row| row.get(0),
+                )?;
+                let run_id = derive_run_id(workflow_hash, inputs_hash, counter);
+                self.conn.execute(
+                    "INSERT INTO runs \
+                     (run_id, workflow_name, workflow_hash, status, started_at, updated_at, policy_json, metadata_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        run_id,
+                        workflow_name,
+                        workflow_hash,
+                        RunStatus::Running.as_str(),
+                        started_at_ms,
+                        started_at_ms,
+                        policy_json,
+                        metadata_json,
+                    ],
+                )?;
+                Ok(run_id)
+            };
+            match body() {
+                Ok(run_id) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(run_id)
+                }
+                Err(e) => {
+                    // Best-effort rollback. If ROLLBACK itself fails, the
+                    // connection is in a degraded state but we still
+                    // surface the underlying cause.
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Reset a step checkpoint's `output_json`/`output_hash` to NULL while
+    /// flipping it to `Running`. Required by sprint `0.3-S2b` resume
+    /// semantics: when a previously-Completed-but-now-being-re-executed
+    /// step (which can't happen today) or a previously-Running step is
+    /// re-attempted, COALESCE-on-conflict in `upsert_step_checkpoint`
+    /// would preserve stale outputs. This explicit clear-on-running keeps
+    /// the on-disk invariant "non-Completed rows have null output."
+    /// Idempotent — safe to call on a row that doesn't exist.
+    pub fn mark_step_running_clearing_output(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        started_at_ms: i64,
+    ) -> Result<(), PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<(), PersistenceError> {
+                self.conn.execute(
+                    "INSERT INTO step_checkpoints \
+                     (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg) \
+                     VALUES (?1, ?2, 'running', NULL, NULL, ?3, NULL, NULL) \
+                     ON CONFLICT(run_id, step_id) DO UPDATE SET \
+                       status      = 'running', \
+                       output_json = NULL, \
+                       output_hash = NULL, \
+                       started_at  = COALESCE(step_checkpoints.started_at, excluded.started_at), \
+                       ended_at    = NULL, \
+                       error_msg   = NULL",
+                    params![run_id, step_id, started_at_ms],
+                )?;
+                Ok(())
+            };
+            match body() {
+                Ok(()) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
     /// List all checkpoints for one run, ordered by `(run_id, step_id)` —
     /// deterministic. Resume logic walks this in order to find the next
     /// pending step.
@@ -473,6 +691,39 @@ where
     }
 }
 
+/// Deterministic `run_id` derivation per ADR 001 + project-conventions §16.
+///
+/// `run_id = first_16_hex_chars(sha256(workflow_hash || ":" || inputs_hash || ":" || counter_LE_8))`.
+///
+/// **Domain separators (`:`) prevent collision** between e.g. a workflow
+/// named `"foo:bar"` with no inputs and a workflow named `"foo"` with
+/// inputs `"bar"`. The little-endian 8-byte counter encoding is fixed-width
+/// so the input to the hash is a stable bit string.
+///
+/// Wall-clock is intentionally NOT an input. Two independent fresh
+/// databases producing the same `(workflow_hash, inputs_hash, counter)`
+/// triple yield the same `run_id` — the determinism property the platform
+/// relies on for cross-machine replay.
+pub fn derive_run_id(workflow_hash: &str, inputs_hash: &str, counter: i64) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(workflow_hash.as_bytes());
+    hasher.update(b":");
+    hasher.update(inputs_hash.as_bytes());
+    hasher.update(b":");
+    hasher.update(counter.to_le_bytes());
+    let digest = hasher.finalize();
+    // First 8 bytes → 16 hex chars. Plenty of entropy for collision
+    // avoidance in a single-tenant store while staying short enough to
+    // be human-pasteable on a CLI line.
+    let mut out = String::with_capacity(16);
+    for b in &digest[..8] {
+        use std::fmt::Write;
+        write!(out, "{b:02x}").expect("writing to String never fails");
+    }
+    out
+}
+
 fn parse_run_row(row: &rusqlite::Row<'_>) -> Result<RunRow, SqlError> {
     let status_str: String = row.get(3)?;
     let status = RunStatus::parse_str(&status_str).ok_or_else(|| {
@@ -494,6 +745,52 @@ fn parse_run_row(row: &rusqlite::Row<'_>) -> Result<RunRow, SqlError> {
         updated_at_ms: row.get(5)?,
         policy_json: row.get(6)?,
         metadata_json: row.get(7)?,
+    })
+}
+
+fn parse_run_record(row: &rusqlite::Row<'_>) -> Result<RunRecord, SqlError> {
+    let status_str: String = row.get(3)?;
+    let status = RunStatus::parse_str(&status_str).ok_or_else(|| {
+        SqlError::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown run status '{status_str}'"),
+            )),
+        )
+    })?;
+    let terminal_status = match status {
+        RunStatus::Completed | RunStatus::Failed => Some(status),
+        RunStatus::Running | RunStatus::Paused => None,
+    };
+    Ok(RunRecord {
+        run_id: row.get(0)?,
+        workflow_name: row.get(1)?,
+        workflow_hash: row.get(2)?,
+        terminal_status,
+        policy_json: row.get(4)?,
+        metadata_json: row.get(5)?,
+    })
+}
+
+fn parse_run_operational(row: &rusqlite::Row<'_>) -> Result<RunOperational, SqlError> {
+    let status_str: String = row.get(1)?;
+    let transient_status = RunStatus::parse_str(&status_str).ok_or_else(|| {
+        SqlError::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown run status '{status_str}'"),
+            )),
+        )
+    })?;
+    Ok(RunOperational {
+        run_id: row.get(0)?,
+        transient_status,
+        started_at_ms: row.get(2)?,
+        updated_at_ms: row.get(3)?,
     })
 }
 
@@ -852,6 +1149,183 @@ mod tests {
             .upsert_step_checkpoint(&sample_checkpoint("MISSING", "S-1", StepStatus::Pending))
             .expect_err("FK violation expected");
         assert!(matches!(err, PersistenceError::Sqlite(_)));
+    }
+
+    // ── retry policy ──
+
+    // ── view structs (RunRecord / RunOperational) ──
+
+    #[test]
+    fn get_run_record_returns_none_for_missing() {
+        let store = fresh_store();
+        assert!(store.get_run_record("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_run_record_terminal_status_some_for_completed() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .update_run_status("R-1", RunStatus::Completed, 1_700_000_500_000)
+            .unwrap();
+        let rec = store.get_run_record("R-1").unwrap().expect("present");
+        assert_eq!(rec.terminal_status, Some(RunStatus::Completed));
+        assert_eq!(rec.workflow_hash, "sha256:dead");
+    }
+
+    #[test]
+    fn get_run_record_terminal_status_some_for_failed() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .update_run_status("R-1", RunStatus::Failed, 1_700_000_500_000)
+            .unwrap();
+        let rec = store.get_run_record("R-1").unwrap().expect("present");
+        assert_eq!(rec.terminal_status, Some(RunStatus::Failed));
+    }
+
+    #[test]
+    fn get_run_record_terminal_status_none_for_running() {
+        // The structural guarantee: replay code must not see a transient
+        // status. terminal_status = None means "not finished, do not
+        // compare outputs".
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        let rec = store.get_run_record("R-1").unwrap().expect("present");
+        assert_eq!(rec.terminal_status, None);
+    }
+
+    #[test]
+    fn get_run_record_terminal_status_none_for_paused() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .update_run_status("R-1", RunStatus::Paused, 1_700_000_500_000)
+            .unwrap();
+        let rec = store.get_run_record("R-1").unwrap().expect("present");
+        assert_eq!(rec.terminal_status, None);
+    }
+
+    #[test]
+    fn get_run_operational_carries_transient_status() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .update_run_status("R-1", RunStatus::Paused, 1_700_000_500_000)
+            .unwrap();
+        let op = store.get_run_operational("R-1").unwrap().expect("present");
+        assert_eq!(op.transient_status, RunStatus::Paused);
+        assert_eq!(op.updated_at_ms, 1_700_000_500_000);
+    }
+
+    // ── workflow counter + derived run_id ──
+
+    #[test]
+    fn count_runs_for_workflow_zero_on_empty() {
+        let store = fresh_store();
+        assert_eq!(store.count_runs_for_workflow("anything").unwrap(), 0);
+    }
+
+    #[test]
+    fn count_runs_for_workflow_increments_per_insert() {
+        let store = fresh_store();
+        let mut a = sample_run("A-1");
+        a.workflow_hash = "wh-A".into();
+        store.insert_run(&a).unwrap();
+        let mut a2 = sample_run("A-2");
+        a2.workflow_hash = "wh-A".into();
+        store.insert_run(&a2).unwrap();
+        let mut b = sample_run("B-1");
+        b.workflow_hash = "wh-B".into();
+        store.insert_run(&b).unwrap();
+        assert_eq!(store.count_runs_for_workflow("wh-A").unwrap(), 2);
+        assert_eq!(store.count_runs_for_workflow("wh-B").unwrap(), 1);
+        assert_eq!(store.count_runs_for_workflow("wh-C").unwrap(), 0);
+    }
+
+    #[test]
+    fn derive_run_id_is_deterministic() {
+        // D-1: same inputs → same output.
+        let a = derive_run_id("wh", "ih", 0);
+        let b = derive_run_id("wh", "ih", 0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn derive_run_id_changes_with_counter() {
+        // D-2: counter participates.
+        let a = derive_run_id("wh", "ih", 0);
+        let b = derive_run_id("wh", "ih", 1);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_run_id_changes_with_workflow_hash() {
+        // D-3
+        let a = derive_run_id("wh-1", "ih", 0);
+        let b = derive_run_id("wh-2", "ih", 0);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_run_id_changes_with_inputs_hash() {
+        // D-4
+        let a = derive_run_id("wh", "ih-1", 0);
+        let b = derive_run_id("wh", "ih-2", 0);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_run_id_golden_vector() {
+        // D-5: locks the algorithm against accidental change. The expected
+        // values were computed externally with:
+        //   printf 'dead:beef:\x00\x00\x00\x00\x00\x00\x00\x00' | shasum -a 256 | head -c 16
+        // Bumping the algorithm requires re-deriving these — that is the
+        // intended friction.
+        assert_eq!(derive_run_id("dead", "beef", 0), "11d9dfd019b20391");
+        assert_eq!(derive_run_id("dead", "beef", 1), "e13240cbb376903b");
+    }
+
+    #[test]
+    fn derive_run_id_is_16_hex_chars() {
+        let id = derive_run_id("wh", "ih", 42);
+        assert_eq!(id.len(), 16);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn insert_run_with_derived_id_atomic_counter() {
+        // The whole point of the BEGIN IMMEDIATE: counter read + insert
+        // are atomic, so two sequential inserts at counter=0 and counter=1
+        // produce different run_ids deterministically.
+        let store = fresh_store();
+        let r1 = store
+            .insert_run_with_derived_id("wf", "wh-X", "ih-1", "{}", "{}", 1_700_000_000_000)
+            .unwrap();
+        let r2 = store
+            .insert_run_with_derived_id("wf", "wh-X", "ih-1", "{}", "{}", 1_700_000_000_000)
+            .unwrap();
+        assert_ne!(r1, r2);
+        // r1 is counter=0, r2 is counter=1 — locked against the golden algorithm.
+        assert_eq!(r1, derive_run_id("wh-X", "ih-1", 0));
+        assert_eq!(r2, derive_run_id("wh-X", "ih-1", 1));
+        // Both rows are present.
+        assert_eq!(store.count_runs_for_workflow("wh-X").unwrap(), 2);
+    }
+
+    #[test]
+    fn insert_run_with_derived_id_starts_running() {
+        // Newly-inserted run must be in transient `Running` state, not
+        // accidentally inserted as a terminal one.
+        let store = fresh_store();
+        let id = store
+            .insert_run_with_derived_id("wf", "wh", "ih", "{}", r#"{"k":"v"}"#, 1_700_000_000_000)
+            .unwrap();
+        let rec = store.get_run_record(&id).unwrap().expect("present");
+        assert_eq!(rec.terminal_status, None);
+        let op = store.get_run_operational(&id).unwrap().expect("present");
+        assert_eq!(op.transient_status, RunStatus::Running);
+        assert_eq!(op.started_at_ms, 1_700_000_000_000);
     }
 
     // ── retry policy ──
