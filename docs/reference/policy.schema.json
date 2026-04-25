@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/escapeboy/boruna/blob/master/docs/reference/policy.schema.json",
+  "title": "Boruna Capability Policy",
+  "description": "Policy passed to boruna_run / boruna --policy. See docs/reference/policy-schema.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["default_allow"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "description": "Currently always 1. Bumped when the schema changes incompatibly."
+    },
+    "default_allow": {
+      "type": "boolean",
+      "description": "Behavior for capabilities not listed in rules. false = deny by default, true = allow by default."
+    },
+    "rules": {
+      "type": "object",
+      "description": "Per-capability rules. Keys are canonical capability names.",
+      "additionalProperties": { "$ref": "#/$defs/policyRule" },
+      "propertyNames": {
+        "enum": [
+          "net.fetch", "fs.read", "fs.write", "db.query", "ui.render",
+          "time.now", "random", "llm.call", "actor.spawn", "actor.send"
+        ]
+      }
+    },
+    "net_policy": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/netPolicy" }]
+    }
+  },
+  "$defs": {
+    "policyRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow", "budget"],
+      "properties": {
+        "allow": {
+          "type": "boolean",
+          "description": "Whether this capability may be invoked."
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max invocations. 0 = unlimited."
+        }
+      }
+    },
+    "netPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_domains": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Hostname allowlist. Empty = no restriction. Supports literal hosts and *.suffix patterns."
+        },
+        "allowed_methods": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "HTTP method allowlist. Empty = no restriction."
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10485760,
+          "description": "Max response body size. Default 10 MB."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30000,
+          "description": "Request timeout in milliseconds. Default 30000."
+        },
+        "allow_redirects": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to follow HTTP redirects."
+        }
+      }
+    }
+  }
+}
