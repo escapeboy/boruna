@@ -21,3 +21,6 @@ repomix.config.json
 # Runtime-generated artifact directories
 context_store/
 llm_cache/
+
+# Serena MCP project cache
+.serena/

@@ -1,0 +1,185 @@
+{
+  "project": "boruna",
+  "alt_name": "ai-lang",
+  "version": "0.1.0",
+  "generated": "2026-04-25",
+  "language": "rust",
+  "edition": "2021",
+  "description": "Deterministic, policy-gated workflow execution platform for auditable AI systems",
+  "repository": "https://github.com/escapeboy/boruna",
+  "license": "MIT",
+  "workspace": {
+    "type": "cargo",
+    "members": [
+      "crates/llmbc",
+      "crates/llmvm",
+      "crates/llmc",
+      "crates/llmfw",
+      "crates/llm-effect",
+      "crates/llmvm-cli",
+      "crates/boruna-mcp",
+      "orchestrator",
+      "packages",
+      "tooling"
+    ]
+  },
+  "crates": [
+    {
+      "dir": "crates/llmbc",
+      "name": "boruna-bytecode",
+      "rs_files": 6,
+      "purpose": "Bytecode format and Value enum",
+      "key_types": ["Op", "Module", "Function", "Value", "Capability"],
+      "deps": ["serde", "serde_json", "thiserror"]
+    },
+    {
+      "dir": "crates/llmc",
+      "name": "boruna-compiler",
+      "rs_files": 8,
+      "purpose": "Compiler pipeline: lexer → parser → typeck → codegen",
+      "entry": "compile(name, source) -> Result<Module, CompileError>",
+      "deps": ["boruna-bytecode", "logos", "thiserror"]
+    },
+    {
+      "dir": "crates/llmvm",
+      "name": "boruna-vm",
+      "rs_files": 8,
+      "purpose": "Virtual machine + capability gateway + actor system",
+      "key_types": ["Vm", "CapabilityGateway", "Policy", "ActorSystem", "ReplayEngine", "EventLog"],
+      "features": ["http"],
+      "deps": ["boruna-bytecode", "thiserror", "ureq?", "url?"]
+    },
+    {
+      "dir": "crates/llmvm-cli",
+      "name": "boruna-cli",
+      "binary": "boruna",
+      "rs_files": 2,
+      "purpose": "Main CLI",
+      "subcommands": ["compile", "run", "trace", "replay", "inspect", "ast", "framework", "lang", "trace2tests", "template", "workflow", "evidence"],
+      "features": ["serve", "http"]
+    },
+    {
+      "dir": "crates/llmfw",
+      "name": "boruna-framework",
+      "rs_files": 11,
+      "purpose": "Elm-style App protocol layer",
+      "key_types": ["AppValidator", "AppRuntime", "TestHarness", "PolicySet"]
+    },
+    {
+      "dir": "crates/llm-effect",
+      "name": "boruna-effect",
+      "rs_files": 8,
+      "purpose": "LLM integration: prompt building, context, caching"
+    },
+    {
+      "dir": "crates/boruna-mcp",
+      "name": "boruna-mcp",
+      "binary": "boruna-mcp",
+      "rs_files": 9,
+      "purpose": "MCP JSON-RPC server for AI coding agents",
+      "tools": [
+        "boruna_compile",
+        "boruna_ast",
+        "boruna_run",
+        "boruna_check",
+        "boruna_repair",
+        "boruna_validate_app",
+        "boruna_framework_test",
+        "boruna_workflow_validate",
+        "boruna_template_list",
+        "boruna_template_apply"
+      ],
+      "deps": ["rmcp 0.16", "schemars 1.0", "tokio", "tempfile"]
+    },
+    {
+      "dir": "orchestrator",
+      "name": "boruna-orchestrator",
+      "binary": "boruna-orch",
+      "rs_files": 19,
+      "purpose": "Workflow execution + hash-chained audit + multi-agent orchestration",
+      "modules": ["workflow", "audit", "engine", "patch", "conflict", "storage", "adapters"],
+      "deps": ["boruna-effect", "boruna-compiler", "boruna-vm", "sha2", "chrono"]
+    },
+    {
+      "dir": "packages",
+      "name": "boruna-pkg",
+      "binary": "boruna-pkg",
+      "rs_files": 6,
+      "purpose": "Deterministic package registry + resolver + lockfiles",
+      "key_types": ["PackageManifest"],
+      "deps": ["sha2"]
+    },
+    {
+      "dir": "tooling",
+      "name": "boruna-tooling",
+      "rs_files": 10,
+      "purpose": "Developer tooling library",
+      "modules": ["diagnostics", "repair", "trace2tests", "stdlib", "templates"]
+    }
+  ],
+  "binaries": [
+    { "name": "boruna", "crate": "boruna-cli", "path": "crates/llmvm-cli/src/main.rs" },
+    { "name": "boruna-mcp", "crate": "boruna-mcp", "path": "crates/boruna-mcp/src/main.rs" },
+    { "name": "boruna-orch", "crate": "boruna-orchestrator", "path": "orchestrator/src/main.rs" },
+    { "name": "boruna-pkg", "crate": "boruna-pkg", "path": "packages/src/main.rs" }
+  ],
+  "examples": {
+    "ax_programs": ["hello", "fibonacci", "counter", "todo", "pattern_matching", "while_loop", "capabilities"],
+    "framework_subdirs": ["framework", "admin_crud", "offline_sync_todo", "realtime_notifications", "repair_demo", "stdlib_demo", "trace_demo", "llm_patch_demo"],
+    "workflows": ["llm_code_review", "document_processing", "customer_support_triage"]
+  },
+  "libs": {
+    "count": 11,
+    "names": ["std-ui", "std-forms", "std-authz", "std-http", "std-db", "std-sync", "std-validation", "std-routing", "std-storage", "std-notifications", "std-testing"]
+  },
+  "templates": {
+    "count": 5,
+    "names": ["crud-admin", "form-basic", "auth-app", "realtime-feed", "offline-sync"]
+  },
+  "docs": {
+    "index": "docs/README.md",
+    "quickstart": "docs/QUICKSTART.md",
+    "concepts": ["docs/concepts/determinism.md", "docs/concepts/capabilities.md", "docs/concepts/evidence-bundles.md"],
+    "guides": ["docs/guides/first-workflow.md"],
+    "reference": ["docs/reference/cli.md", "docs/reference/ax-language.md"],
+    "specs": ["FRAMEWORK_SPEC", "LLM_EFFECT_SPEC", "ORCHESTRATOR_SPEC", "PACKAGE_SPEC", "STD_LIBRARIES_SPEC"],
+    "operational": ["ACTORS_GUIDE", "EFFECTS_GUIDE", "DIAGNOSTICS_AND_REPAIR", "TRACE_TO_TESTS", "TESTING_GUIDE", "OPERATIONS", "INTEGRATION_GUIDE"],
+    "compliance": ["SECURITY_MODEL", "DETERMINISM_CONTRACT", "COMPLIANCE_EVIDENCE", "PLATFORM_GOVERNANCE", "ENTERPRISE_PLATFORM_OVERVIEW"],
+    "status": ["stability.md", "roadmap.md", "faq.md", "limitations.md"]
+  },
+  "trust_files": ["README.md", "AGENTS.md", "CHANGELOG.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md", "LICENSE", "CLAUDE.md"],
+  "ci": {
+    "github_actions": ".github/workflows/ci.yml",
+    "local_script": "scripts/ci.sh",
+    "jobs": ["cargo test --workspace", "cargo clippy --workspace -- -D warnings", "cargo fmt --all -- --check"]
+  },
+  "tests": {
+    "estimated_total": 557,
+    "command_all": "cargo test --workspace",
+    "integration_dir": "tests/",
+    "per_crate_examples": ["cargo test -p boruna-compiler", "cargo test -p boruna-vm", "cargo test -p boruna-vm --features http"]
+  },
+  "key_dependencies": {
+    "serde": "1",
+    "serde_json": "1",
+    "thiserror": "2",
+    "clap": "4",
+    "logos": "0.14",
+    "tokio": "1",
+    "axum": "0.8",
+    "sha2": "0.10",
+    "chrono": "0.4",
+    "ureq": "2 (optional, http feature)",
+    "url": "2 (optional, http feature)",
+    "rmcp": "0.16",
+    "schemars": "1.0",
+    "tempfile": "3"
+  },
+  "invariants": [
+    "Determinism: same input -> same output; use BTreeMap not HashMap",
+    "Capability gating: side effects declared and enforced by CapabilityGateway",
+    "Replay: EventLog + ReplayEngine verify reruns are byte-identical",
+    "Path traversal defense in PatchBundle, ContextStore, LlmCache",
+    "CI: clippy -D warnings and fmt --check are blocking"
+  ]
+}
