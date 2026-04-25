@@ -25,6 +25,8 @@ Complete API and format documentation:
 
 - [CLI Reference](./reference/cli.md) — all `boruna` commands and options
 - [.ax Language Reference](./reference/ax-language.md) — syntax, types, capabilities
+- [MCP Server Tool Reference](./reference/mcp-server.md) — wire contract for all `boruna-mcp` tools (parameters, return shapes, `error_kind` values)
+- [Capability Policy Schema](./reference/policy-schema.md) — structured `policy` parameter for `boruna_run` and the CLI
 
 ## Product
 

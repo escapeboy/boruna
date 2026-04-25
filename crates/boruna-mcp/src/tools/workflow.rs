@@ -1,6 +1,8 @@
 use boruna_orchestrator::workflow::definition::WorkflowDef;
 use boruna_orchestrator::workflow::validator::WorkflowValidator;
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 /// Validate a workflow definition (JSON string).
 pub fn validate_workflow(workflow_json: &str) -> String {
     // Parse the workflow definition
@@ -9,6 +11,7 @@ pub fn validate_workflow(workflow_json: &str) -> String {
         Err(e) => {
             return serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "parse_error",
                 "message": format!("invalid workflow JSON: {e}"),
             })
@@ -23,6 +26,7 @@ pub fn validate_workflow(workflow_json: &str) -> String {
             let topo = WorkflowValidator::topological_order(&def);
             serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "workflow_name": def.name,
                 "workflow_version": def.version,
                 "steps_count": def.steps.len(),
@@ -43,6 +47,7 @@ pub fn validate_workflow(workflow_json: &str) -> String {
                 .collect();
             serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "validation_error",
                 "errors": error_list,
             })

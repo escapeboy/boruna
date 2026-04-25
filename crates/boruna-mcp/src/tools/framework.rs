@@ -1,6 +1,8 @@
 use boruna_bytecode::Value;
 use boruna_framework::runtime::{AppMessage, AppRuntime};
 
+use super::TOOL_RESPONSE_PROTOCOL_VERSION;
+
 /// Validate that source conforms to the App protocol.
 pub fn validate_app(source: &str) -> String {
     // Parse to AST first
@@ -22,6 +24,7 @@ pub fn validate_app(source: &str) -> String {
         Ok(result) => {
             serde_json::json!({
                 "success": true,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "has_init": result.has_init,
                 "has_update": result.has_update,
                 "has_view": result.has_view,
@@ -36,6 +39,7 @@ pub fn validate_app(source: &str) -> String {
         Err(e) => {
             serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "framework_error",
                 "message": format!("{e}"),
             })
@@ -60,6 +64,7 @@ pub fn test_app(source: &str, messages: &[String]) -> String {
         Err(e) => {
             return serde_json::json!({
                 "success": false,
+                "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                 "error_kind": "framework_error",
                 "message": format!("{e}"),
             })
@@ -91,6 +96,7 @@ pub fn test_app(source: &str, messages: &[String]) -> String {
                 // Return partial results
                 return serde_json::json!({
                     "success": false,
+                    "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
                     "error_kind": "framework_error",
                     "message": format!("cycle {} failed: {e}", cycles.len()),
                     "init_state": init_state,
@@ -103,6 +109,7 @@ pub fn test_app(source: &str, messages: &[String]) -> String {
 
     serde_json::json!({
         "success": true,
+        "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
         "init_state": init_state,
         "cycles": cycles,
         "final_state": format_value_brief(runtime.state()),
