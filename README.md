@@ -36,19 +36,39 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - Not a cloud service (Boruna runs wherever you deploy it)
 - Not yet production-ready (v0.1.0 — core is complete and tested, API evolving)
 
-## Quickstart
+## Install
+
+Pre-built static binaries are published on every tagged release:
+
+```bash
+# Linux x86_64 (musl — works on Alpine, Ubuntu, Debian, ...)
+curl -fsSL https://github.com/escapeboy/boruna/releases/latest/download/SHA256SUMS -o SHA256SUMS
+TARGET=x86_64-unknown-linux-musl
+TAR=$(grep "$TARGET" SHA256SUMS | awk '{print $2}')
+curl -fsSLO "https://github.com/escapeboy/boruna/releases/latest/download/$TAR"
+grep "$TAR" SHA256SUMS | sha256sum -c -
+tar -xzf "$TAR"
+./boruna-*-${TARGET}/boruna --version
+```
+
+Other targets: `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. See [`docs/releasing.md`](docs/releasing.md) for details.
+
+Or build from source:
 
 ```bash
 git clone https://github.com/escapeboy/boruna
 cd boruna
-cargo build --workspace
+cargo build --workspace --release
+```
 
+## Quickstart
+
+```bash
 # Run a workflow
-cargo run --bin boruna -- workflow run examples/workflows/llm_code_review \
-  --policy allow-all --record
+boruna workflow run examples/workflows/llm_code_review --policy allow-all --record
 
 # Verify the evidence bundle
-cargo run --bin boruna -- evidence verify .boruna/runs/<run-id>/
+boruna evidence verify .boruna/runs/<run-id>/
 ```
 
 **→ [Full Quickstart](docs/QUICKSTART.md)** — 10 minutes, ends with a verified evidence bundle.

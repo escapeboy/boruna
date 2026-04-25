@@ -17,6 +17,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - New documentation: `docs/reference/policy-schema.md` (prose + examples) and
   `docs/reference/policy.schema.json` (machine-readable JSON Schema 2020-12)
   for integrators rendering capability matrices in their own UIs.
+- Multi-target release workflow (`.github/workflows/release.yml`) that publishes
+  static binaries on every `v*` tag for `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`,
+  plus a combined `SHA256SUMS` checksum file. Linux builds use musl so the
+  binaries run on Alpine and other libc-minimal distributions.
+- `docs/releasing.md` — release process and verification guide.
+- README install section showing curl-and-verify install.
 
 ### Changed
 
