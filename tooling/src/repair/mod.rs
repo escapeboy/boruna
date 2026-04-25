@@ -197,7 +197,7 @@ fn apply_patch(source: &str, edits: &[TextEdit]) -> Result<String, String> {
 
     // Sort edits by start_line descending
     let mut sorted_edits: Vec<&TextEdit> = edits.iter().collect();
-    sorted_edits.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+    sorted_edits.sort_by_key(|e| std::cmp::Reverse(e.start_line));
 
     for edit in sorted_edits {
         if edit.start_line == 0 || edit.start_line > lines.len() {

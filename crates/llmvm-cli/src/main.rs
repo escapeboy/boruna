@@ -95,6 +95,22 @@ enum Command {
     /// Evidence bundle inspection and verification.
     #[command(subcommand)]
     Evidence(EvidenceCommand),
+    /// Capability surface inspection (versioned identity for caching).
+    #[command(subcommand)]
+    Capability(CapabilityCommand),
+}
+
+#[derive(Subcommand)]
+enum CapabilityCommand {
+    /// List all capabilities this binary exposes, with stable identity hash.
+    /// Use `capability_set_hash` as part of a cache key to safely memoize
+    /// deterministic results across binary upgrades.
+    /// See docs/reference/capability-identity.md.
+    List {
+        /// Output as JSON (canonical machine surface).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -473,6 +489,30 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Template(tmpl) => run_template(tmpl)?,
         Command::Workflow(wf) => run_workflow(wf)?,
         Command::Evidence(ev) => run_evidence(ev)?,
+        Command::Capability(cap) => run_capability(cap)?,
+    }
+    Ok(())
+}
+
+fn run_capability(cmd: CapabilityCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        CapabilityCommand::List { json } => {
+            let report =
+                boruna_bytecode::capability_set_report("boruna", env!("CARGO_PKG_VERSION"));
+            if json {
+                let s = serde_json::to_string_pretty(&report)?;
+                println!("{s}");
+            } else {
+                println!("{} {}", report.name, report.version);
+                println!("capability_set_hash: {}", report.capability_set_hash);
+                println!("protocol_version: {}", report.protocol_version);
+                println!();
+                println!("capabilities ({}):", report.capabilities.len());
+                for cap in &report.capabilities {
+                    println!("  {:<14} v{}", cap.name, cap.version);
+                }
+            }
+        }
     }
     Ok(())
 }

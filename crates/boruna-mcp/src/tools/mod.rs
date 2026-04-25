@@ -1,3 +1,4 @@
+pub mod capability;
 pub mod check;
 pub mod compile;
 pub mod framework;
