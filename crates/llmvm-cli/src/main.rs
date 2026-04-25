@@ -284,6 +284,18 @@ enum WorkflowCommand {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+    /// Show the full state of a single run: row, step checkpoints, and
+    /// approval-gate decisions. Use `--json` for machine-readable output
+    /// (jq-friendly). Reads from the same `--data-dir` as `run`/`resume`.
+    Show {
+        /// Run id to inspect.
+        run_id: String,
+        /// Output as JSON (machine-readable).
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// List runs in the persistent store. Optional --status filter.
     List {
         /// Filter by status: "running" | "paused" | "completed" | "failed".
@@ -1700,6 +1712,145 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 return Err("`workflow reject` requires the `persist-sqlite` feature".into());
             }
         }
+        WorkflowCommand::Show {
+            run_id,
+            json,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let detail = boruna_orchestrator::workflow::show_run(&resolved, &run_id)
+                    .map_err(|e| format!("{e}"))?;
+                if json {
+                    // Hand-build the JSON shape so the field names are
+                    // stable (do NOT serde-flatten internal types whose
+                    // shape may drift). Sorted by step_id for
+                    // deterministic output.
+                    let mut steps: Vec<&_> = detail.checkpoints.iter().collect();
+                    steps.sort_by(|a, b| a.step_id.cmp(&b.step_id));
+                    let steps_json: Vec<serde_json::Value> = steps
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "step_id": c.step_id,
+                                "status": c.status.as_str(),
+                                "output_hash": c.output_hash,
+                                "output_json_preview": c.output_json.as_ref().map(|s| {
+                                    truncate_at_char_boundary(s, 200)
+                                }),
+                                "started_at_ms": c.started_at_ms,
+                                "ended_at_ms": c.ended_at_ms,
+                                "error_msg": c.error_msg,
+                            })
+                        })
+                        .collect();
+                    let approvals_json: Vec<serde_json::Value> = detail
+                        .approvals
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!({
+                                "step_id": a.step_id,
+                                "decision": match a.decision {
+                                    boruna_orchestrator::workflow::ApprovalKind::Approved => "approved",
+                                    boruna_orchestrator::workflow::ApprovalKind::Rejected => "rejected",
+                                },
+                                "decided_at_ms": a.decided_at_ms,
+                                "reason": a.reason,
+                            })
+                        })
+                        .collect();
+                    let out = serde_json::json!({
+                        "run": {
+                            "run_id": detail.run.run_id,
+                            "workflow_name": detail.run.workflow_name,
+                            "workflow_hash": detail.run.workflow_hash,
+                            "status": detail.run.status.as_str(),
+                            "started_at_ms": detail.run.started_at_ms,
+                            "updated_at_ms": detail.run.updated_at_ms,
+                        },
+                        "steps": steps_json,
+                        "approvals": approvals_json,
+                        // Reviewed 0.3-S3 H5: surface metadata parse
+                        // failures programmatically so jq pipelines can
+                        // detect corruption (stderr is dropped when
+                        // stdout is piped).
+                        "metadata_parse_error": detail.metadata_parse_error,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    println!("=== Run ===");
+                    println!("  run_id:        {}", detail.run.run_id);
+                    println!("  workflow:      {}", detail.run.workflow_name);
+                    println!("  workflow_hash: {}", detail.run.workflow_hash);
+                    println!("  status:        {}", detail.run.status.as_str());
+                    println!("  started_at_ms: {}", detail.run.started_at_ms);
+                    println!("  updated_at_ms: {}", detail.run.updated_at_ms);
+                    println!();
+                    println!("=== Steps ===");
+                    if detail.checkpoints.is_empty() {
+                        println!("  (none)");
+                    } else {
+                        let mut steps: Vec<&_> = detail.checkpoints.iter().collect();
+                        steps.sort_by(|a, b| a.step_id.cmp(&b.step_id));
+                        println!(
+                            "  {:<24} {:<20} {:<14} {:<14} {:<24}",
+                            "STEP_ID", "STATUS", "STARTED_AT", "ENDED_AT", "OUTPUT_HASH"
+                        );
+                        for c in &steps {
+                            let hash_display = c
+                                .output_hash
+                                .as_deref()
+                                .map(|h| if h.len() >= 16 { &h[..16] } else { h })
+                                .unwrap_or("(none)");
+                            println!(
+                                "  {:<24} {:<20} {:<14} {:<14} {}",
+                                c.step_id,
+                                c.status.as_str(),
+                                c.started_at_ms
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| "-".into()),
+                                c.ended_at_ms
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| "-".into()),
+                                hash_display,
+                            );
+                            if let Some(err) = &c.error_msg {
+                                println!("    error: {err}");
+                            }
+                        }
+                    }
+                    println!();
+                    println!("=== Approvals ===");
+                    if detail.approvals.is_empty() {
+                        println!("  (none)");
+                    } else {
+                        println!(
+                            "  {:<24} {:<10} {:<14} REASON",
+                            "STEP_ID", "DECISION", "DECIDED_AT"
+                        );
+                        for a in &detail.approvals {
+                            let decision = match a.decision {
+                                boruna_orchestrator::workflow::ApprovalKind::Approved => "approved",
+                                boruna_orchestrator::workflow::ApprovalKind::Rejected => "rejected",
+                            };
+                            println!(
+                                "  {:<24} {:<10} {:<14} {}",
+                                a.step_id,
+                                decision,
+                                a.decided_at_ms,
+                                a.reason.as_deref().unwrap_or(""),
+                            );
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, json, data_dir);
+                return Err("`workflow show` requires the `persist-sqlite` feature".into());
+            }
+        }
         WorkflowCommand::List {
             status,
             json,
@@ -1765,6 +1916,25 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
         }
     }
     Ok(())
+}
+
+/// Truncate a UTF-8 string to at most `max_bytes` bytes, snapped to
+/// the nearest character boundary at-or-below `max_bytes`. Appends an
+/// ellipsis (`…`) when truncated. Reviewed 0.3-S3 (C1): naive
+/// `&s[..max_bytes]` panics if `max_bytes` lands inside a multi-byte
+/// codepoint. The `output_json_preview` field on `workflow show
+/// --json` is exposed to arbitrary user-defined step output strings,
+/// any of which can contain non-ASCII UTF-8.
+#[cfg(feature = "persist-sqlite")]
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Resolve the persistent `--data-dir` argument with the documented
@@ -1898,4 +2068,63 @@ fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> 
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "persist-sqlite"))]
+mod tests {
+    use super::truncate_at_char_boundary;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_at_char_boundary("hello", 200), "hello");
+    }
+
+    #[test]
+    fn truncate_at_exact_boundary() {
+        // 200-byte ASCII string is exactly the limit.
+        let s = "a".repeat(200);
+        assert_eq!(truncate_at_char_boundary(&s, 200), s);
+    }
+
+    #[test]
+    fn truncate_does_not_panic_on_multibyte_at_boundary() {
+        // 0.3-S3 C1 regression: prior code did `&s[..max_bytes]` which
+        // panics when the slice index lands inside a multi-byte UTF-8
+        // character. Construct a string where byte 200 lands inside a
+        // multi-byte char and verify the truncate succeeds.
+        // 'é' is 2 bytes (0xC3 0xA9) in UTF-8.
+        // 199 ASCII 'a' chars (199 bytes) + 'é' (2 bytes) = 201 bytes.
+        // truncate_at_char_boundary(s, 200) should snap down to byte
+        // 199 (after the last 'a', before 'é') — NOT panic.
+        let s = "a".repeat(199) + "é";
+        assert!(s.len() > 200, "test setup: must exceed limit");
+        // Pre-condition: byte index 200 is NOT a char boundary.
+        assert!(
+            !s.is_char_boundary(200),
+            "test setup: byte 200 must be inside the multi-byte é"
+        );
+        let out = truncate_at_char_boundary(&s, 200);
+        // Must not panic. Output must end at the 'a's, with '…' appended.
+        assert_eq!(out, format!("{}…", "a".repeat(199)));
+    }
+
+    #[test]
+    fn truncate_handles_long_multibyte_content() {
+        // Pure non-ASCII content: 100 'é' = 200 bytes. At the limit.
+        let s = "é".repeat(100);
+        assert_eq!(s.len(), 200);
+        assert_eq!(truncate_at_char_boundary(&s, 200), s);
+        // 101 'é' = 202 bytes. Truncate must snap at a char boundary.
+        let s = "é".repeat(101);
+        let out = truncate_at_char_boundary(&s, 200);
+        // The output is some truncation followed by '…'. The truncation
+        // must contain only complete 'é' characters (each 2 bytes).
+        let truncated = out.trim_end_matches('…');
+        assert!(
+            truncated.len() % 2 == 0,
+            "truncated portion must end on a char boundary; got len {}",
+            truncated.len()
+        );
+        assert!(truncated.chars().all(|c| c == 'é'));
+    }
 }

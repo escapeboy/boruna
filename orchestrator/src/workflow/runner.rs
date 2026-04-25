@@ -1250,6 +1250,102 @@ pub fn record_approval_decision(
     )))
 }
 
+/// Operator-facing view of a single approval decision, surfaced by
+/// [`show_run`]. Mirrors the internal `ApprovalDecision` struct but is
+/// the public DTO for callers (CLI, future API). Stable across the
+/// 0.3.x line.
+#[cfg(feature = "persist-sqlite")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApprovalView {
+    pub step_id: String,
+    pub decision: ApprovalKind,
+    /// Unix epoch ms — operational only; not in any audit hash.
+    pub decided_at_ms: i64,
+    pub reason: Option<String>,
+}
+
+/// Operator-facing detail view of one workflow run. Returned by
+/// [`show_run`]; consumed by `boruna workflow show`.
+///
+/// Fields are clearly labeled by their determinism contract: `run` and
+/// `checkpoints` carry both replay-verified columns (`workflow_hash`,
+/// `output_hash`, terminal `status`) and operational columns
+/// (`*_at_ms`); `approvals` is operational-only by design.
+///
+/// `metadata_parse_error` surfaces metadata-parse corruption directly
+/// in the structured output rather than relying solely on a stderr
+/// warning that gets dropped when the CLI is piped to `jq`. When
+/// `Some`, `approvals` is empty (the parse failed); operators see the
+/// corruption programmatically. Reviewed 0.3-S3 (H5/C2): prior contract
+/// was stderr-only, which made corrupt-metadata indistinguishable from
+/// no-decisions in pipeline consumers.
+#[cfg(feature = "persist-sqlite")]
+#[derive(Debug, Clone)]
+pub struct RunDetail {
+    pub run: crate::persistence::RunRow,
+    /// Step checkpoints sorted by `step_id` for deterministic output.
+    pub checkpoints: Vec<crate::persistence::StepCheckpoint>,
+    /// Approval-gate decisions sorted by `step_id`. Empty for runs
+    /// with no recorded decisions, for older 0.3-S2b databases, OR
+    /// when `metadata_parse_error` is `Some` — see that field for
+    /// disambiguation.
+    pub approvals: Vec<ApprovalView>,
+    /// `Some(<error>)` when the run's `metadata_json` failed to parse.
+    /// Operators piping `workflow show --json | jq` get a structured
+    /// signal of corruption that stderr doesn't deliver.
+    pub metadata_parse_error: Option<String>,
+}
+
+/// Fetch the full state of a single run for operator inspection.
+///
+/// Returns [`WorkflowRunError::RunNotFound`] when the run_id doesn't
+/// exist (project-conventions §1).
+///
+/// Public CLI entry for `boruna workflow show`. Corrupt
+/// `metadata_json` does NOT cause this function to fail — operators
+/// often need to inspect a corrupt run to triage. The error is
+/// surfaced through `RunDetail::metadata_parse_error` (and as a
+/// stderr warning); `run` and `checkpoints` are still authoritative.
+#[cfg(feature = "persist-sqlite")]
+pub fn show_run(data_dir: &Path, run_id: &str) -> Result<RunDetail, WorkflowRunError> {
+    let store = open_store(data_dir)?;
+    let run = store
+        .get_run(run_id)
+        .map_err(WorkflowRunError::from)?
+        .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+    let checkpoints = store
+        .list_step_checkpoints(run_id)
+        .map_err(WorkflowRunError::from)?;
+    let (approvals, metadata_parse_error) =
+        match serde_json::from_str::<PersistedRunMetadata>(&run.metadata_json) {
+            Ok(meta) => (
+                meta.approvals
+                    .into_iter()
+                    .map(|(step_id, d)| ApprovalView {
+                        step_id,
+                        decision: d.decision,
+                        decided_at_ms: d.decided_at_ms,
+                        reason: d.reason,
+                    })
+                    .collect::<Vec<_>>(),
+                None,
+            ),
+            Err(e) => {
+                eprintln!(
+                    "warning: could not parse metadata_json for run '{run_id}' \
+                     (showing run + checkpoints anyway): {e}"
+                );
+                (Vec::new(), Some(e.to_string()))
+            }
+        };
+    Ok(RunDetail {
+        run,
+        checkpoints,
+        approvals,
+        metadata_parse_error,
+    })
+}
+
 /// List all paused/running/completed/failed runs in a `data_dir`.
 /// Returns `RunRow`s ordered by `(workflow_name, run_id)`. Optional
 /// `status_filter` reuses `list_runs_by_status`.
@@ -2257,7 +2353,7 @@ mod tests {
         use super::*;
         use crate::persistence::{RunCheckpointStore, RunStatus as PersistRunStatus};
 
-        fn workflow_with_approval_gate() -> (WorkflowDef, tempfile::TempDir) {
+        pub(super) fn workflow_with_approval_gate() -> (WorkflowDef, tempfile::TempDir) {
             let dir = tempfile::tempdir().unwrap();
             let steps_dir = dir.path().join("steps");
             std::fs::create_dir_all(&steps_dir).unwrap();
@@ -2990,6 +3086,192 @@ mod tests {
                 resumed.step_results["human_review"].status,
                 StepStatus::AwaitingApproval,
                 "sentinel for a non-existent checkpoint must be ignored, not applied"
+            );
+        }
+    }
+
+    // ── 0.3-S3: workflow show ──
+
+    #[cfg(feature = "persist-sqlite")]
+    mod show {
+        use super::*;
+        use crate::persistence::RunStatus as PersistRunStatus;
+
+        // Reuse the approval-gate workflow helper.
+        fn workflow_with_approval_gate() -> (WorkflowDef, tempfile::TempDir) {
+            super::approval_gate::workflow_with_approval_gate()
+        }
+
+        #[test]
+        fn show_unknown_run_returns_not_found() {
+            let data_dir = tempfile::tempdir().unwrap();
+            // Initialize the store so the file exists.
+            let _ = crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db"))
+                .unwrap();
+            let err =
+                show_run(data_dir.path(), "ffffffffffffffff").expect_err("missing run must error");
+            match err {
+                WorkflowRunError::RunNotFound(rid) => assert_eq!(rid, "ffffffffffffffff"),
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn show_completed_run_carries_steps_and_no_approvals() {
+            let (def, wf_dir) = make_workflow_with_steps(&[
+                ("step1", "fn main() -> Int { 1 }"),
+                ("step2", "fn main() -> Int { 2 }"),
+            ]);
+            // Persist to disk so run_persistent works.
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(wf_dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(result.status, WorkflowStatus::Completed);
+
+            let detail = show_run(data_dir.path(), &result.run_id).unwrap();
+            assert_eq!(detail.run.run_id, result.run_id);
+            assert_eq!(detail.run.status, PersistRunStatus::Completed);
+            assert_eq!(detail.checkpoints.len(), 2);
+            assert!(detail.approvals.is_empty());
+            // Steps are sorted by step_id (deterministic).
+            let ids: Vec<&str> = detail
+                .checkpoints
+                .iter()
+                .map(|c| c.step_id.as_str())
+                .collect();
+            assert_eq!(ids, vec!["step1", "step2"]);
+            // Each completed step has an output_hash.
+            for cp in &detail.checkpoints {
+                assert!(
+                    cp.output_hash.is_some(),
+                    "step '{}' missing hash",
+                    cp.step_id
+                );
+            }
+        }
+
+        #[test]
+        fn show_paused_run_after_approve_carries_approval() {
+            let (def, wf_dir) = workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            // Run pauses at gate.
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(result.status, WorkflowStatus::Paused);
+            // Approve.
+            record_approval_decision(
+                data_dir.path(),
+                &result.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                Some("looks good".into()),
+            )
+            .unwrap();
+
+            let detail = show_run(data_dir.path(), &result.run_id).unwrap();
+            // Run is still Paused (resume hasn't happened yet).
+            assert_eq!(detail.run.status, PersistRunStatus::Paused);
+            // Approval is surfaced.
+            assert_eq!(detail.approvals.len(), 1);
+            assert_eq!(detail.approvals[0].step_id, "human_review");
+            assert!(matches!(
+                detail.approvals[0].decision,
+                ApprovalKind::Approved
+            ));
+            assert_eq!(detail.approvals[0].reason.as_deref(), Some("looks good"));
+            assert!(detail.approvals[0].decided_at_ms > 0);
+        }
+
+        #[test]
+        fn show_handles_corrupt_metadata_json_gracefully() {
+            // 0.3-S3 contract: corrupt metadata_json doesn't make show
+            // fail — operators need to inspect a corrupt run to triage.
+            // Run + checkpoints are still authoritative; approvals
+            // comes back empty.
+            let (def, wf_dir) = workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            // Corrupt the metadata directly.
+            let store =
+                crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db"))
+                    .unwrap();
+            store
+                .update_run_metadata(&result.run_id, "{not valid json", 0)
+                .unwrap();
+            let detail = show_run(data_dir.path(), &result.run_id).unwrap();
+            assert_eq!(detail.run.run_id, result.run_id);
+            assert!(!detail.checkpoints.is_empty());
+            assert!(
+                detail.approvals.is_empty(),
+                "corrupt metadata must yield empty approvals"
+            );
+            // Reviewed 0.3-S3 H5: parse failures must surface
+            // programmatically, not only on stderr.
+            assert!(
+                detail.metadata_parse_error.is_some(),
+                "corrupt metadata must surface metadata_parse_error"
+            );
+            // Parse error string should reference a position so
+            // operators can triage. Don't lock the exact serde_json
+            // wording (varies across versions).
+            let err = detail.metadata_parse_error.as_deref().unwrap();
+            assert!(
+                !err.is_empty() && (err.contains("line") || err.contains("column")),
+                "parse error should reference line/column; got: {err}"
+            );
+        }
+
+        #[test]
+        fn show_happy_path_metadata_parse_error_is_none() {
+            let (def, wf_dir) = make_workflow_with_steps(&[("step1", "fn main() -> Int { 1 }")]);
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(wf_dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            let detail = show_run(data_dir.path(), &result.run_id).unwrap();
+            assert!(
+                detail.metadata_parse_error.is_none(),
+                "non-corrupt metadata must yield None"
             );
         }
     }
