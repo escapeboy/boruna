@@ -54,6 +54,16 @@ enum Command {
         /// Use real HTTP handler for net.fetch (requires `http` feature).
         #[arg(long)]
         live: bool,
+        /// Record net.fetch transactions to a tape file (requires --live).
+        /// Mutually exclusive with --replay-net-from.
+        /// See docs/design-net-record-replay.md.
+        #[arg(long, conflicts_with = "replay_net_from")]
+        record_net_to: Option<PathBuf>,
+        /// Replay net.fetch transactions from a tape file. No real network
+        /// access. Mutually exclusive with --record-net-to. If --live is
+        /// also set, replay wins (no network calls happen).
+        #[arg(long, conflicts_with = "record_net_to")]
+        replay_net_from: Option<PathBuf>,
     },
     /// Run with execution tracing enabled.
     Trace {
@@ -375,9 +385,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             max_steps,
             record,
             live,
+            record_net_to,
+            replay_net_from,
         } => {
             let module = load_module(&file)?;
-            let gateway = make_gateway(&policy, live)?;
+            let gateway = make_gateway(
+                &policy,
+                live,
+                record_net_to.as_deref(),
+                replay_net_from.as_deref(),
+            )?;
             let mut vm = Vm::new(module, gateway);
             vm.set_max_steps(max_steps);
 
@@ -1196,6 +1213,8 @@ fn load_module(path: &PathBuf) -> Result<Module, Box<dyn std::error::Error>> {
 fn make_gateway(
     policy_str: &str,
     live: bool,
+    record_net_to: Option<&std::path::Path>,
+    replay_net_from: Option<&std::path::Path>,
 ) -> Result<CapabilityGateway, Box<dyn std::error::Error>> {
     let policy = match policy_str {
         "allow-all" => Policy::allow_all(),
@@ -1205,6 +1224,80 @@ fn make_gateway(
             serde_json::from_str(&json)?
         }
     };
+
+    // Replay takes precedence over both --live and --record-net-to. The clap
+    // `conflicts_with` attribute already prevents --record-net-to and
+    // --replay-net-from from coexisting; the additional check here protects
+    // against future callers of `make_gateway` who bypass the CLI parser.
+    if let Some(tape_path) = replay_net_from {
+        if record_net_to.is_some() {
+            return Err("--record-net-to and --replay-net-from are mutually exclusive".into());
+        }
+        #[cfg(feature = "http")]
+        {
+            let tape = boruna_vm::net_record_replay::NetTape::load(tape_path)?;
+            if live {
+                eprintln!(
+                    "warning: --live is ignored when --replay-net-from is set \
+                     (replay serves all net.fetch calls from the tape, no real network access)"
+                );
+            }
+            return Ok(CapabilityGateway::with_handler(
+                policy,
+                Box::new(boruna_vm::net_record_replay::ReplayingHttpHandler::new(
+                    tape,
+                )),
+            ));
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = tape_path;
+            return Err(
+                "--replay-net-from requires the `http` feature; rebuild with --features boruna-cli/http".into(),
+            );
+        }
+    }
+
+    if let Some(tape_path) = record_net_to {
+        if !live {
+            return Err(
+                "--record-net-to requires --live (recording needs real HTTP calls to record)"
+                    .into(),
+            );
+        }
+        #[cfg(feature = "http")]
+        {
+            // Fail fast: probe write access on the tape path BEFORE running
+            // the script. Save-on-drop logs but cannot signal failure to
+            // the process exit code, so a CI pipeline like
+            //   `boruna run ... --record-net-to fixtures/x && verify x`
+            // would otherwise see a successful exit AND a missing/stale
+            // tape file. Write an empty placeholder tape; the recorder
+            // overwrites it on Drop with the real content.
+            let placeholder = boruna_vm::net_record_replay::NetTape::new();
+            placeholder.save(tape_path).map_err(|e| {
+                format!(
+                    "--record-net-to: cannot write to '{}': {e}",
+                    tape_path.display()
+                )
+            })?;
+
+            let net_policy = policy.net_policy.clone().unwrap_or_default();
+            let inner = boruna_vm::http_handler::HttpHandler::new(net_policy);
+            let recorder = boruna_vm::net_record_replay::RecordingHttpHandler::with_save_path(
+                inner,
+                tape_path.to_path_buf(),
+            );
+            return Ok(CapabilityGateway::with_handler(policy, Box::new(recorder)));
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = tape_path;
+            return Err(
+                "--record-net-to requires the `http` feature; rebuild with --features boruna-cli/http".into(),
+            );
+        }
+    }
 
     if live {
         #[cfg(feature = "http")]

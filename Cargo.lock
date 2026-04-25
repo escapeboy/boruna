@@ -353,6 +353,7 @@ dependencies = [
  "boruna-bytecode",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "ureq",
  "url",
