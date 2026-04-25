@@ -220,6 +220,18 @@ impl CapabilityGateway {
     }
 
     /// Execute a capability call with policy enforcement.
+    ///
+    /// **Telemetry:** wraps the call body in a `tracing::info_span!` named
+    /// `boruna.cap` (the `cap.name` field carries the specific capability).
+    /// When no subscriber is installed (the default), the span macros are
+    /// essentially no-ops. The `telemetry` feature on `boruna-vm` adds an
+    /// OpenTelemetry exporter that consumes these spans; see
+    /// [`crate::telemetry`] and `docs/design-otel.md`.
+    ///
+    /// **Determinism contract (per ADR 001):** span attributes are
+    /// operational metadata only — never feed an `EventLog`, `AuditLog`, or
+    /// `EvidenceBundle`. Capability args are NOT included in attributes
+    /// (privacy + size); only their cumulative byte count is.
     pub fn call(
         &mut self,
         cap: &Capability,
@@ -227,6 +239,18 @@ impl CapabilityGateway {
         log: &mut EventLog,
     ) -> Result<Value, VmError> {
         let name = cap.name();
+        let bytes_in = approx_bytes(args);
+
+        // Span open. Empty fields are filled via Span::record below.
+        let span = tracing::info_span!(
+            "boruna.cap",
+            cap.name = name,
+            bytes_in = bytes_in,
+            bytes_out = tracing::field::Empty,
+            cap.budget_remaining = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        );
+        let _enter = span.enter();
 
         // Check policy
         let rule = self.policy.rules.get(name);
@@ -235,29 +259,46 @@ impl CapabilityGateway {
             None => self.policy.default_allow,
         };
         if !allowed {
+            span.record("error.kind", "denied");
             return Err(VmError::CapabilityDenied(cap.clone()));
         }
 
-        // Check budget
+        // Check budget. The `cap.budget_remaining` attribute records the
+        // **post-call** quota — number of calls still allowed AFTER this one
+        // is counted. So `cap.budget_remaining=0` means "this was the last
+        // permitted call". On the rejection path, also `0`, but distinguished
+        // by `error.kind=budget_exceeded`. Operators querying traces should
+        // join on (cap.budget_remaining, error.kind) to disambiguate.
         let count = self.usage.entry(name.to_string()).or_insert(0);
         *count += 1;
         if let Some(r) = rule {
-            if r.budget > 0 && *count > r.budget {
-                return Err(VmError::CapabilityBudgetExceeded(cap.clone()));
+            if r.budget > 0 {
+                if *count > r.budget {
+                    span.record("error.kind", "budget_exceeded");
+                    span.record("cap.budget_remaining", 0u64);
+                    return Err(VmError::CapabilityBudgetExceeded(cap.clone()));
+                }
+                span.record("cap.budget_remaining", r.budget.saturating_sub(*count));
             }
         }
 
-        // Log the call
+        // Log the call (replay-verified state)
         log.log_cap_call(cap, args);
 
         // Invoke handler
-        let result = self
-            .handler
-            .handle(cap, args)
-            .map_err(|e| VmError::AssertionFailed(format!("capability error: {e}")))?;
+        let result = match self.handler.handle(cap, args) {
+            Ok(v) => v,
+            Err(e) => {
+                span.record("error.kind", "runtime_error");
+                return Err(VmError::AssertionFailed(format!("capability error: {e}")));
+            }
+        };
 
-        // Log the result
+        // Log the result (replay-verified state)
         log.log_cap_result(cap, &result);
+
+        // Operational telemetry: record output size on the span.
+        span.record("bytes_out", approx_value_bytes(&result));
 
         Ok(result)
     }
@@ -265,4 +306,37 @@ impl CapabilityGateway {
     pub fn usage(&self) -> &BTreeMap<String, u64> {
         &self.usage
     }
+}
+
+/// Best-effort byte-count estimate for telemetry attributes only.
+///
+/// Recurses through every container variant (`List`, `Map`, `Record`,
+/// `Enum`, `Some`/`Ok`/`Err`) so that `bytes_out` for record-returning
+/// capabilities (the dominant shape for `db.query` and `llm.call`) is
+/// not structurally zero. Counts UTF-8 byte length of every embedded
+/// `String`. Numeric/Bool/Unit/None/ActorId/FnRef contribute 0 — they're
+/// fixed-size and not the payload story we're trying to surface.
+///
+/// This is OPERATIONAL metadata only; never feed it into an audit hash.
+fn approx_value_bytes(value: &Value) -> u64 {
+    match value {
+        Value::String(s) => s.len() as u64,
+        Value::List(items) => items.iter().map(approx_value_bytes).sum(),
+        Value::Map(entries) => entries
+            .iter()
+            .map(|(k, v)| k.len() as u64 + approx_value_bytes(v))
+            .sum(),
+        Value::Record { fields, .. } => fields.iter().map(approx_value_bytes).sum(),
+        Value::Enum { payload, .. } => approx_value_bytes(payload),
+        Value::Some(v) | Value::Ok(v) | Value::Err(v) => approx_value_bytes(v),
+        // Numeric / Bool / Unit / None / ActorId / FnRef: fixed-size, no
+        // string payload to surface in operational telemetry. Contribute 0.
+        _ => 0,
+    }
+}
+
+/// Cumulative byte count of `String` content reachable from the args slice
+/// (recursively, through containers). See `approx_value_bytes`.
+fn approx_bytes(args: &[Value]) -> u64 {
+    args.iter().map(approx_value_bytes).sum()
 }
