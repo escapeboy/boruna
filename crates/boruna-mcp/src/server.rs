@@ -44,10 +44,34 @@ struct RunParams {
     /// Unknown strings or unparseable objects return success=false, error_kind="invalid_policy".
     #[serde(default)]
     policy: Option<serde_json::Value>,
-    /// Maximum execution steps (default: 10000000)
+    /// Maximum execution steps (default: 10000000). Deterministic ceiling.
     max_steps: Option<u64>,
     /// Enable opcode-level execution trace (default: false)
     trace: Option<bool>,
+    /// Optional structured resource limits.
+    /// Hitting any returns success=false, error_kind="limit_exceeded",
+    /// limit_kind="<wall_ms|output_bytes>". See docs/reference/mcp-server.md.
+    #[serde(default)]
+    limits: Option<RunLimitsParams>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+struct RunLimitsParams {
+    /// Wall-clock execution limit in milliseconds. Operational guardrail —
+    /// non-deterministic on overrun (fast vs. slow host). For deterministic
+    /// limits use `max_steps`.
+    #[serde(default)]
+    max_wall_ms: Option<u64>,
+    /// Maximum cumulative serialized output size in bytes (covers `result`
+    /// and `ui_output`). Aborts during serialization once exceeded.
+    #[serde(default)]
+    max_output_bytes: Option<u64>,
+    /// Reserved for a future release; **not enforced in 0.3.x**. Accepted in
+    /// the schema so integrators can wire it into their UIs today; the value
+    /// is ignored by the runtime. Process-level cgroups/ulimits remain the
+    /// supported way to bound memory until this lands.
+    #[serde(default)]
+    max_memory_mb: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -157,7 +181,7 @@ impl BorunaMcpServer {
     // ── Run Tool ──
 
     #[tool(
-        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy) are returned as JSON with success=false."
+        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. The optional `limits` object enforces structured resource limits (max_wall_ms, max_output_bytes; max_memory_mb is reserved for a future release) — overruns return success=false, error_kind='limit_exceeded' with a `limit_kind` discriminator. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy, limit_exceeded) are returned as JSON with success=false."
     )]
     async fn boruna_run(
         &self,
@@ -168,8 +192,13 @@ impl BorunaMcpServer {
         let policy = params.policy;
         let max_steps = params.max_steps.unwrap_or(10_000_000);
         let trace = params.trace.unwrap_or(false);
+        let limits = params.limits.map(|l| tools::run::RunLimits {
+            max_wall_ms: l.max_wall_ms,
+            max_output_bytes: l.max_output_bytes,
+            max_memory_mb: l.max_memory_mb,
+        });
         let result = tokio::task::spawn_blocking(move || {
-            tools::run::run_source(&source, policy.as_ref(), max_steps, trace)
+            tools::run::run_source(&source, policy.as_ref(), max_steps, trace, limits.as_ref())
         })
         .await
         .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;

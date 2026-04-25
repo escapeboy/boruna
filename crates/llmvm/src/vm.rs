@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use boruna_bytecode::{Capability, Module, Op, Value};
 
@@ -9,6 +10,11 @@ use crate::replay::EventLog;
 
 const MAX_STACK: usize = 4096;
 const MAX_CALL_DEPTH: usize = 256;
+/// How often to check `max_wall_ms` during execution.
+/// Checking on every step would be a measurable overhead; once per N steps is
+/// cheap and keeps wall-clock granularity below ~1 ms for typical workloads.
+/// Documented in `docs/design-resource-limits.md`.
+const WALL_TIME_CHECK_EVERY: u64 = 1024;
 
 /// Result of bounded execution — the VM may complete, yield, or block.
 #[derive(Debug)]
@@ -48,6 +54,12 @@ pub struct Vm {
     event_log: EventLog,
     step_count: u64,
     max_steps: u64,
+    /// Wall-clock limit in milliseconds (None = no limit).
+    /// Checked every `WALL_TIME_CHECK_EVERY` steps inside `execute`.
+    max_wall_ms: Option<u64>,
+    /// Set when `run` / `execute` starts. Used to compute elapsed wall-clock.
+    /// `None` outside of an active execution.
+    start_time: Option<Instant>,
     /// UI tree emitted by EmitUi instructions.
     pub ui_output: Vec<Value>,
     /// Trace log for debugging.
@@ -82,6 +94,8 @@ impl Vm {
             event_log: EventLog::new(),
             step_count: 0,
             max_steps: 10_000_000,
+            max_wall_ms: None,
+            start_time: None,
             ui_output: Vec::new(),
             trace: Vec::new(),
             trace_enabled: false,
@@ -99,6 +113,34 @@ impl Vm {
         self.max_steps = max;
     }
 
+    /// Set a wall-clock execution limit in milliseconds.
+    /// Pass `None` to disable. Checked every `WALL_TIME_CHECK_EVERY` steps.
+    ///
+    /// **Honoured by both `Vm::run()` and `Vm::execute_bounded()`** — both set
+    /// `start_time` before invoking the execute loop.
+    ///
+    /// **Wall-clock-keyed.** A script that completes within the limit is
+    /// deterministic; a script that hits the limit may complete on a fast
+    /// machine and time out on a slow one. Use `set_max_steps` for the
+    /// deterministic ceiling; use this as an operational guardrail.
+    ///
+    /// **NEVER call from a code path that feeds an `EventLog`, `AuditLog`, or
+    /// `EvidenceBundle`.** A `WallTimeExceeded` error is wall-clock-keyed and
+    /// would corrupt replay verification across hosts. The orchestrator's
+    /// `Runner` deliberately does not call this; only the MCP `boruna_run`
+    /// path (one-shot user-driven execution, no audit hashing) does.
+    ///
+    /// **Does NOT interrupt blocking capability calls.** A single CapCall to
+    /// a slow handler (LLM, HTTP, DB) executes synchronously inside one VM
+    /// step — the wall-time check fires only between steps, so a 30-second
+    /// LLM call with `max_wall_ms: 100` will block for 30 seconds and only
+    /// then trigger the limit on the next step. For per-capability time
+    /// budgets, use `NetPolicy.timeout_ms` (already supported) for net.fetch
+    /// and equivalent per-handler controls when they ship for other caps.
+    pub fn set_max_wall_ms(&mut self, max_ms: Option<u64>) {
+        self.max_wall_ms = max_ms;
+    }
+
     pub fn event_log(&self) -> &EventLog {
         &self.event_log
     }
@@ -110,24 +152,51 @@ impl Vm {
     /// Run from the module entry point.
     pub fn run(&mut self) -> Result<Value, VmError> {
         let entry = self.module.entry;
-        self.call_function(entry, vec![])?;
-        self.execute()
+        // Start the wall-clock timer before any user code executes — gives the
+        // tightest accounting and ensures the limit covers the entry call too.
+        self.start_time = Some(Instant::now());
+        let result = (|| {
+            self.call_function(entry, vec![])?;
+            self.execute()
+        })();
+        // Clear the timer so a subsequent reuse of the VM doesn't accidentally
+        // measure against a stale start.
+        self.start_time = None;
+        result
     }
 
     /// Run with bounded execution budget. Returns StepResult.
     /// Call `set_entry_function()` first, then call this repeatedly.
+    ///
+    /// `max_wall_ms` (if set via `set_max_wall_ms`) is honoured — `start_time`
+    /// is initialized on the first call and reused across yields, so the
+    /// wall-time ceiling spans the full multi-step execution rather than
+    /// resetting per slice.
     pub fn execute_bounded(&mut self, budget: u64) -> StepResult {
+        // Initialize start_time on the first slice; preserve it on subsequent
+        // slices so the wall-time budget spans the entire bounded execution.
+        if self.start_time.is_none() {
+            self.start_time = Some(Instant::now());
+        }
         self.budget = Some(budget);
         self.budget_start = self.step_count;
         let result = self.execute();
         self.budget = None;
         match result {
-            Ok(val) => StepResult::Completed(val),
+            Ok(val) => {
+                // Completed — clear the timer for any future reuse.
+                self.start_time = None;
+                StepResult::Completed(val)
+            }
             Err(VmError::BudgetExhausted) => StepResult::Yielded {
                 steps_used: self.step_count - self.budget_start,
             },
             Err(VmError::MailboxEmpty) => StepResult::Blocked,
-            Err(e) => StepResult::Error(e),
+            Err(e) => {
+                // Errored out — clear the timer.
+                self.start_time = None;
+                StepResult::Error(e)
+            }
         }
     }
 
@@ -207,6 +276,19 @@ impl Vm {
             self.step_count += 1;
             if self.step_count > self.max_steps {
                 return Err(VmError::ExecutionLimitExceeded(self.max_steps));
+            }
+            // Wall-clock check (cheap when limit unset; ~1 syscall per
+            // WALL_TIME_CHECK_EVERY steps when set). Skipped during the first
+            // batch so a 0-step program with a 0-ms limit still produces a
+            // deterministic result rather than a flaky time-out.
+            if let Some(max_ms) = self.max_wall_ms {
+                if self.step_count.is_multiple_of(WALL_TIME_CHECK_EVERY) {
+                    if let Some(start) = self.start_time {
+                        if start.elapsed().as_millis() as u64 > max_ms {
+                            return Err(VmError::WallTimeExceeded(max_ms));
+                        }
+                    }
+                }
             }
             // Budget check for bounded execution
             if let Some(budget) = self.budget {

@@ -60,6 +60,9 @@ pub enum VmError {
     #[error("max execution steps exceeded ({0})")]
     ExecutionLimitExceeded(u64),
 
+    #[error("wall-clock execution limit exceeded ({0} ms)")]
+    WallTimeExceeded(u64),
+
     #[error("halt")]
     Halt,
 
