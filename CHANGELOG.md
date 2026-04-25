@@ -39,7 +39,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   parameter is `source` (not `script`) and that there is no `input` parameter.
   Linked from `docs/README.md`.
 
+### Decided
 
+- **ADR 001 — Persistence Backend** (`docs/adr/001-persistence-backend.md`).
+  SQLite via `rusqlite/bundled` chosen as the workflow-checkpoint backend.
+  No persistence-trait abstraction in v1 — direct concrete dependency.
+  Includes a determinism contract for persisted state (operational vs.
+  replay-verified columns), the writer serialization model, mandatory
+  connection PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`,
+  `busy_timeout=5000`), and an illustrative schema. Unblocks `0.3-S2`
+  through `0.3-S9` — the entire 0.3.0 critical path. Sprint `0.3-S1`.
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.
