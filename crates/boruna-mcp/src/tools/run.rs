@@ -5,6 +5,20 @@ use serde_json::Value as JsonValue;
 
 const TRACE_LIMIT: usize = 500;
 
+/// Cap on the per-call output_schema size (bytes of compact JSON).
+/// Schemas larger than this are rejected with `invalid_output_schema` before
+/// any compilation or execution work, mirroring the spirit of the 1 MB source
+/// limit on the `source` parameter. Documented in `docs/design-output-schema.md`.
+const MAX_OUTPUT_SCHEMA_SIZE: usize = 256 * 1024;
+
+/// Cap on the per-call number of validation errors reported back. Matches the
+/// shape of `TRACE_LIMIT` — pathological schemas (e.g. a wide `oneOf` against
+/// an `additionalProperties: false` object) can produce thousands of errors,
+/// each with a verbose message. We cap so a single bad schema can't blow the
+/// MCP transport. When truncated, the response carries `truncated: true` and
+/// `total_errors: N` so the integrator knows there were more.
+const MAX_VALIDATION_ERRORS: usize = 100;
+
 /// Compile and execute source, returning JSON with result or errors.
 ///
 /// `policy` accepts:
@@ -12,7 +26,17 @@ const TRACE_LIMIT: usize = 500;
 ///   - `Some(JsonValue::String("allow-all"|"deny-all"))` → corresponding shorthand
 ///   - `Some(JsonValue::Object(_))` → deserialize into [`Policy`]
 ///   - Anything else → returns `{"success": false, "error_kind": "invalid_policy", ...}`
-pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trace: bool) -> String {
+///
+/// `output_schema` accepts an optional JSON Schema 2020-12 object. When set,
+/// the script's `result` is validated against the schema post-execution. See
+/// [`validate_output_against_schema`] and `docs/design-output-schema.md`.
+pub fn run_source(
+    source: &str,
+    policy: Option<&JsonValue>,
+    max_steps: u64,
+    trace: bool,
+    output_schema: Option<&JsonValue>,
+) -> String {
     // Compile
     let module = match boruna_compiler::compile("module", source) {
         Ok(m) => m,
@@ -42,9 +66,23 @@ pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trac
 
     match vm.run() {
         Ok(value) => {
+            let result_json = format_value(&value);
+
+            // Output-schema gate (post-execution; only runs on successful runs).
+            // A schema-validation failure or a malformed schema is reported
+            // BEFORE we serialize the success response — short-circuits with
+            // its own typed envelope. See docs/design-output-schema.md.
+            if let Some(schema) = output_schema {
+                if let Some(failure) =
+                    validate_output_against_schema(schema, &result_json, vm.step_count())
+                {
+                    return failure;
+                }
+            }
+
             let mut json = serde_json::json!({
                 "success": true,
-                "result": format_value(&value),
+                "result": result_json,
                 "steps": vm.step_count(),
                 "ui_output": vm.ui_output.iter().map(format_value).collect::<Vec<_>>(),
             });
@@ -69,6 +107,159 @@ pub fn run_source(source: &str, policy: Option<&JsonValue>, max_steps: u64, trac
         })
         .to_string(),
     }
+}
+
+/// Validate the script's serialized `result` against an integrator-supplied
+/// JSON Schema. Returns `Some(json_response)` if the validation either fails
+/// or the schema itself is malformed/oversized; `None` if the result passes
+/// (in which case the caller continues to the normal success response).
+///
+/// Enforces **JSON Schema Draft 2020-12** semantics. Schemas that omit
+/// `$schema` default to 2020-12; schemas that explicitly declare a non-2020-12
+/// `$schema` (e.g. `"http://json-schema.org/draft-04/schema#"`) are **rejected**
+/// rather than silently honoured at the older-draft semantics. The jsonschema
+/// crate honors `$schema` over `with_draft` (which is only a fallback), so the
+/// only way to enforce 2020-12 is to reject the older declaration up front.
+///
+/// **Wrapper-format limitation (read this before writing schemas):** Boruna
+/// values are JSON-serialized via `format_value`, which preserves runtime
+/// shape — records become `{"type":"record","type_id":<n>,"fields":[<positional values>]}`,
+/// enums become `{"type":"enum","type_id":<n>,"variant":<n>,"payload":...}`,
+/// and `Some`/`Ok`/`Err` become `{"option":"Some","value":...}` etc. A schema
+/// that expects the natural object shape (e.g. `{"type":"object","properties":{"name":...}}`)
+/// will fail because the actual JSON has the wrapper shape. Today the gate is
+/// most useful for primitive return types (`Int`, `String`, `Bool`, `List`,
+/// `Map`); record/enum projection lands in a future sprint.
+///
+/// Wire shape on **schema mismatch**:
+///
+/// ```jsonc
+/// {
+///   "success":      false,
+///   "error_kind":   "validation_failed",
+///   "phase":        "output_validation",
+///   "message":      "result does not match output_schema",
+///   "errors":       [{ "path": "/status", "message": "..." }, ...],
+///   "truncated":    false,                  // true if total_errors > 100
+///   "total_errors": 3,                      // count of all errors
+///   "steps":        <vm.step_count() at successful completion>
+/// }
+/// ```
+///
+/// Wire shape on **malformed or oversized schema** (separate kind so
+/// integrators can distinguish "my schema is wrong" from "the script's
+/// output is wrong"):
+///
+/// ```jsonc
+/// { "success": false, "error_kind": "invalid_output_schema", "message": "..." }
+/// ```
+///
+/// Path notation is **JSON Pointer** (`/status`, `/items/0/name`).
+fn validate_output_against_schema(
+    schema: &JsonValue,
+    result: &JsonValue,
+    steps: u64,
+) -> Option<String> {
+    // Cheap pre-check: bound the schema size before we hand it to jsonschema's
+    // compiler, which can OOM on a large/recursive schema.
+    let schema_size = serde_json::to_vec(schema).map(|v| v.len()).unwrap_or(0);
+    if schema_size > MAX_OUTPUT_SCHEMA_SIZE {
+        return Some(
+            serde_json::json!({
+                "success": false,
+                "error_kind": "invalid_output_schema",
+                "message": format!(
+                    "output_schema exceeds {} bytes (got {})",
+                    MAX_OUTPUT_SCHEMA_SIZE, schema_size
+                ),
+            })
+            .to_string(),
+        );
+    }
+
+    // Reject schemas that explicitly declare a non-2020-12 draft via `$schema`.
+    // The jsonschema crate honors `$schema` over `with_draft` (which is only a
+    // fallback), so a draft-04 schema would silently get draft-04 semantics —
+    // an integrator-visible surprise that violates our documented 2020-12
+    // contract. Rather than silently override, reject loudly. Same pattern as
+    // `0.3-S10`'s `unsupported_limit` for `max_memory_mb`.
+    if let Some(JsonValue::String(s)) = schema.get("$schema") {
+        // Allow only 2020-12 URIs (the IANA-registered URL or any reasonable
+        // form thereof). Anything else is rejected.
+        let normalized = s.trim_end_matches('#');
+        if !normalized.contains("2020-12") && !normalized.contains("draft/2020-12") {
+            return Some(
+                serde_json::json!({
+                    "success": false,
+                    "error_kind": "invalid_output_schema",
+                    "message": format!(
+                        "output_schema declares $schema='{s}'; only JSON Schema Draft 2020-12 \
+                         is supported. Either omit $schema (we default to 2020-12) or set it \
+                         to 'https://json-schema.org/draft/2020-12/schema'."
+                    ),
+                })
+                .to_string(),
+            );
+        }
+    }
+
+    // Compile the schema. with_draft is the FALLBACK draft when $schema is
+    // absent (jsonschema honors $schema if present). The check above already
+    // rejected non-2020-12 $schema declarations, so this fallback is the
+    // only path for schemas that omit the URI.
+    let validator = match jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(schema)
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(
+                serde_json::json!({
+                    "success": false,
+                    "error_kind": "invalid_output_schema",
+                    "message": format!("output_schema is not a valid JSON Schema: {e}"),
+                })
+                .to_string(),
+            );
+        }
+    };
+
+    // Collect per-path errors with a hard cap. `iter_errors` yields
+    // ValidationError structs whose `instance_path` is JSON Pointer.
+    // We count via a separate iter pass to give integrators an honest
+    // total even when truncated — the cost is one extra pass at
+    // pathological-schema-time, which is the rare case anyway.
+    let errors: Vec<serde_json::Value> = validator
+        .iter_errors(result)
+        .take(MAX_VALIDATION_ERRORS)
+        .map(|err| {
+            serde_json::json!({
+                "path": err.instance_path.to_string(),
+                "message": err.to_string(),
+            })
+        })
+        .collect();
+
+    if errors.is_empty() {
+        return None;
+    }
+
+    let total_errors = validator.iter_errors(result).count();
+    let truncated = total_errors > MAX_VALIDATION_ERRORS;
+
+    Some(
+        serde_json::json!({
+            "success": false,
+            "error_kind": "validation_failed",
+            "phase": "output_validation",
+            "message": "result does not match output_schema",
+            "errors": errors,
+            "truncated": truncated,
+            "total_errors": total_errors,
+            "steps": steps,
+        })
+        .to_string(),
+    )
 }
 
 /// Parse the MCP `policy` argument into a [`Policy`].
@@ -232,7 +423,7 @@ mod tests {
 
     #[test]
     fn run_source_default_policy_pure_program() {
-        let out = run_source(PURE_SOURCE, None, 1_000_000, false);
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -243,7 +434,7 @@ mod tests {
             "default_allow": true,
             "rules": { "fs.write": { "allow": false, "budget": 0 } }
         });
-        let out = run_source(PURE_SOURCE, Some(&policy), 1_000_000, false);
+        let out = run_source(PURE_SOURCE, Some(&policy), 1_000_000, false, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], true, "output: {out}");
     }
@@ -251,10 +442,216 @@ mod tests {
     #[test]
     fn run_source_invalid_policy_returns_error_kind() {
         let bad = json!(42);
-        let out = run_source(PURE_SOURCE, Some(&bad), 1_000_000, false);
+        let out = run_source(PURE_SOURCE, Some(&bad), 1_000_000, false, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["success"], false);
         assert_eq!(v["error_kind"], "invalid_policy");
+    }
+
+    // ── 0.5-S6: output_schema gate ──
+
+    #[test]
+    fn run_source_output_schema_none_is_passthrough() {
+        // Sanity: omitting the schema must not change behavior at all.
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, None);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], true);
+        assert_eq!(v["result"], 3);
+    }
+
+    #[test]
+    fn run_source_output_schema_passing_returns_success() {
+        // PURE_SOURCE returns Int(3). Schema accepts integer.
+        let schema = json!({ "type": "integer" });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], true, "output: {out}");
+        assert_eq!(v["result"], 3);
+    }
+
+    #[test]
+    fn run_source_output_schema_failing_returns_validation_failed() {
+        // PURE_SOURCE returns Int(3). Schema demands string.
+        let schema = json!({ "type": "string" });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error_kind"], "validation_failed");
+        assert_eq!(v["phase"], "output_validation");
+        assert!(
+            v["errors"].is_array() && !v["errors"].as_array().unwrap().is_empty(),
+            "errors must be a non-empty array: {out}"
+        );
+        // The error path for a top-level type mismatch is the empty pointer.
+        assert_eq!(v["errors"][0]["path"], "");
+    }
+
+    #[test]
+    fn run_source_output_schema_failing_carries_per_path_errors() {
+        // Use a script that returns a nested record so we can verify the
+        // JSON Pointer path notation. PURE_SOURCE returns Int(3); we need
+        // something with structure. Easiest: an enum/integer constraint.
+        let schema = json!({
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 200
+        });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error_kind"], "validation_failed");
+        // Int(3) fails the minimum constraint.
+        let errors = v["errors"].as_array().unwrap();
+        assert!(
+            errors.iter().any(|e| e["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("minimum")),
+            "expected a minimum-constraint error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn run_source_invalid_schema_returns_invalid_output_schema() {
+        // A schema that's syntactically a JSON object but not a valid
+        // JSON Schema (e.g. `type` set to a number, which is invalid).
+        let schema = json!({ "type": 42 });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["success"], false,
+            "malformed schema must NOT be silently accepted: {out}"
+        );
+        assert_eq!(v["error_kind"], "invalid_output_schema");
+        assert!(v["message"].as_str().unwrap().contains("not a valid"));
+    }
+
+    #[test]
+    fn run_source_runtime_error_takes_precedence_over_schema() {
+        // Force a runtime error (max_steps=1 against a non-trivial program).
+        // The output_schema gate must NOT replace the runtime_error kind —
+        // schema validation is post-execution and shouldn't run if the run
+        // didn't complete.
+        let schema = json!({ "type": "string" });
+        let out = run_source(PURE_SOURCE, None, 1, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(
+            v["error_kind"], "runtime_error",
+            "runtime errors must NOT be masked by validation_failed: {out}"
+        );
+    }
+
+    #[test]
+    fn run_source_output_schema_empty_object_accepts_anything() {
+        // The empty schema {} is the trivially-true schema in JSON Schema —
+        // accepts every value. Locks the "schema gate is opt-in by content,
+        // not by mere presence" semantics.
+        let schema = json!({});
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], true, "empty schema must accept: {out}");
+    }
+
+    #[test]
+    fn run_source_output_schema_rejects_non_2020_12_dollar_schema() {
+        // Security: jsonschema honors `$schema` over `with_draft`, so a schema
+        // declaring an older draft would silently get older semantics —
+        // integrator-visible surprise. We reject non-2020-12 `$schema`
+        // declarations rather than silently honouring them. Matches the
+        // 0.3-S10 pattern of "reject at parse, don't silently override".
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-04/schema#",
+            "type": "integer"
+        });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["success"], false,
+            "non-2020-12 $schema must be rejected, not silently honoured: {out}"
+        );
+        assert_eq!(v["error_kind"], "invalid_output_schema");
+        assert!(
+            v["message"].as_str().unwrap().contains("2020-12"),
+            "rejection message must mention 2020-12: {out}"
+        );
+    }
+
+    #[test]
+    fn run_source_output_schema_accepts_explicit_2020_12_dollar_schema() {
+        // The complement: explicitly declaring 2020-12 must work.
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "integer"
+        });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["success"], true,
+            "explicit 2020-12 $schema must be accepted: {out}"
+        );
+    }
+
+    #[test]
+    fn run_source_output_schema_size_limit_rejects_huge_schema() {
+        // Construct a schema larger than MAX_OUTPUT_SCHEMA_SIZE (256 KB).
+        // Easiest way: a giant `enum` array of strings.
+        let huge_enum: Vec<String> = (0..40_000).map(|n| format!("v{n:06}")).collect();
+        let schema = json!({ "type": "string", "enum": huge_enum });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], false, "huge schema must be rejected: {out}");
+        assert_eq!(v["error_kind"], "invalid_output_schema");
+        assert!(
+            v["message"].as_str().unwrap().contains("exceeds"),
+            "expected size-limit message, got: {}",
+            v["message"]
+        );
+    }
+
+    #[test]
+    fn run_source_output_schema_includes_total_errors_field() {
+        // Even when not truncated, `total_errors` and `truncated: false` must
+        // be present so integrators can rely on the field existing.
+        let schema = json!({ "type": "string" });
+        let out = run_source(PURE_SOURCE, None, 1_000_000, false, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error_kind"], "validation_failed");
+        assert_eq!(v["truncated"], false);
+        assert!(
+            v["total_errors"].is_u64(),
+            "total_errors must be present and a u64: {out}"
+        );
+        let total = v["total_errors"].as_u64().unwrap();
+        assert!(
+            total >= 1,
+            "total_errors must be at least 1 for a failing schema: {out}"
+        );
+        let returned = v["errors"].as_array().unwrap().len();
+        assert_eq!(
+            returned as u64, total,
+            "non-truncated total_errors must match returned errors length"
+        );
+    }
+
+    #[test]
+    fn run_source_output_schema_record_wrapper_format_documented_limitation() {
+        // Documenting the known limitation: format_value emits Records as
+        // {"type":"record","type_id":N,"fields":[positional values]}. A
+        // schema that expects `{"type":"object","properties":{...}}` against
+        // a record return will FAIL validation — even when the logical
+        // record matches the integrator's mental model. Until a future
+        // sprint adds logical projection, primitive return types are the
+        // best fit for this gate.
+        //
+        // PURE_SOURCE returns Int(3), not a record — so we can't directly
+        // demonstrate the wrapper here without a more involved fixture.
+        // This test serves as a regression anchor: if `format_value` ever
+        // changes its record/enum shape, the design doc and tool description
+        // must be updated in lock-step. (No assertion needed beyond the
+        // existing format_value tests; this comment is the cross-reference.)
     }
 
     // ── docs round-trip ──

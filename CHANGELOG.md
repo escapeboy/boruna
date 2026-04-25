@@ -6,6 +6,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Output JSON Schema validation gate in `boruna_run`**
+  ([#8](https://github.com/escapeboy/boruna/issues/8), sprint `0.5-S6`,
+  pulled forward from 0.5.0 because FleetQ wanted it in their pipeline).
+  New optional `output_schema` parameter on the MCP `boruna_run` tool
+  accepting any JSON Schema 2020-12 object. The script's `result` is
+  validated post-execution; mismatches return
+  `error_kind: "validation_failed", phase: "output_validation"` with
+  per-path JSON Pointer errors. Malformed or oversized schemas (>256 KB)
+  return `error_kind: "invalid_output_schema"`. Schemas that explicitly
+  declare a non-2020-12 `$schema` are rejected rather than silently
+  honoured at older-draft semantics — same "reject at parse, don't
+  silently override" pattern as `0.3-S10`'s `unsupported_limit` for
+  `max_memory_mb`. Error array capped at 100 entries with `truncated`
+  and `total_errors` fields. **Known limitation:** `format_value` emits
+  Boruna records and enums as wrapper objects
+  (`{"type":"record","type_id":N,"fields":[positional values]}`); a
+  schema written for the natural object shape will not match. The gate
+  is most useful for primitive return types (`Int`, `String`, `Bool`,
+  `List`, `Map`); record/enum projection lands in a future sprint.
+  Documented in `docs/design-output-schema.md`.
+- New `jsonschema = "0.30"` dependency in `boruna-mcp` (default features
+  off — no `resolve-http` or `resolve-file`, so `$ref` to remote URLs
+  cannot trigger SSRF or arbitrary file reads).
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.

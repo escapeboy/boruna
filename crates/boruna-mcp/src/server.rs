@@ -48,6 +48,13 @@ struct RunParams {
     max_steps: Option<u64>,
     /// Enable opcode-level execution trace (default: false)
     trace: Option<bool>,
+    /// Optional JSON Schema 2020-12 object. When set, the script's `result`
+    /// is validated against the schema after a successful run. A failure
+    /// returns success=false, error_kind="validation_failed", phase=
+    /// "output_validation", with per-path errors. A malformed schema returns
+    /// error_kind="invalid_output_schema". See docs/design-output-schema.md.
+    #[serde(default)]
+    output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -157,7 +164,7 @@ impl BorunaMcpServer {
     // ── Run Tool ──
 
     #[tool(
-        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy) are returned as JSON with success=false."
+        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. The optional `output_schema` parameter accepts a JSON Schema 2020-12 object; when set, the script's result is validated against it post-execution and a mismatch returns success=false, error_kind='validation_failed' with per-path errors. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy, validation_failed, invalid_output_schema) are returned as JSON with success=false."
     )]
     async fn boruna_run(
         &self,
@@ -168,8 +175,15 @@ impl BorunaMcpServer {
         let policy = params.policy;
         let max_steps = params.max_steps.unwrap_or(10_000_000);
         let trace = params.trace.unwrap_or(false);
+        let output_schema = params.output_schema;
         let result = tokio::task::spawn_blocking(move || {
-            tools::run::run_source(&source, policy.as_ref(), max_steps, trace)
+            tools::run::run_source(
+                &source,
+                policy.as_ref(),
+                max_steps,
+                trace,
+                output_schema.as_ref(),
+            )
         })
         .await
         .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
