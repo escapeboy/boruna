@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Multi-target release workflow (`.github/workflows/release.yml`) that publishes
+  static binaries on every `v*` tag for `x86_64-unknown-linux-musl`,
+  `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`,
+  plus a combined `SHA256SUMS` checksum file. Linux builds use musl so the
+  binaries run on Alpine and other libc-minimal distributions.
+- `docs/releasing.md` — release process and verification guide.
+- README install section showing curl-and-verify install.
+
 ## [0.1.0] - 2026-02-21
 
 ### Added
