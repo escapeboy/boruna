@@ -6,6 +6,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- MCP `boruna_run` tool now accepts a structured `Policy` object for the `policy`
+  parameter, in addition to the existing `"allow-all"` / `"deny-all"` string
+  shorthands. This exposes the per-capability rules (`allow`, `budget`),
+  `default_allow` mode (allowlist vs. denylist), and `net_policy` (allowed
+  domains, methods, byte limits, timeout) that the VM has always supported.
+  See `docs/reference/policy-schema.md` and `docs/reference/policy.schema.json`.
+- New documentation: `docs/reference/policy-schema.md` (prose + examples) and
+  `docs/reference/policy.schema.json` (machine-readable JSON Schema 2020-12)
+  for integrators rendering capability matrices in their own UIs.
+
+### Changed
+
+- **Breaking (MCP only):** `boruna_run` now rejects unknown `policy` values
+  (e.g. typo'd strings, numbers, arrays) with `success: false,
+  error_kind: "invalid_policy"` instead of silently treating them as
+  `"allow-all"`. The legacy strings `"allow-all"` and `"deny-all"` continue
+  to behave identically.
+
 ## [0.1.0] - 2026-02-21
 
 ### Added

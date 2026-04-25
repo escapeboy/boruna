@@ -37,8 +37,13 @@ struct AstParams {
 struct RunParams {
     /// The .ax source code to run
     source: String,
-    /// Capability policy: 'allow-all' or 'deny-all' (default: 'allow-all')
-    policy: Option<String>,
+    /// Capability policy. Either:
+    ///   - String shorthand "allow-all" or "deny-all" (default: "allow-all")
+    ///   - A Policy object — see docs/reference/policy-schema.md for the schema and examples
+    ///
+    /// Unknown strings or unparseable objects return success=false, error_kind="invalid_policy".
+    #[serde(default)]
+    policy: Option<serde_json::Value>,
     /// Maximum execution steps (default: 10000000)
     max_steps: Option<u64>,
     /// Enable opcode-level execution trace (default: false)
@@ -160,11 +165,11 @@ impl BorunaMcpServer {
     ) -> Result<CallToolResult, McpError> {
         validate_source(&params.source)?;
         let source = params.source;
-        let policy = params.policy.unwrap_or_else(|| "allow-all".into());
+        let policy = params.policy;
         let max_steps = params.max_steps.unwrap_or(10_000_000);
         let trace = params.trace.unwrap_or(false);
         let result = tokio::task::spawn_blocking(move || {
-            tools::run::run_source(&source, &policy, max_steps, trace)
+            tools::run::run_source(&source, policy.as_ref(), max_steps, trace)
         })
         .await
         .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
