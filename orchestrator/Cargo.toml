@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+default = ["persist-sqlite"]
 http = ["boruna-vm/http"]
+# SQLite-backed persistent workflow checkpoint store. See ADR 001 +
+# docs/design-persistence-store.md. Off-by-default in downstream binaries
+# that don't need persistence (boruna-mcp, boruna-pkg); on by default for
+# the orchestrator itself.
+persist-sqlite = ["dep:rusqlite"]
 
 [[bin]]
 name = "boruna-orch"
@@ -17,6 +22,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 clap = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
@@ -25,6 +31,10 @@ boruna-effect = { path = "../crates/llm-effect" }
 boruna-compiler = { path = "../crates/llmc" }
 boruna-vm = { path = "../crates/llmvm" }
 boruna-bytecode = { path = "../crates/llmbc" }
+# rusqlite with the `bundled` feature compiles SQLite from C source so the
+# orchestrator binary stays statically linked (per ADR 001's musl
+# requirement). Confirmed by the probe in the ADR sprint.
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
