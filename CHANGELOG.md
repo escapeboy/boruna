@@ -8,6 +8,47 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`boruna workflow show <run-id>` CLI** (sprint `0.3-S3`). Operator
+  inspection of a single run's full state: row, step checkpoints with
+  truncated output preview, and approval sentinels. Plain-mode tabular
+  output mirrors `workflow list`'s aesthetic; `--json` emits a stable
+  pipe-friendly document for `jq` consumers. Returns
+  `RunNotFound` for unknown ids (project-conventions §1).
+- New library API: `boruna_orchestrator::workflow::{show_run,
+  RunDetail, ApprovalView}`. `RunDetail` carries a
+  `metadata_parse_error: Option<String>` field so corrupt-metadata
+  signals reach pipeline consumers (review-driven 0.3-S3 H5: stderr
+  warnings are silently dropped when stdout is piped).
+
+### Fixed
+
+- **Atomic-rename in `DataStore::store_output`** (sprint `0.3-S3`,
+  closes H4 deferral from 0.3-S2c). Replaces the previous
+  `std::fs::write` (non-atomic) with
+  `tempfile::NamedTempFile::persist`. Concurrent readers — including
+  another resumed run process — see either the old contents or the
+  new contents, never a partial torn write. Process-crash safe;
+  full power-loss safety still requires a parent-directory fsync,
+  documented honestly in the method docstring as the next hardening
+  pass.
+- **`output_hash` now equals `sha256sum result.json`** (review-driven
+  0.3-S3 H2/H3). Previously `hash_value` used compact JSON while
+  `store_output` wrote pretty-printed JSON, so an operator running
+  `sha256sum runs/<id>/outputs/<step>/result.json` got a different
+  hex than the persisted `output_hash` column — a UX footgun. All
+  three (the hash input, the on-disk file bytes, and the
+  `step_checkpoints.output_json` SQL column) are now the same compact
+  serialization. Locked by a regression test that compares
+  `sha256sum`-equivalent of the on-disk bytes against `hash_value`.
+- **`workflow show --json` no longer panics on multi-byte UTF-8 in
+  step output** (review-driven 0.3-S3 C1). Prior code did
+  `&output_json[..200]` to truncate the preview field, which panicked
+  if byte index 200 landed inside a multi-byte codepoint. New
+  `truncate_at_char_boundary` helper snaps to the nearest char
+  boundary at-or-below the byte budget. Locked by 4 regression
+  tests covering pure ASCII, exact-boundary, multi-byte-at-boundary,
+  and pure-multi-byte content.
+
 - **Approval-gate completion CLI** (sprint `0.3-S2c`). Three new
   `boruna workflow` subcommands close the operator UX deferred from
   `0.3-S2b`:
