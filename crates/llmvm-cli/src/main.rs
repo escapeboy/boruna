@@ -260,6 +260,41 @@ enum WorkflowCommand {
         #[arg(long, conflicts_with = "data_dir")]
         ephemeral: bool,
     },
+    /// Approve a paused approval-gate step. Records an approval sentinel
+    /// in the run's metadata; the operator must run `boruna workflow
+    /// resume <run-id>` afterward to advance the run past the gate.
+    Approve {
+        /// Run id (16-hex deterministic id from `boruna workflow run`).
+        run_id: String,
+        /// Step id of the approval gate to approve.
+        step_id: String,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// Reject a paused approval-gate step. Records a rejection sentinel;
+    /// `boruna workflow resume <run-id>` will then halt the run as
+    /// Failed with the optional reason as the error message.
+    Reject {
+        run_id: String,
+        step_id: String,
+        /// Optional human-readable rejection reason. Surfaces in the
+        /// resumed run's step error_msg.
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// List runs in the persistent store. Optional --status filter.
+    List {
+        /// Filter by status: "running" | "paused" | "completed" | "failed".
+        #[arg(long)]
+        status: Option<String>,
+        /// Output as JSON (machine-readable).
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Resume a previously-paused or crashed workflow run by id.
     Resume {
         /// Run id (16-hex-character deterministic id from `boruna workflow run`).
@@ -1604,6 +1639,128 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 return Err("`workflow resume` requires the `persist-sqlite` feature \
                             (on by default in boruna-orchestrator)"
                     .into());
+            }
+        }
+        WorkflowCommand::Approve {
+            run_id,
+            step_id,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                record_approval_decision(
+                    &resolved,
+                    &run_id,
+                    &step_id,
+                    ApprovalKind::Approved,
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                println!("approval recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, data_dir);
+                return Err("`workflow approve` requires the `persist-sqlite` feature".into());
+            }
+        }
+        WorkflowCommand::Reject {
+            run_id,
+            step_id,
+            reason,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                record_approval_decision(
+                    &resolved,
+                    &run_id,
+                    &step_id,
+                    ApprovalKind::Rejected,
+                    reason,
+                )
+                .map_err(|e| format!("{e}"))?;
+                println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to halt the run.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, reason, data_dir);
+                return Err("`workflow reject` requires the `persist-sqlite` feature".into());
+            }
+        }
+        WorkflowCommand::List {
+            status,
+            json,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::persistence::RunStatus as PersistRunStatus;
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let filter = match status.as_deref() {
+                    None => None,
+                    Some("running") => Some(PersistRunStatus::Running),
+                    Some("paused") => Some(PersistRunStatus::Paused),
+                    Some("completed") => Some(PersistRunStatus::Completed),
+                    Some("failed") => Some(PersistRunStatus::Failed),
+                    Some(other) => {
+                        return Err(format!(
+                            "unknown status '{other}' (expected: running | paused | completed | failed)"
+                        )
+                        .into())
+                    }
+                };
+                let runs = boruna_orchestrator::workflow::list_runs(&resolved, filter)
+                    .map_err(|e| format!("{e}"))?;
+                if json {
+                    let arr: Vec<serde_json::Value> = runs
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "run_id": r.run_id,
+                                "workflow_name": r.workflow_name,
+                                "status": r.status.as_str(),
+                                "started_at_ms": r.started_at_ms,
+                                "updated_at_ms": r.updated_at_ms,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&arr)?);
+                } else if runs.is_empty() {
+                    println!("(no runs)");
+                } else {
+                    println!(
+                        "{:<12} {:<20} {:<32} {:<14} {:<14}",
+                        "STATUS", "RUN_ID", "WORKFLOW", "STARTED_AT", "UPDATED_AT"
+                    );
+                    for r in &runs {
+                        println!(
+                            "{:<12} {:<20} {:<32} {:<14} {:<14}",
+                            r.status.as_str(),
+                            r.run_id,
+                            r.workflow_name,
+                            r.started_at_ms,
+                            r.updated_at_ms,
+                        );
+                    }
+                }
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (status, json, data_dir);
+                return Err("`workflow list` requires the `persist-sqlite` feature".into());
             }
         }
     }

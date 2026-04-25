@@ -8,6 +8,65 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Approval-gate completion CLI** (sprint `0.3-S2c`). Three new
+  `boruna workflow` subcommands close the operator UX deferred from
+  `0.3-S2b`:
+  - `boruna workflow approve <run-id> <step-id> --data-dir <PATH>` —
+    records an approval sentinel in the run's `metadata.approvals.<step>`.
+  - `boruna workflow reject <run-id> <step-id> [--reason <STR>]
+    --data-dir <PATH>` — records a rejection sentinel; the optional
+    reason surfaces as the step's `error_msg` on resume.
+  - `boruna workflow list [--status <STATUS>] [--json]
+    --data-dir <PATH>` — lists runs ordered by `(workflow_name, run_id)`,
+    optionally filtered by `running` / `paused` / `completed` / `failed`.
+  After `approve`, the operator runs `boruna workflow resume <run-id>` to
+  advance the gate to `Completed` (with a synthetic empty-record output
+  whose hash is locked by a regression test) and execute downstream
+  steps. After `reject`, resume halts the run as `Failed` with the
+  recorded reason.
+- **Approval sentinel mechanism on `metadata.approvals`**. The runner's
+  `PersistedRunMetadata` now carries a `BTreeMap<step_id,
+  ApprovalDecision>`. Each decision records `decision`
+  (`approved`/`rejected`), `decided_at_ms` (operational only — does not
+  feed any audit hash), and an optional human-readable `reason`.
+  Backward compatible with `0.3-S2b` databases: the field defaults to
+  empty if absent.
+- New library API: `boruna_orchestrator::workflow::record_approval_decision`,
+  `list_runs`, `ApprovalKind`, plus error variants `StepNotFound`,
+  `StepNotAtApprovalGate { current_status }`, `StepAlreadyDecided
+  { prior_decision }`, `NotAnApprovalGateStep`, `RunNotResumable
+  { terminal_status }` (project-conventions §1).
+- New `boruna_orchestrator::persistence::{get_run_metadata,
+  update_run_metadata, compare_and_swap_metadata, list_runs}` methods.
+  `compare_and_swap_metadata` is the atomicity primitive for the
+  approve/reject flow's read-validate-write cycle.
+
+### Fixed
+
+- **Race in `record_approval_decision`** (review-driven, 0.3-S2c).
+  Previous implementation's read+validate+write spanned three separate
+  SQL transactions; two concurrent operators could both pass the
+  in-memory prior-decision check and silently overwrite each other's
+  decision. Now wrapped in a CAS retry loop via the new
+  `compare_and_swap_metadata` primitive — exactly one writer succeeds;
+  the others surface a clean `StepAlreadyDecided` error. Locked by a
+  4-thread regression test asserting "exactly 1 ok, 3 already-decided."
+- **Resume halt-cause attribution.** When both an independently-failed
+  step (e.g. from a crashed prior run) and a rejected approval gate
+  exist for the same run, the resume's `halt_with_failed_step` now
+  preserves the FIRST failure (the actual root cause the operator
+  should chase) rather than overwriting with the gate rejection.
+- **Sentinel for non-`awaiting_approval` checkpoint** now emits an
+  explicit `eprintln!` warning rather than silently no-op'ing, so
+  operators see when their approval doesn't apply (e.g., pre-approval
+  for a step the workflow hasn't reached, or stale sentinel for an
+  already-terminal step).
+- **Defense-in-depth `StepKind::ApprovalGate` re-validation in resume.**
+  Synthetic empty-record output is now refused for non-gate steps even
+  if a sentinel slipped past `record_approval_decision`'s validation
+  (e.g. via a future code path bypass). Surfaces as
+  `WorkflowRunError::Internal`.
+
 - **Persistent workflow runs survive process restarts** (sprint `0.3-S2b`).
   Wires the SQLite-backed `RunCheckpointStore` shipped in `0.3-S2a` into
   `WorkflowRunner`. New `boruna workflow run --data-dir <PATH>` writes a

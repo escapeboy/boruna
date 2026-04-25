@@ -402,6 +402,144 @@ impl RunCheckpointStore {
         }
     }
 
+    /// Read the raw `metadata_json` column for a run. Returned verbatim
+    /// — callers (the `WorkflowRunner`) deserialize into typed shapes.
+    /// `Ok(None)` if the run doesn't exist.
+    ///
+    /// Introduced in `0.3-S2c` to support the approve / reject CLI paths
+    /// that round-trip the metadata blob.
+    pub fn get_run_metadata(&self, run_id: &str) -> Result<Option<String>, PersistenceError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT metadata_json FROM runs WHERE run_id = ?1")?;
+        let mut rows = stmt.query(params![run_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Update only the `metadata_json` column (and the operational
+    /// `updated_at` timestamp). Returns `PersistenceError::NotFound` for
+    /// an unknown `run_id` — same silent-no-op-rejection pattern as
+    /// [`update_run_status`].
+    ///
+    /// Wrapped in `BEGIN IMMEDIATE` so a concurrent approve/reject
+    /// operation against the same row serializes correctly. Read-modify-
+    /// write callers (e.g. `record_approval_decision`) should hold their
+    /// own outer atomicity if they need read+write coordinated.
+    pub fn update_run_metadata(
+        &self,
+        run_id: &str,
+        metadata_json: &str,
+        updated_at_ms: i64,
+    ) -> Result<(), PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<(), PersistenceError> {
+                let rows_affected = self.conn.execute(
+                    "UPDATE runs SET metadata_json = ?1, updated_at = ?2 WHERE run_id = ?3",
+                    params![metadata_json, updated_at_ms, run_id],
+                )?;
+                if rows_affected == 0 {
+                    return Err(PersistenceError::NotFound {
+                        entity: "run",
+                        key: run_id.to_string(),
+                    });
+                }
+                Ok(())
+            };
+            match body() {
+                Ok(()) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Compare-and-swap variant of [`update_run_metadata`]. Atomically
+    /// updates `metadata_json` ONLY if the on-disk value still equals
+    /// `expected_prior_json` byte-for-byte. Returns `Ok(true)` on a
+    /// successful swap, `Ok(false)` if the metadata has drifted (a
+    /// concurrent writer changed it). The unique-row UPDATE is wrapped
+    /// in `BEGIN IMMEDIATE` + busy-retry like every other writer.
+    ///
+    /// Used by `record_approval_decision` to close the read-validate-
+    /// write race that the prior 3-transaction implementation had: two
+    /// concurrent `approve` calls could both pass the in-memory prior-
+    /// decision check (each reading their own pre-write snapshot) and
+    /// then race the UPDATE, with the loser silently overwriting the
+    /// winner. With CAS, the loser's UPDATE matches 0 rows; the caller
+    /// re-reads and surfaces the typed `StepAlreadyDecided` error.
+    ///
+    /// Returns `PersistenceError::NotFound` if the `run_id` does not
+    /// exist (regardless of expected_prior_json).
+    pub fn compare_and_swap_metadata(
+        &self,
+        run_id: &str,
+        expected_prior_json: &str,
+        new_metadata_json: &str,
+        updated_at_ms: i64,
+    ) -> Result<bool, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<bool, PersistenceError> {
+                // Verify the run exists at all.
+                let exists: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Err(PersistenceError::NotFound {
+                        entity: "run",
+                        key: run_id.to_string(),
+                    });
+                }
+                let rows_affected = self.conn.execute(
+                    "UPDATE runs SET metadata_json = ?1, updated_at = ?2 \
+                     WHERE run_id = ?3 AND metadata_json = ?4",
+                    params![
+                        new_metadata_json,
+                        updated_at_ms,
+                        run_id,
+                        expected_prior_json
+                    ],
+                )?;
+                Ok(rows_affected > 0)
+            };
+            match body() {
+                Ok(swapped) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(swapped)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// List ALL runs, ordered by `(workflow_name, run_id)` —
+    /// deterministic, not timestamp-keyed. Use [`list_runs_by_status`]
+    /// for the filtered case.
+    pub fn list_runs(&self) -> Result<Vec<RunRow>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, workflow_name, workflow_hash, status, started_at, updated_at, policy_json, metadata_json \
+             FROM runs ORDER BY workflow_name, run_id",
+        )?;
+        let rows = stmt
+            .query_map([], parse_run_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// List runs with the given status, ordered by `(workflow_name, run_id)`
     /// — deterministic, not timestamp-keyed (per the determinism contract).
     /// Uses the `idx_runs_status` index.
@@ -1326,6 +1464,83 @@ mod tests {
         let op = store.get_run_operational(&id).unwrap().expect("present");
         assert_eq!(op.transient_status, RunStatus::Running);
         assert_eq!(op.started_at_ms, 1_700_000_000_000);
+    }
+
+    // ── metadata round-trip + list_runs (0.3-S2c) ──
+
+    #[test]
+    fn get_run_metadata_returns_none_for_missing() {
+        let store = fresh_store();
+        assert!(store.get_run_metadata("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_run_metadata_round_trips_string() {
+        let store = fresh_store();
+        let mut r = sample_run("R-1");
+        r.metadata_json = r#"{"k":"v","approvals":{}}"#.to_string();
+        store.insert_run(&r).unwrap();
+        let got = store.get_run_metadata("R-1").unwrap().unwrap();
+        assert_eq!(got, r#"{"k":"v","approvals":{}}"#);
+    }
+
+    #[test]
+    fn update_run_metadata_changes_metadata_and_updated_at() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        let new_meta = r#"{"approvals":{"S-1":{"decision":"approved","decided_at_ms":42}}}"#;
+        store
+            .update_run_metadata("R-1", new_meta, 1_700_000_999_000)
+            .unwrap();
+        let got = store.get_run_metadata("R-1").unwrap().unwrap();
+        assert_eq!(got, new_meta);
+        let op = store.get_run_operational("R-1").unwrap().unwrap();
+        assert_eq!(op.updated_at_ms, 1_700_000_999_000);
+    }
+
+    #[test]
+    fn update_run_metadata_returns_not_found_for_missing() {
+        let store = fresh_store();
+        let err = store
+            .update_run_metadata("nope", "{}", 0)
+            .expect_err("missing run must error");
+        match err {
+            PersistenceError::NotFound { entity, key } => {
+                assert_eq!(entity, "run");
+                assert_eq!(key, "nope");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_runs_empty_db() {
+        let store = fresh_store();
+        let runs = store.list_runs().unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_returns_all_ordered_by_workflow_name_run_id() {
+        let store = fresh_store();
+        let mut a = sample_run("R-1");
+        a.workflow_name = "z-late".into();
+        a.status = RunStatus::Running;
+        let mut b = sample_run("R-2");
+        b.workflow_name = "a-early".into();
+        b.status = RunStatus::Completed;
+        let mut c = sample_run("R-3");
+        c.workflow_name = "a-early".into();
+        c.status = RunStatus::Failed;
+        store.insert_run(&a).unwrap();
+        store.insert_run(&b).unwrap();
+        store.insert_run(&c).unwrap();
+        let runs = store.list_runs().unwrap();
+        assert_eq!(runs.len(), 3);
+        // Sorted by (workflow_name, run_id) — deterministic, NOT by timestamps.
+        assert_eq!(runs[0].run_id, "R-2"); // a-early, R-2
+        assert_eq!(runs[1].run_id, "R-3"); // a-early, R-3
+        assert_eq!(runs[2].run_id, "R-1"); // z-late, R-1
     }
 
     // ── retry policy ──
