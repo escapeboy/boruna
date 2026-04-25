@@ -239,6 +239,53 @@ mod tests {
     }
 
     #[test]
+    fn test_wall_time_limit_fires_on_long_running_program() {
+        // 0.3-S10: max_wall_ms enforcement.
+        // Run a program that loops up to step_limit while a 1ms wall clock
+        // applies. The check fires every WALL_TIME_CHECK_EVERY (1024) steps;
+        // give the loop room to do many checks. On any modern host, looping
+        // ~1M steps takes well over 1ms wall clock.
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Pop, Op::Jmp(0)],
+            vec![Value::Int(0)],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.set_max_steps(10_000_000);
+        vm.set_max_wall_ms(Some(1));
+        let err = vm.run().expect_err("expected WallTimeExceeded");
+        match err {
+            VmError::WallTimeExceeded(ms) => assert_eq!(ms, 1),
+            other => panic!("expected WallTimeExceeded(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_wall_time_limit_unset_does_not_fire() {
+        // Sanity: a short program runs fine without any wall-clock limit set.
+        // Locks the contract that None = no enforcement.
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(42)]);
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.set_max_wall_ms(None);
+        let result = vm.run().expect("program should run");
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_wall_time_limit_generous_does_not_fire() {
+        // Setting an absurdly high wall-clock limit on a fast program should
+        // NOT cause spurious WallTimeExceeded errors. Locks against an
+        // accidental "always-checking-against-zero" bug.
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(7)]);
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.set_max_wall_ms(Some(60_000)); // 60s — surely more than enough
+        let result = vm.run().expect("program should complete well under 60s");
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
     fn test_capability_denied() {
         let module = simple_module(
             vec![

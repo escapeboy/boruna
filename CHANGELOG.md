@@ -38,6 +38,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   had to read `crates/boruna-mcp/src/server.rs` to learn that `boruna_run`'s
   parameter is `source` (not `script`) and that there is no `input` parameter.
   Linked from `docs/README.md`.
+- **Structured resource limits in `boruna_run`** ([#5](https://github.com/escapeboy/boruna/issues/5),
+  sprint `0.3-S10`, FleetQ P1). New optional `limits` parameter on the MCP
+  `boruna_run` tool accepting `max_wall_ms`, `max_output_bytes`, and
+  `max_memory_mb`. Overruns return a typed
+  `error_kind: "limit_exceeded"` with a `limit_kind` discriminator
+  (`"wall_ms"` or `"output_bytes"`), the configured `limit`, and a
+  human-readable `message` — so callers can surface clean per-limit UX
+  instead of parsing error strings. `max_memory_mb` is accepted in the
+  schema but **not enforced** in 0.3.x (documented as platform-best-effort
+  pending Linux `setrlimit` work in a future sprint).
+- New `boruna-vm::error::VmError::WallTimeExceeded(u64)` variant and
+  `Vm::set_max_wall_ms(Option<u64>)` setter. Wall-clock checked every 1024
+  steps inside the execute loop; uses `std::time::Instant` (not
+  `chrono::Utc::now()` per ADR 001 determinism contract). Wall-time
+  enforcement is wall-clock-keyed and therefore non-deterministic on
+  overrun by construction — `max_steps` remains the deterministic
+  ceiling; `max_wall_ms` is the operational guardrail.
 
 ### Decided
 
@@ -49,6 +66,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   connection PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`,
   `busy_timeout=5000`), and an illustrative schema. Unblocks `0.3-S2`
   through `0.3-S9` — the entire 0.3.0 critical path. Sprint `0.3-S1`.
+
+
 ## [0.2.0] - 2026-04-25
 
 Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement) (production integrator). This release closes the two P0 adoption blockers; remaining P1/P2 asks are tracked as issues #3–#9.
