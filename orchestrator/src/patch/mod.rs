@@ -157,7 +157,7 @@ impl PatchBundle {
 
             // Apply hunks in reverse order to preserve line numbers
             let mut sorted_hunks = patch.hunks.clone();
-            sorted_hunks.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+            sorted_hunks.sort_by_key(|h| std::cmp::Reverse(h.start_line));
 
             for hunk in &sorted_hunks {
                 let start = hunk.start_line.saturating_sub(1); // 1-indexed to 0-indexed
