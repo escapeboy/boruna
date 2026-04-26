@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sequential failure path persists actual `attempt_count`** (sprint
+  `0.3-S13`, closes carried-forward limitation from 0.3-S11). Prior
+  to this, the sequential `execute_steps` failure branch defaulted
+  to `attempt_count=1` even after retry exhaustion — so a step
+  configured with `max_attempts: 3` that exhausted all 3 attempts
+  showed up as `attempt_count=1` in the persisted SQL row and on
+  `workflow show`. The error message correctly said "failed after 3
+  attempts" but the column lied. Fix: `execute_source_step` now
+  returns `Result<StepResult, (WorkflowRunError, u32)>` carrying
+  the count on both branches; the caller threads it through to the
+  Failed checkpoint upsert. Concurrent path was already correct.
+
 ### Added
 
 - **`workflow show` surfaces `attempt_count`** (sprint `0.3-S12`).
