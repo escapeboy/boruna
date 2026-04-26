@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use boruna_vm::capability_gateway::{CapabilityGateway, Policy, PolicyRule};
+use boruna_vm::error::VmError;
 use boruna_vm::Vm;
 
 use crate::workflow::data_flow::DataStore;
@@ -1886,6 +1887,12 @@ impl WorkflowRunner {
     ///
     /// Extracted in `0.3-S4` so worker threads can call into the same
     /// compile+run path without holding any shared mutable state.
+    ///
+    /// Sprint `0.4-S8`: the error type is now
+    /// `(WorkflowRunError, &'static str)` where the second element is
+    /// the [`error_class`] string. The retry loop consults the class
+    /// to decide whether to retry per the policy's `retry_on`
+    /// allowlist.
     fn compile_and_run_step(
         step_id: &str,
         source: &str,
@@ -1894,17 +1901,23 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         live: bool,
         resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
-    ) -> Result<boruna_bytecode::Value, WorkflowRunError> {
+    ) -> Result<boruna_bytecode::Value, (WorkflowRunError, &'static str)> {
         let source_path = Path::new(workflow_dir).join(source);
         let source_code = std::fs::read_to_string(&source_path).map_err(|e| {
-            WorkflowRunError::StepFailed(
-                step_id.to_string(),
-                format!("cannot read {}: {e}", source_path.display()),
+            (
+                WorkflowRunError::StepFailed(
+                    step_id.to_string(),
+                    format!("cannot read {}: {e}", source_path.display()),
+                ),
+                error_class::IO_ERROR,
             )
         })?;
 
         let module = boruna_compiler::compile(step_id, &source_code).map_err(|e| {
-            WorkflowRunError::StepFailed(step_id.to_string(), format!("compile error: {e}"))
+            (
+                WorkflowRunError::StepFailed(step_id.to_string(), format!("compile error: {e}")),
+                error_class::COMPILE_ERROR,
+            )
         })?;
 
         let step_policy = Self::build_step_policy(policy, step_def);
@@ -1942,7 +1955,11 @@ impl WorkflowRunner {
         let gateway = CapabilityGateway::with_handler(step_policy, handler);
         let mut vm = Vm::new(module, gateway);
         vm.run().map_err(|e| {
-            WorkflowRunError::StepFailed(step_id.to_string(), format!("runtime error: {e}"))
+            let class = classify_vm_error(&e);
+            (
+                WorkflowRunError::StepFailed(step_id.to_string(), format!("runtime error: {e}")),
+                class,
+            )
         })
     }
 
@@ -1989,6 +2006,90 @@ impl WorkflowRunner {
     }
 }
 
+/// Documented taxonomy of step-failure classes (sprint `0.4-S8`).
+/// Operators reference these strings in [`RetryPolicy::retry_on`] to
+/// allowlist which failures should retry. The taxonomy is **forward-
+/// compatible**: strings are stable; new classes can be added without
+/// breaking existing policies; unknown strings in `retry_on` are
+/// silently ignored (conservative-by-default — typo means "do not
+/// retry," never a panic).
+///
+/// All values are snake_case, matching the surrounding error_kind
+/// convention in `boruna_run`'s MCP responses.
+pub mod error_class {
+    /// VM hit `set_max_wall_ms` (operational, wall-clock-keyed).
+    /// Recommended for retry: yes — typically transient.
+    pub const WALL_TIME_EXCEEDED: &str = "wall_time_exceeded";
+    /// VM hit `set_max_steps` (deterministic ceiling).
+    /// Recommended for retry: no — same input → same step count.
+    pub const STEP_LIMIT_EXCEEDED: &str = "step_limit_exceeded";
+    /// Capability denied by policy (`Op::CapCall` against a denied
+    /// capability or one outside the policy allowlist).
+    /// Recommended for retry: no — policy is deterministic.
+    pub const CAPABILITY_DENIED: &str = "capability_denied";
+    /// Per-capability budget (`PolicyRule::budget`) exhausted.
+    /// Recommended for retry: no — budget is per-run.
+    pub const CAPABILITY_BUDGET_EXCEEDED: &str = "capability_budget_exceeded";
+    /// Compilation failure (`boruna_compiler::compile`).
+    /// Recommended for retry: no — source is deterministic.
+    pub const COMPILE_ERROR: &str = "compile_error";
+    /// Runtime VM error not covered by another class — assertions,
+    /// type errors, list-index OOB, division by zero, match
+    /// exhaustion, stack errors, bytecode errors.
+    /// Recommended for retry: no — usually deterministic.
+    pub const RUNTIME_ERROR: &str = "runtime_error";
+    /// IO error reading the step's source file.
+    /// Recommended for retry: maybe — transient FS issues do happen.
+    pub const IO_ERROR: &str = "io_error";
+    /// Step input resolution failed (e.g., upstream output missing).
+    /// Recommended for retry: no — DAG-level concern, not transient.
+    pub const INPUT_RESOLUTION: &str = "input_resolution";
+}
+
+/// Classify a [`VmError`] into one of the strings in [`error_class`]
+/// (sprint `0.4-S8`). Used by the retry loop to decide whether the
+/// step's failure matches the operator's `retry_on` allowlist.
+fn classify_vm_error(e: &VmError) -> &'static str {
+    match e {
+        VmError::WallTimeExceeded(_) => error_class::WALL_TIME_EXCEEDED,
+        VmError::ExecutionLimitExceeded(_) => error_class::STEP_LIMIT_EXCEEDED,
+        VmError::CapabilityDenied(_) => error_class::CAPABILITY_DENIED,
+        VmError::CapabilityBudgetExceeded(_) => error_class::CAPABILITY_BUDGET_EXCEEDED,
+        // All other VmError variants — including assertion failures,
+        // type errors, index-out-of-bounds, division by zero, match
+        // exhaustion, stack errors, invalid IP / function / constant /
+        // local / global, unknown capability, actor-related errors
+        // (ActorNotFound, MailboxEmpty, Deadlock, MaxRoundsExceeded),
+        // Halt, BudgetExhausted, Bytecode — surface as RUNTIME_ERROR.
+        // Operators wanting per-class retry on assertions vs deadlocks
+        // would need a finer taxonomy; deferred until a real use case
+        // demands it.
+        _ => error_class::RUNTIME_ERROR,
+    }
+}
+
+/// Decide whether a step failure with the given class should retry
+/// per the supplied policy (sprint `0.4-S8`).
+///
+/// Resolution order:
+/// 1. `policy = None` or `max_attempts <= 1` → no retry.
+/// 2. `policy.retry_on` non-empty → retry IFF `class` is in the list.
+/// 3. `policy.retry_on` empty → fall back to legacy `on_transient`
+///    gate.
+fn should_retry_class(policy: Option<&RetryPolicy>, class: &str) -> bool {
+    let p = match policy {
+        Some(p) => p,
+        None => return false,
+    };
+    if p.max_attempts <= 1 {
+        return false;
+    }
+    if !p.retry_on.is_empty() {
+        return p.retry_on.iter().any(|c| c == class);
+    }
+    p.on_transient
+}
+
 /// Base for the exponential-backoff schedule: 100ms × 2^N. Pulled out
 /// as a constant so tests can verify the formula without sleeping.
 const RETRY_BASE_BACKOFF_MS: u64 = 100;
@@ -2010,10 +2111,20 @@ pub(crate) fn retry_backoff_ms(prev_attempt: u32) -> u64 {
 /// backoff. Returns the first success, or the final attempt's `Err`
 /// (wrapped to include the attempt count) on exhaustion.
 ///
-/// # Retry eligibility
+/// # Retry eligibility (sprint `0.4-S8`)
 ///
-/// `policy = None` OR `policy.on_transient == false` OR
-/// `policy.max_attempts <= 1` → single attempt, no retry.
+/// `policy = None` OR `policy.max_attempts <= 1` → single attempt.
+///
+/// Otherwise, after each per-attempt failure, [`should_retry_class`]
+/// decides whether to loop again:
+/// - `policy.retry_on` non-empty → retry IFF the failure's class is
+///   in the allowlist.
+/// - `policy.retry_on` empty → fall back to `policy.on_transient`
+///   (legacy gate).
+///
+/// A failure with a non-retry-eligible class short-circuits the loop
+/// at the first attempt — no exponential backoff for "compile error
+/// will not improve on retry."
 ///
 /// # Backoff
 ///
@@ -2038,14 +2149,18 @@ pub(crate) fn retry_with_backoff<T, F>(
     mut attempt_fn: F,
 ) -> Result<(T, u32), (WorkflowRunError, u32)>
 where
-    F: FnMut(u32) -> Result<T, WorkflowRunError>,
+    F: FnMut(u32) -> Result<T, (WorkflowRunError, &'static str)>,
 {
-    let max_attempts = match policy {
-        Some(p) if p.on_transient && p.max_attempts > 1 => p.max_attempts,
-        _ => 1,
-    };
+    // 0.4-S8: max_attempts is always honored as the upper bound; the
+    // per-attempt should_retry_class check decides whether to actually
+    // loop. Legacy `on_transient = false` semantics ("single attempt,
+    // no retry") falls out naturally because should_retry_class
+    // returns false for that policy shape.
+    let max_attempts = policy.map(|p| p.max_attempts.max(1)).unwrap_or(1);
     let mut last_err: Option<WorkflowRunError> = None;
+    let mut attempts_used: u32 = 0;
     for attempt in 1..=max_attempts {
+        attempts_used = attempt;
         if attempt > 1 {
             let prev_attempt = attempt - 2; // attempt is 1-indexed
             let sleep_ms = retry_backoff_ms(prev_attempt);
@@ -2079,27 +2194,37 @@ where
             // the step's checkpoint row. `attempt` is 1-indexed
             // (1 = first try succeeded; >1 = retry succeeded).
             Ok(value) => return Ok((value, attempt)),
-            Err(e) => {
+            Err((e, class)) => {
                 last_err = Some(e);
+                // 0.4-S8: short-circuit if this failure's class is
+                // not in the operator's `retry_on` allowlist (or, in
+                // legacy mode, if `on_transient` is false). Skipping
+                // the backoff sleep on a non-retry-eligible failure
+                // is the whole point — operators set narrower retry
+                // policies precisely to avoid wasting time on
+                // deterministic failures (compile errors, runtime
+                // errors with bad inputs, etc.).
+                if !should_retry_class(policy, class) {
+                    break;
+                }
             }
         }
     }
-    // Exhausted. Wrap the last error to include the attempt count
-    // (in the message AND as a separate field for the caller to
-    // persist in the checkpoint row).
+    // Exhausted (or short-circuited). Wrap the last error to include
+    // the attempt count when more than one attempt actually ran; for
+    // single-attempt paths preserve the original error shape so
+    // existing operator scripts that match on error strings don't
+    // break.
     let final_err = last_err.expect("loop runs at least once");
-    if max_attempts > 1 {
+    if attempts_used > 1 {
         Err((
             WorkflowRunError::StepFailed(
                 step_id.to_string(),
-                format!("failed after {max_attempts} attempts: {final_err}"),
+                format!("failed after {attempts_used} attempts: {final_err}"),
             ),
-            max_attempts,
+            attempts_used,
         ))
     } else {
-        // Single-attempt path: preserve the exact error shape so
-        // existing test fixtures and operator scripts that match on
-        // error strings don't break.
         Err((final_err, 1))
     }
 }
@@ -3326,6 +3451,7 @@ mod tests {
             RetryPolicy {
                 max_attempts,
                 on_transient,
+                retry_on: vec![],
             }
         }
 
@@ -3360,6 +3486,17 @@ mod tests {
             assert_eq!(*calls.borrow(), 1, "no retries on success");
         }
 
+        /// 0.4-S8: helper for the legacy retry tests — wraps a
+        /// step-failure into the new (WorkflowRunError, &'static str)
+        /// shape. Defaults to RUNTIME_ERROR class to preserve the
+        /// "transient" semantics these tests originally exercised.
+        fn err_runtime(msg: &str) -> (WorkflowRunError, &'static str) {
+            (
+                WorkflowRunError::StepFailed("step".into(), msg.to_string()),
+                error_class::RUNTIME_ERROR,
+            )
+        }
+
         #[test]
         fn retry_succeeds_after_two_failures() {
             // Closure fails on attempts 1 and 2, succeeds on 3.
@@ -3368,10 +3505,9 @@ mod tests {
                 retry_with_backoff(Some(&policy(3, true)), "step", |attempt| {
                     *calls.borrow_mut() += 1;
                     if attempt < 3 {
-                        Err(WorkflowRunError::StepFailed(
-                            "step".into(),
-                            format!("transient failure on attempt {attempt}"),
-                        ))
+                        Err(err_runtime(&format!(
+                            "transient failure on attempt {attempt}"
+                        )))
                     } else {
                         Ok(99)
                     }
@@ -3388,10 +3524,7 @@ mod tests {
             let result: Result<(i32, u32), (WorkflowRunError, u32)> =
                 retry_with_backoff(Some(&policy(3, true)), "step", |_attempt| {
                     *calls.borrow_mut() += 1;
-                    Err(WorkflowRunError::StepFailed(
-                        "step".into(),
-                        "permanent failure".to_string(),
-                    ))
+                    Err(err_runtime("permanent failure"))
                 });
             let (err, attempts) = result.unwrap_err();
             assert_eq!(attempts, 3, "all 3 attempts exhausted");
@@ -3416,10 +3549,7 @@ mod tests {
                 "step",
                 |_attempt| {
                     *calls.borrow_mut() += 1;
-                    Err(WorkflowRunError::StepFailed(
-                        "step".into(),
-                        "boom".to_string(),
-                    ))
+                    Err(err_runtime("boom"))
                 },
             );
             assert!(result.is_err());
@@ -3439,10 +3569,7 @@ mod tests {
                 "step",
                 |_attempt| {
                     *calls.borrow_mut() += 1;
-                    Err(WorkflowRunError::StepFailed(
-                        "step".into(),
-                        "boom".to_string(),
-                    ))
+                    Err(err_runtime("boom"))
                 },
             );
             assert!(result.is_err());
@@ -3455,13 +3582,297 @@ mod tests {
             let result: Result<(i32, u32), (WorkflowRunError, u32)> =
                 retry_with_backoff(None, "step", |_attempt| {
                     *calls.borrow_mut() += 1;
-                    Err(WorkflowRunError::StepFailed(
-                        "step".into(),
-                        "boom".to_string(),
-                    ))
+                    Err(err_runtime("boom"))
                 });
             assert!(result.is_err());
             assert_eq!(*calls.borrow(), 1);
+        }
+
+        // ── 0.4-S8: per-error-class retry allowlist ──
+
+        /// Constructs a policy with an explicit error-class allowlist.
+        fn class_policy(max_attempts: u32, classes: &[&str]) -> RetryPolicy {
+            RetryPolicy {
+                max_attempts,
+                on_transient: false, // ignored when retry_on is non-empty
+                retry_on: classes.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+
+        #[test]
+        fn retries_when_class_in_allowlist() {
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
+                Some(&class_policy(3, &[error_class::WALL_TIME_EXCEEDED])),
+                "step",
+                |attempt| {
+                    *calls.borrow_mut() += 1;
+                    if attempt < 3 {
+                        Err((
+                            WorkflowRunError::StepFailed("step".into(), "timeout".into()),
+                            error_class::WALL_TIME_EXCEEDED,
+                        ))
+                    } else {
+                        Ok(7)
+                    }
+                },
+            );
+            let (value, attempts) = result.unwrap();
+            assert_eq!(value, 7);
+            assert_eq!(attempts, 3);
+            assert_eq!(*calls.borrow(), 3);
+        }
+
+        #[test]
+        fn does_not_retry_when_class_not_in_allowlist() {
+            // Allowlist has WALL_TIME_EXCEEDED but failures are
+            // RUNTIME_ERROR — must short-circuit at first attempt.
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
+                Some(&class_policy(5, &[error_class::WALL_TIME_EXCEEDED])),
+                "step",
+                |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(err_runtime("deterministic failure"))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(*calls.borrow(), 1, "non-allowlisted class must not retry");
+            let (err, attempts) = result.unwrap_err();
+            assert_eq!(attempts, 1);
+            // Single-attempt error preserves original shape (no
+            // "failed after N attempts" wrapper).
+            assert!(!err.to_string().contains("attempts"));
+        }
+
+        #[test]
+        fn empty_allowlist_falls_back_to_on_transient() {
+            // retry_on=[] + on_transient=true → legacy behavior.
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
+                retry_with_backoff(Some(&policy(3, true)), "step", |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(err_runtime("boom"))
+                });
+            assert!(result.is_err());
+            assert_eq!(
+                *calls.borrow(),
+                3,
+                "empty retry_on + on_transient=true must retry as before"
+            );
+        }
+
+        #[test]
+        fn unknown_class_in_allowlist_is_silently_ignored() {
+            // Operator typo: "transient_netwrok" instead of
+            // "transient_network". Conservative-by-default — never
+            // matches a real class, so behaves as if absent. Single-
+            // attempt outcome.
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
+                Some(&class_policy(3, &["transient_netwrok"])),
+                "step",
+                |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(err_runtime("boom"))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(*calls.borrow(), 1);
+        }
+
+        #[test]
+        fn legacy_retry_policy_json_deserializes_with_default_retry_on() {
+            // Backward-compat: a workflow.json from a 0.3.x build has
+            // no `retry_on` field. With #[serde(default)] on the new
+            // field, deserialization must produce retry_on = vec![]
+            // and preserve the legacy on_transient gate.
+            let legacy = r#"{
+                "max_attempts": 3,
+                "on_transient": true
+            }"#;
+            let p: RetryPolicy = serde_json::from_str(legacy).unwrap();
+            assert_eq!(p.max_attempts, 3);
+            assert!(p.on_transient);
+            assert!(
+                p.retry_on.is_empty(),
+                "missing retry_on field must default to empty vec"
+            );
+            // And the empty allowlist correctly falls back to
+            // on_transient at the should_retry_class boundary.
+            assert!(should_retry_class(Some(&p), error_class::RUNTIME_ERROR));
+        }
+
+        #[test]
+        fn non_empty_retry_on_takes_precedence_over_on_transient_false() {
+            // Documented contract: when retry_on is non-empty, the
+            // legacy on_transient flag is ignored. A class in the
+            // allowlist retries even if on_transient = false.
+            let p = RetryPolicy {
+                max_attempts: 3,
+                on_transient: false,
+                retry_on: vec![error_class::WALL_TIME_EXCEEDED.to_string()],
+            };
+            assert!(should_retry_class(
+                Some(&p),
+                error_class::WALL_TIME_EXCEEDED
+            ));
+            assert!(!should_retry_class(Some(&p), error_class::RUNTIME_ERROR));
+
+            // End-to-end: a wall-time failure retries; a runtime
+            // failure short-circuits.
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
+                retry_with_backoff(Some(&p), "step", |attempt| {
+                    *calls.borrow_mut() += 1;
+                    if attempt < 3 {
+                        Err((
+                            WorkflowRunError::StepFailed("step".into(), "timeout".into()),
+                            error_class::WALL_TIME_EXCEEDED,
+                        ))
+                    } else {
+                        Ok(1)
+                    }
+                });
+            assert_eq!(*calls.borrow(), 3);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn allowlist_with_multiple_classes_matches_any() {
+            let calls = RefCell::new(0);
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
+                Some(&class_policy(
+                    4,
+                    &[error_class::WALL_TIME_EXCEEDED, error_class::IO_ERROR],
+                )),
+                "step",
+                |attempt| {
+                    *calls.borrow_mut() += 1;
+                    // Alternate failure classes — both in the
+                    // allowlist, so each retries.
+                    if attempt == 1 {
+                        Err((
+                            WorkflowRunError::StepFailed("step".into(), "io".into()),
+                            error_class::IO_ERROR,
+                        ))
+                    } else if attempt == 2 {
+                        Err((
+                            WorkflowRunError::StepFailed("step".into(), "wall".into()),
+                            error_class::WALL_TIME_EXCEEDED,
+                        ))
+                    } else {
+                        Ok(99)
+                    }
+                },
+            );
+            let (value, attempts) = result.unwrap();
+            assert_eq!(value, 99);
+            assert_eq!(attempts, 3);
+            assert_eq!(*calls.borrow(), 3);
+        }
+
+        // ── classify_vm_error mapping ──
+
+        #[test]
+        fn classify_wall_time_error() {
+            assert_eq!(
+                classify_vm_error(&VmError::WallTimeExceeded(100)),
+                error_class::WALL_TIME_EXCEEDED
+            );
+        }
+
+        #[test]
+        fn classify_step_limit_error() {
+            assert_eq!(
+                classify_vm_error(&VmError::ExecutionLimitExceeded(1_000_000)),
+                error_class::STEP_LIMIT_EXCEEDED
+            );
+        }
+
+        #[test]
+        fn classify_capability_denied_error() {
+            assert_eq!(
+                classify_vm_error(&VmError::CapabilityDenied(
+                    boruna_bytecode::Capability::NetFetch
+                )),
+                error_class::CAPABILITY_DENIED
+            );
+        }
+
+        #[test]
+        fn classify_capability_budget_error() {
+            assert_eq!(
+                classify_vm_error(&VmError::CapabilityBudgetExceeded(
+                    boruna_bytecode::Capability::LlmCall
+                )),
+                error_class::CAPABILITY_BUDGET_EXCEEDED
+            );
+        }
+
+        #[test]
+        fn classify_runtime_catchall() {
+            // Assertion failures, type errors, OOB, division — all
+            // surface as runtime_error via the catch-all.
+            assert_eq!(
+                classify_vm_error(&VmError::AssertionFailed("boom".into())),
+                error_class::RUNTIME_ERROR
+            );
+            assert_eq!(
+                classify_vm_error(&VmError::DivisionByZero),
+                error_class::RUNTIME_ERROR
+            );
+            assert_eq!(
+                classify_vm_error(&VmError::IndexOutOfBounds {
+                    index: 99,
+                    length: 3
+                }),
+                error_class::RUNTIME_ERROR
+            );
+        }
+
+        // ── should_retry_class semantics ──
+
+        #[test]
+        fn should_retry_class_no_policy() {
+            assert!(!should_retry_class(None, error_class::WALL_TIME_EXCEEDED));
+        }
+
+        #[test]
+        fn should_retry_class_max_attempts_le_1() {
+            let p = policy(1, true);
+            assert!(!should_retry_class(
+                Some(&p),
+                error_class::WALL_TIME_EXCEEDED
+            ));
+        }
+
+        #[test]
+        fn should_retry_class_allowlist_match() {
+            let p = class_policy(3, &[error_class::WALL_TIME_EXCEEDED]);
+            assert!(should_retry_class(
+                Some(&p),
+                error_class::WALL_TIME_EXCEEDED
+            ));
+            assert!(!should_retry_class(Some(&p), error_class::RUNTIME_ERROR));
+        }
+
+        #[test]
+        fn should_retry_class_legacy_on_transient_true() {
+            let p = policy(3, true);
+            // Empty retry_on → falls back to on_transient → matches anything.
+            assert!(should_retry_class(Some(&p), error_class::RUNTIME_ERROR));
+            assert!(should_retry_class(Some(&p), error_class::COMPILE_ERROR));
+        }
+
+        #[test]
+        fn should_retry_class_legacy_on_transient_false() {
+            let p = policy(3, false);
+            assert!(!should_retry_class(
+                Some(&p),
+                error_class::WALL_TIME_EXCEEDED
+            ));
+            assert!(!should_retry_class(Some(&p), error_class::RUNTIME_ERROR));
         }
 
         #[test]
@@ -3486,6 +3897,7 @@ mod tests {
                 retry: Some(RetryPolicy {
                     max_attempts: 3,
                     on_transient: true,
+                    retry_on: vec![],
                 }),
                 budget: None,
             };
@@ -4498,6 +4910,7 @@ mod tests {
                 retry: Some(RetryPolicy {
                     max_attempts: 3,
                     on_transient: true,
+                    retry_on: vec![],
                 }),
                 budget: None,
             };

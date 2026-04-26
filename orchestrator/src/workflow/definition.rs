@@ -74,11 +74,33 @@ pub enum StepKind {
 }
 
 /// Retry policy for a step.
+///
+/// **Retry semantics (sprint `0.4-S8`):**
+/// 1. If `retry_on` is non-empty, the step is retried ONLY when the
+///    failure's error class is in the allowlist.
+/// 2. If `retry_on` is empty, fall back to the legacy `on_transient`
+///    gate: `true` retries on any failure, `false` is single-attempt.
+///
+/// `retry_on` accepts the class strings defined in
+/// [`crate::workflow::runner::error_class`] (e.g.
+/// `"wall_time_exceeded"`, `"runtime_error"`, `"capability_denied"`).
+/// Unknown strings are silently ignored — they never match a failure
+/// class — so an operator typo means "do not retry on that class"
+/// rather than a hard parse error. This is conservative-by-default.
+///
+/// `max_attempts` applies as the upper bound regardless of which
+/// gate fires; `max_attempts <= 1` means single-attempt always.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
     #[serde(default)]
     pub on_transient: bool,
+    /// Sprint 0.4-S8: explicit error-class allowlist. When non-empty,
+    /// the retry loop retries only when the step failure's class is
+    /// in this list. See struct-level docs for the fallback semantics
+    /// when this is empty.
+    #[serde(default)]
+    pub retry_on: Vec<String>,
 }
 
 /// Budget limits for a step.
