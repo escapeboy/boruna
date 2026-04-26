@@ -233,6 +233,13 @@ enum WorkflowCommand {
     Validate {
         /// Workflow directory containing workflow.json.
         dir: PathBuf,
+        /// After validation succeeds, emit `workflow_hash=<hex>` on
+        /// stdout. Pair with `boruna workflow run/resume
+        /// --expect-workflow-hash` to lock the def at deploy time:
+        ///   $ HASH=$(boruna workflow validate ./wf --print-hash | cut -d= -f2)
+        ///   $ boruna workflow run ./wf --expect-workflow-hash $HASH ...
+        #[arg(long)]
+        print_hash: bool,
     },
     /// Run a workflow.
     Run {
@@ -276,6 +283,15 @@ enum WorkflowCommand {
         /// Persistent path only; incompatible with `--ephemeral`.
         #[arg(long, conflicts_with = "ephemeral")]
         skip_if_running: bool,
+        /// CI/CD safety check: refuse to run if the on-disk def's
+        /// workflow_hash doesn't match this value (case-insensitive
+        /// 64-char SHA-256 hex). Capture via `boruna workflow
+        /// validate <dir> --print-hash` at deploy time. Note: hashes
+        /// the workflow.json structure only — `.ax` step source
+        /// changes do NOT affect the hash. Use a tree hash for
+        /// full-source coverage.
+        #[arg(long, value_name = "HEX")]
+        expect_workflow_hash: Option<String>,
     },
     /// Approve a paused approval-gate step. Records an approval sentinel
     /// in the run's metadata; the operator must run `boruna workflow
@@ -347,6 +363,13 @@ enum WorkflowCommand {
         /// level on resumed waves. Default `1` = sequential.
         #[arg(long, default_value = "1")]
         concurrency: usize,
+        /// CI/CD safety check: refuse to resume if the on-disk def's
+        /// workflow_hash doesn't match this value. Operationally
+        /// stricter than the implicit resume-time hash check (which
+        /// compares against the persisted run's stored hash, not
+        /// against an operator-supplied expected value).
+        #[arg(long, value_name = "HEX")]
+        expect_workflow_hash: Option<String>,
     },
 }
 
@@ -1477,7 +1500,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
     };
 
     match cmd {
-        WorkflowCommand::Validate { dir } => {
+        WorkflowCommand::Validate { dir, print_hash } => {
             let def_path = dir.join("workflow.json");
             let json = fs::read_to_string(&def_path)
                 .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
@@ -1491,6 +1514,13 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                     println!("  steps: {}", def.steps.len());
                     println!("  edges: {}", def.edges.len());
                     println!("  execution order: {}", order.join(" -> "));
+                    // 0.3-S9: capture-friendly hash output for CI/CD.
+                    // Format: `workflow_hash=<hex>` on its own line so
+                    // `cut -d= -f2` extracts cleanly.
+                    if print_hash {
+                        let hash = WorkflowRunner::workflow_hash_from_def(&def);
+                        println!("workflow_hash={hash}");
+                    }
                 }
                 Err(errors) => {
                     eprintln!("validation failed:");
@@ -1511,6 +1541,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             ephemeral,
             concurrency,
             skip_if_running,
+            expect_workflow_hash,
         } => {
             if concurrency == 0 {
                 return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
@@ -1520,6 +1551,14 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
             let def: WorkflowDef =
                 serde_json::from_str(&json).map_err(|e| format!("invalid workflow.json: {e}"))?;
+
+            // 0.3-S9: pre-flight hash check. Refuse before any
+            // side effect (no run row, no checkpoints) if the
+            // operator-supplied expected hash doesn't match the
+            // on-disk def.
+            if let Some(expected) = &expect_workflow_hash {
+                check_workflow_hash_expectation(&def, expected)?;
+            }
 
             let policy_obj = match policy.as_str() {
                 "allow-all" => Policy::allow_all(),
@@ -1655,6 +1694,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             policy,
             live,
             concurrency,
+            expect_workflow_hash,
         } => {
             if concurrency == 0 {
                 return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
@@ -1664,6 +1704,29 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 use boruna_orchestrator::workflow::ResumeOptions;
                 let resolved = resolve_data_dir(data_dir.as_ref());
                 println!("resuming run '{run_id}' from {}", resolved.display());
+
+                // 0.3-S9: pre-flight expected-hash check. The
+                // resume function ALSO checks the workflow_hash
+                // against the persisted run's stored hash; this
+                // additional check verifies the operator's intent
+                // (deploy-time captured hash) before either side-
+                // effect path. Requires --workflow-dir to know
+                // which on-disk def to hash; falls back to the
+                // metadata-stored path if not supplied (matches
+                // resume's normal behavior).
+                if let Some(expected) = &expect_workflow_hash {
+                    let wf_dir = workflow_dir.as_deref().ok_or_else(|| {
+                        "--expect-workflow-hash on resume requires --workflow-dir to \
+                             locate the on-disk def to hash"
+                            .to_string()
+                    })?;
+                    let def_path = wf_dir.join("workflow.json");
+                    let json = fs::read_to_string(&def_path)
+                        .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
+                    let def: WorkflowDef = serde_json::from_str(&json)
+                        .map_err(|e| format!("invalid workflow.json: {e}"))?;
+                    check_workflow_hash_expectation(&def, expected)?;
+                }
 
                 let policy_obj = match policy.as_deref() {
                     None => None,
@@ -1989,6 +2052,32 @@ fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> String {
     format!("{}…", &s[..end])
 }
 
+/// Verify the on-disk workflow def's hash matches the operator-supplied
+/// expected value. Returns Err if there's a mismatch — the CLI bubbles
+/// this up as exit code 1 with the formatted error message. Comparison
+/// is case-insensitive so operators can paste hashes from any source
+/// (`tr` pipelines, copy/paste from config, etc.).
+///
+/// Introduced in 0.3-S9 — the CI/CD safety primitive that catches
+/// accidental or malicious workflow drift before any side effect.
+fn check_workflow_hash_expectation(
+    def: &boruna_orchestrator::workflow::WorkflowDef,
+    expected: &str,
+) -> Result<(), String> {
+    let actual = boruna_orchestrator::workflow::WorkflowRunner::workflow_hash_from_def(def);
+    let expected_norm = expected.trim().to_ascii_lowercase();
+    let actual_norm = actual.to_ascii_lowercase();
+    if expected_norm == actual_norm {
+        Ok(())
+    } else {
+        Err(format!(
+            "workflow_hash mismatch: expected={expected_norm}, actual={actual_norm}\n\
+             (the on-disk workflow def differs from what was captured at deploy time; \
+             refusing to run)"
+        ))
+    }
+}
+
 /// Resolve the persistent `--data-dir` argument with the documented
 /// fallback chain: explicit flag → `BORUNA_DATA_DIR` env var → `./.boruna/data`
 /// in the current working directory.
@@ -2178,5 +2267,71 @@ mod tests {
             truncated.len()
         );
         assert!(truncated.chars().all(|c| c == 'é'));
+    }
+
+    // ── 0.3-S9: --expect-workflow-hash ──
+
+    use super::check_workflow_hash_expectation;
+    use boruna_orchestrator::workflow::{StepDef, StepKind, WorkflowDef, WorkflowRunner};
+    use std::collections::BTreeMap;
+
+    fn small_workflow() -> WorkflowDef {
+        WorkflowDef {
+            schema_version: 1,
+            name: "test".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps: BTreeMap::from([(
+                "step1".into(),
+                StepDef {
+                    kind: StepKind::Source {
+                        source: "steps/step1.ax".into(),
+                    },
+                    capabilities: vec![],
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    depends_on: vec![],
+                    timeout_ms: None,
+                    retry: None,
+                    budget: None,
+                },
+            )]),
+            edges: vec![],
+        }
+    }
+
+    #[test]
+    fn check_workflow_hash_match_returns_ok() {
+        let def = small_workflow();
+        let hash = WorkflowRunner::workflow_hash_from_def(&def);
+        assert!(check_workflow_hash_expectation(&def, &hash).is_ok());
+    }
+
+    #[test]
+    fn check_workflow_hash_mismatch_returns_typed_error() {
+        let def = small_workflow();
+        let result = check_workflow_hash_expectation(
+            &def,
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("workflow_hash mismatch"),
+            "expected mismatch message; got: {err}"
+        );
+        assert!(err.contains("expected="), "should print expected hash");
+        assert!(err.contains("actual="), "should print actual hash");
+    }
+
+    #[test]
+    fn check_workflow_hash_is_case_insensitive() {
+        let def = small_workflow();
+        let hash = WorkflowRunner::workflow_hash_from_def(&def);
+        // Operator pastes uppercase / mixed case — should still match.
+        let upper = hash.to_uppercase();
+        assert!(check_workflow_hash_expectation(&def, &upper).is_ok());
+        // With surrounding whitespace (common in shell pipelines).
+        let padded = format!("  {}\n", hash);
+        assert!(check_workflow_hash_expectation(&def, &padded).is_ok());
     }
 }
