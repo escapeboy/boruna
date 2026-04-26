@@ -6,6 +6,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Streaming progress notifications from `boruna_run`** (sprint
+  `0.4-S6`, closes [#4](https://github.com/escapeboy/boruna/issues/4)).
+  When the MCP caller supplies a `progressToken` in the request `_meta`
+  field (per the MCP spec), the server emits
+  `notifications/progress` events with the cumulative VM step count
+  every 100k opcodes. Long-running scripts no longer block the calling
+  agent's UI behind a single final result blob. Backward compatible:
+  callers without a progressToken see the legacy synchronous behavior
+  unchanged.
+- New `Vm::start_timer()` method — initializes the wall-clock timer
+  used by `max_wall_ms` budgets. Callers driving the VM through
+  `execute_bounded` should call it before `set_entry_function` to
+  match `Vm::run`'s timing contract (the entry-frame allocation
+  counts toward the budget).
+- New `Vm::set_in_actor_context(bool)` flag — replaces the prior
+  `budget.is_some()` heuristic for distinguishing actor-system
+  scheduling from standalone bounded execution. `Op::ReceiveMsg` on
+  an empty mailbox now blocks (rewind IP + `MailboxEmpty`) only when
+  the flag is set; standalone bounded loops fall through with
+  `Value::Unit`, matching `Vm::run`'s legacy semantics. Reviewed in
+  0.4-S6 — without this fix, the streaming-progress and non-streaming
+  paths of `boruna_run` would diverge for any program emitting
+  `Op::ReceiveMsg` outside an actor system.
+- `ActorSystem::run` sets `in_actor_context = true` on the root and
+  every spawned child VM.
+
 ## [0.3.0] — 2026-04-26
 
 **Theme: Real-use durability.** 0.3.0 makes Boruna usable for

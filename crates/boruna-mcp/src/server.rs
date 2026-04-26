@@ -1,7 +1,8 @@
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -193,6 +194,7 @@ impl BorunaMcpServer {
     async fn boruna_run(
         &self,
         Parameters(params): Parameters<RunParams>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         validate_source(&params.source)?;
         let source = params.source;
@@ -205,18 +207,94 @@ impl BorunaMcpServer {
             max_memory_mb: l.max_memory_mb,
         });
         let output_schema = params.output_schema;
-        let result = tokio::task::spawn_blocking(move || {
-            tools::run::run_source(
-                &source,
-                policy.as_ref(),
-                max_steps,
-                trace,
-                limits.as_ref(),
-                output_schema.as_ref(),
-            )
-        })
-        .await
-        .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
+
+        // 0.4-S6: streaming progress notifications. When the caller
+        // includes a `progressToken` in the request's `_meta` field
+        // (per MCP spec), the VM is driven via execute_bounded() in
+        // 100k-step slices and emits a `notifications/progress` event
+        // between slices. Without a progressToken the legacy sync path
+        // runs unchanged — backward compatible.
+        let progress_token = ctx.meta.get_progress_token();
+        let result = if let Some(token) = progress_token {
+            // Bridge the blocking VM thread to the async notify_progress
+            // call via an unbounded mpsc channel. Sends from the VM
+            // never block; the async forwarder task drains and posts to
+            // the peer. When the blocking task completes, dropping the
+            // sender closes the channel and the forwarder ends.
+            //
+            // **`unbounded` is intentional** — a single VM emits at
+            // most max_steps / PROGRESS_STEP_SLICE samples (10M / 100k =
+            // 100 by default), so the queue is shallow and a bounded
+            // channel adds backpressure complexity for no real benefit.
+            // If max_steps grew unboundedly this would need revisiting.
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+            let peer = ctx.peer.clone();
+            let token_clone = token.clone();
+            let forwarder = tokio::spawn(async move {
+                while let Some(steps) = rx.recv().await {
+                    // Best-effort delivery: a notify failure (e.g. the
+                    // client disconnected mid-run) is logged-and-
+                    // continued. The VM keeps running and will surface
+                    // its own terminal result.
+                    // `total: None` — `max_steps` is a SAFETY ceiling
+                    // (default 10M), not an expected step count, so
+                    // setting `total` to it would make percentage UIs
+                    // show ~0-2% for typical programs that complete in
+                    // well under the cap. With None, MCP clients
+                    // treat `progress` as a monotonic count without a
+                    // percentage interpretation. Reviewed in 0.4-S6.
+                    let _ = peer
+                        .notify_progress(ProgressNotificationParam {
+                            progress_token: token_clone.clone(),
+                            progress: steps as f64,
+                            total: None,
+                            message: None,
+                        })
+                        .await;
+                }
+            });
+
+            let result = tokio::task::spawn_blocking(move || {
+                tools::run::run_source_with_progress(
+                    &source,
+                    policy.as_ref(),
+                    max_steps,
+                    trace,
+                    limits.as_ref(),
+                    output_schema.as_ref(),
+                    Some(move |steps: u64| {
+                        // Channel is closed only after the blocking
+                        // task drops its sender, which happens after
+                        // run_source_with_progress returns. Send
+                        // failures here are unreachable in practice
+                        // but ignored if they ever occur.
+                        let _ = tx.send(steps);
+                    }),
+                )
+            })
+            .await
+            .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
+
+            // Wait for the forwarder to drain any remaining samples
+            // before returning. spawn_blocking has already finished, so
+            // the sender side is closed and the forwarder will exit
+            // promptly.
+            let _ = forwarder.await;
+            result
+        } else {
+            tokio::task::spawn_blocking(move || {
+                tools::run::run_source(
+                    &source,
+                    policy.as_ref(),
+                    max_steps,
+                    trace,
+                    limits.as_ref(),
+                    output_schema.as_ref(),
+                )
+            })
+            .await
+            .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?
+        };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 

@@ -117,6 +117,12 @@ impl ActorSystem {
         // Set up root actor's entry function
         let entry = self.actors[0].vm.module().entry;
         self.actors[0].vm.set_entry_function(entry)?;
+        // 0.4-S6: signal actor scheduling so `Op::ReceiveMsg` blocks
+        // (rewinds IP + yields MailboxEmpty) instead of falling through
+        // with `Value::Unit`. Required because `boruna_run`'s streaming
+        // path also drives VMs via execute_bounded — without this flag
+        // the two contexts share `budget.is_some()`-keyed semantics.
+        self.actors[0].vm.set_in_actor_context(true);
 
         for round in 0..self.max_rounds {
             // Build run queue: all runnable actor indices
@@ -213,6 +219,7 @@ impl ActorSystem {
                     let gateway = CapabilityGateway::new(policy);
                     let mut child_vm = Vm::new(module, gateway);
                     child_vm.set_actor_id(child_id);
+                    child_vm.set_in_actor_context(true);
                     child_vm
                         .set_entry_function(req.func_idx)
                         .expect("invalid function index in spawn request");
