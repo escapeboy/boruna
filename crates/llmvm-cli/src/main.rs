@@ -266,6 +266,16 @@ enum WorkflowCommand {
         /// Persistent path only; ignored on `--ephemeral`.
         #[arg(long, default_value = "1")]
         concurrency: usize,
+        /// Skip cleanly (exit 0) if a prior `Running` or `Paused` run
+        /// of this workflow is still active in the data dir. Designed
+        /// for cron-driven scheduled invocations:
+        ///
+        ///     0 2 * * * boruna workflow run /path/to/wf \
+        ///               --skip-if-running --data-dir /var/lib/boruna
+        ///
+        /// Persistent path only; incompatible with `--ephemeral`.
+        #[arg(long, conflicts_with = "ephemeral")]
+        skip_if_running: bool,
     },
     /// Approve a paused approval-gate step. Records an approval sentinel
     /// in the run's metadata; the operator must run `boruna workflow
@@ -1500,6 +1510,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             data_dir,
             ephemeral,
             concurrency,
+            skip_if_running,
         } => {
             if concurrency == 0 {
                 return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
@@ -1533,6 +1544,26 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 #[cfg(feature = "persist-sqlite")]
                 {
                     let resolved = resolve_data_dir(data_dir.as_ref());
+                    // 0.3-S7: cron-friendly idempotent invocation.
+                    // Check the persistent store for any in-flight
+                    // run of this workflow BEFORE inserting a new
+                    // one. Skip cleanly (exit 0) if found.
+                    if skip_if_running {
+                        let in_flight =
+                            boruna_orchestrator::workflow::find_in_flight_runs(&resolved, &def)
+                                .map_err(|e| format!("{e}"))?;
+                        if let Some(prior) = in_flight.first() {
+                            eprintln!(
+                                "skipped: workflow '{}' has {} run '{}' (started_at_ms={}); \
+                                 not starting a new run",
+                                prior.workflow_name,
+                                prior.status.as_str(),
+                                prior.run_id,
+                                prior.started_at_ms,
+                            );
+                            return Ok(());
+                        }
+                    }
                     println!("  data_dir: {}", resolved.display());
                     WorkflowRunner::run_persistent(&def, &options, &resolved)
                         .map_err(|e| format!("{e}"))?
@@ -1545,7 +1576,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 // either rebuild with the feature or pass `--ephemeral`.
                 #[cfg(not(feature = "persist-sqlite"))]
                 {
-                    let _ = data_dir;
+                    let _ = (data_dir, skip_if_running);
                     return Err(format!(
                         "persistent runs require the `persist-sqlite` feature \
                          (rebuild with default features, or pass `--ephemeral`)"

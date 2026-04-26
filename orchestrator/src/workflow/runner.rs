@@ -1954,6 +1954,27 @@ pub fn list_runs(
     rows.map_err(WorkflowRunError::from)
 }
 
+/// List in-flight (`Running` or `Paused`) runs for a workflow def.
+///
+/// Used by the `--skip-if-running` CLI flag (sprint `0.3-S7`) to
+/// decide whether a cron-triggered invocation should skip a new run
+/// because a prior one is still active. Computes the canonical
+/// `workflow_hash` from the def, then queries the persistent store.
+///
+/// Returns an empty `Vec` if no run is currently in flight for this
+/// workflow.
+#[cfg(feature = "persist-sqlite")]
+pub fn find_in_flight_runs(
+    data_dir: &Path,
+    def: &WorkflowDef,
+) -> Result<Vec<crate::persistence::RunRow>, WorkflowRunError> {
+    let store = open_store(data_dir)?;
+    let workflow_hash = WorkflowRunner::workflow_hash_from_def(def);
+    store
+        .list_in_flight_runs_for_workflow(&workflow_hash)
+        .map_err(WorkflowRunError::from)
+}
+
 /// Errors that can occur during a workflow run.
 #[derive(Debug, Clone)]
 pub enum WorkflowRunError {

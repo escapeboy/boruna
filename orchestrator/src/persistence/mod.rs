@@ -554,6 +554,32 @@ impl RunCheckpointStore {
         Ok(rows)
     }
 
+    /// List in-flight (Running or Paused) runs for a given
+    /// `workflow_hash`, ordered by `(workflow_name, run_id)`. Empty
+    /// when no run is currently active for that workflow.
+    ///
+    /// Used by the `--skip-if-running` CLI flag (sprint `0.3-S7`) to
+    /// decide whether to skip a new invocation when a prior run is
+    /// still active. Cron-driven scheduling pattern:
+    ///
+    /// ```text
+    /// 0 2 * * * boruna workflow run /path/to/wf --skip-if-running --data-dir /var/lib/boruna
+    /// ```
+    pub fn list_in_flight_runs_for_workflow(
+        &self,
+        workflow_hash: &str,
+    ) -> Result<Vec<RunRow>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, workflow_name, workflow_hash, status, started_at, updated_at, policy_json, metadata_json \
+             FROM runs WHERE workflow_hash = ?1 AND status IN ('running', 'paused') \
+             ORDER BY workflow_name, run_id",
+        )?;
+        let rows = stmt
+            .query_map(params![workflow_hash], parse_run_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Insert OR replace a step checkpoint. Each call wraps in
     /// `BEGIN IMMEDIATE; ...; COMMIT;` so partial-step failures roll back
     /// cleanly. Caller writes once per step state transition
@@ -1541,6 +1567,76 @@ mod tests {
         assert_eq!(runs[0].run_id, "R-2"); // a-early, R-2
         assert_eq!(runs[1].run_id, "R-3"); // a-early, R-3
         assert_eq!(runs[2].run_id, "R-1"); // z-late, R-1
+    }
+
+    // ── 0.3-S7: in-flight runs filter ──
+
+    #[test]
+    fn list_in_flight_runs_for_workflow_empty_db() {
+        let store = fresh_store();
+        let runs = store.list_in_flight_runs_for_workflow("any").unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_in_flight_runs_for_workflow_returns_running_and_paused() {
+        let store = fresh_store();
+        // Two runs of workflow A: one Running, one Completed.
+        // Two runs of workflow B: one Paused, one Failed.
+        let mut a_running = sample_run("A-1");
+        a_running.workflow_hash = "wh-A".into();
+        a_running.status = RunStatus::Running;
+        let mut a_completed = sample_run("A-2");
+        a_completed.workflow_hash = "wh-A".into();
+        a_completed.status = RunStatus::Completed;
+        let mut b_paused = sample_run("B-1");
+        b_paused.workflow_hash = "wh-B".into();
+        b_paused.status = RunStatus::Paused;
+        let mut b_failed = sample_run("B-2");
+        b_failed.workflow_hash = "wh-B".into();
+        b_failed.status = RunStatus::Failed;
+        store.insert_run(&a_running).unwrap();
+        store.insert_run(&a_completed).unwrap();
+        store.insert_run(&b_paused).unwrap();
+        store.insert_run(&b_failed).unwrap();
+
+        // Workflow A: only A-1 (Running) is in-flight.
+        let in_flight_a = store.list_in_flight_runs_for_workflow("wh-A").unwrap();
+        assert_eq!(in_flight_a.len(), 1);
+        assert_eq!(in_flight_a[0].run_id, "A-1");
+        assert_eq!(in_flight_a[0].status, RunStatus::Running);
+
+        // Workflow B: only B-1 (Paused) is in-flight.
+        let in_flight_b = store.list_in_flight_runs_for_workflow("wh-B").unwrap();
+        assert_eq!(in_flight_b.len(), 1);
+        assert_eq!(in_flight_b[0].run_id, "B-1");
+        assert_eq!(in_flight_b[0].status, RunStatus::Paused);
+
+        // Workflow C: nothing.
+        assert!(store
+            .list_in_flight_runs_for_workflow("wh-C")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn list_in_flight_runs_for_workflow_orders_deterministically() {
+        let store = fresh_store();
+        let mut r1 = sample_run("R-1");
+        r1.workflow_name = "z-late".into();
+        r1.workflow_hash = "shared".into();
+        r1.status = RunStatus::Running;
+        let mut r2 = sample_run("R-2");
+        r2.workflow_name = "a-early".into();
+        r2.workflow_hash = "shared".into();
+        r2.status = RunStatus::Paused;
+        store.insert_run(&r1).unwrap();
+        store.insert_run(&r2).unwrap();
+        let runs = store.list_in_flight_runs_for_workflow("shared").unwrap();
+        assert_eq!(runs.len(), 2);
+        // Sorted by (workflow_name, run_id) — a-early before z-late.
+        assert_eq!(runs[0].run_id, "R-2");
+        assert_eq!(runs[1].run_id, "R-1");
     }
 
     // ── retry policy ──
