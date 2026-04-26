@@ -33,7 +33,8 @@ mod tests {
             boruna_bytecode::CAPABILITY_REPORT_PROTOCOL_VERSION
         );
         assert_eq!(json["name"], "boruna");
-        assert_eq!(json["capabilities"].as_array().unwrap().len(), 10);
+        // 0.3-S14: bumped to 11 with the new step.input capability.
+        assert_eq!(json["capabilities"].as_array().unwrap().len(), 11);
         assert!(json["capability_set_hash"]
             .as_str()
             .unwrap()

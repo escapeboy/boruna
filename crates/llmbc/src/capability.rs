@@ -16,6 +16,13 @@ pub enum Capability {
     LlmCall,
     ActorSpawn,
     ActorSend,
+    /// Read a workflow step's resolved input value (sprint `0.3-S14`).
+    /// Dispatched from the compiler-recognized built-in
+    /// `step_input(name: String) -> String`. The handler returns the
+    /// JSON-encoded upstream output for the named input. Steps that
+    /// need typed access parse the JSON; the platform stays
+    /// String-to-String at the language layer.
+    StepInput,
 }
 
 impl Capability {
@@ -31,6 +38,7 @@ impl Capability {
             7 => Some(Capability::LlmCall),
             8 => Some(Capability::ActorSpawn),
             9 => Some(Capability::ActorSend),
+            10 => Some(Capability::StepInput),
             _ => None,
         }
     }
@@ -47,6 +55,7 @@ impl Capability {
             Capability::LlmCall => 7,
             Capability::ActorSpawn => 8,
             Capability::ActorSend => 9,
+            Capability::StepInput => 10,
         }
     }
 
@@ -62,6 +71,7 @@ impl Capability {
             Capability::LlmCall => "llm.call",
             Capability::ActorSpawn => "actor.spawn",
             Capability::ActorSend => "actor.send",
+            Capability::StepInput => "step.input",
         }
     }
 
@@ -77,6 +87,7 @@ impl Capability {
             "llm.call" | "llm" => Some(Capability::LlmCall),
             "actor.spawn" | "actor_spawn" => Some(Capability::ActorSpawn),
             "actor.send" | "actor_send" => Some(Capability::ActorSend),
+            "step.input" | "step_input" => Some(Capability::StepInput),
             _ => None,
         }
     }
@@ -104,13 +115,17 @@ impl Capability {
             | Capability::Random
             | Capability::LlmCall
             | Capability::ActorSpawn
-            | Capability::ActorSend => "1",
+            | Capability::ActorSend
+            | Capability::StepInput => "1",
         }
     }
 
     /// Canonical iteration order for hashing — sorted ascending by `name()`.
     /// Locked by `tests::test_capability_all_is_sorted_by_name`.
-    pub const ALL: [Capability; 10] = [
+    /// **Note:** adding a capability bumps `capability_set_hash` (additive
+    /// change in surface area); FleetQ-blessed and integrators are
+    /// expected to invalidate cache keys on the new hash.
+    pub const ALL: [Capability; 11] = [
         Capability::ActorSend,
         Capability::ActorSpawn,
         Capability::DbQuery,
@@ -119,6 +134,7 @@ impl Capability {
         Capability::LlmCall,
         Capability::NetFetch,
         Capability::Random,
+        Capability::StepInput,
         Capability::TimeNow,
         Capability::UiRender,
     ];

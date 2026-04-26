@@ -294,6 +294,28 @@ impl Emitter {
                             fe.code.push(Op::StrStartsWith);
                             return Ok(());
                         }
+                        // 0.3-S14: builtin `step_input(name)` reads a
+                        // workflow step's resolved upstream output.
+                        // Emits `Op::CapCall(StepInput, 1)` which
+                        // dispatches through the gateway's
+                        // StepInputHandler at runtime. The step's
+                        // function MUST declare `!{step.input}` in
+                        // its capability annotations, OR the function
+                        // must be called from a function that does —
+                        // standard capability propagation. The runner
+                        // adds StepInput to the step's policy
+                        // automatically since reading inputs is
+                        // structurally always allowed within a workflow.
+                        "step_input" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::CapCall(Capability::StepInput.id(), 1));
+                            // Track that this step uses StepInput so
+                            // the runtime function-cap check passes.
+                            if !fe.capabilities.contains(&Capability::StepInput) {
+                                fe.capabilities.push(Capability::StepInput);
+                            }
+                            return Ok(());
+                        }
                         _ => {}
                     }
                     // User-defined function call

@@ -169,6 +169,92 @@ impl CapabilityHandler for MockHandler {
                 // Actor ops are handled at the opcode level, not through the gateway
                 Ok(Value::Unit)
             }
+            Capability::StepInput => {
+                // 0.3-S14: the MockHandler returns an empty string for
+                // step.input — the real implementation lives in the
+                // orchestrator's StepInputHandler which wraps this
+                // mock and serves resolved upstream outputs. When no
+                // wrapping handler is installed (e.g. ephemeral .ax
+                // runs invoked via `boruna run`), step_input returns
+                // empty so steps don't crash.
+                Ok(Value::String(String::new()))
+            }
+        }
+    }
+}
+
+/// Handler that serves `step.input` capability calls from a
+/// runner-provided map of resolved upstream outputs. All other
+/// capabilities delegate to a wrapped inner handler (typically
+/// `MockHandler` or a BYOH live handler).
+///
+/// Introduced in `0.3-S14`. The orchestrator constructs one of these
+/// per step execution, populating `inputs` from the workflow
+/// definition's `inputs: { name: "upstream.output" }` declarations
+/// resolved against the data store. The .ax step body calls
+/// `step_input("name")` which compiles to `Op::CapCall(StepInput, 1)`
+/// and dispatches here, returning the JSON-encoded upstream value
+/// as a `Value::String`.
+///
+/// **Type contract:** the language layer is String-to-String.
+/// Upstream outputs are JSON-encoded compactly (matching
+/// `DataStore::hash_value`'s serialization). Downstream steps that
+/// need typed access parse the JSON inline.
+///
+/// **Determinism:** input values come from the persisted upstream
+/// step's output. Same inputs → same outputs across machines and
+/// runs.
+///
+/// **Unknown input names error** (project-conventions §1
+/// reject-at-parse). The runner pre-validates declared inputs in
+/// `workflow.json`, so a `step_input("missing_name")` call from a
+/// .ax step is unambiguously a bug — typo, refactor lag, or stale
+/// step source. Surfacing as a typed `Err` propagates through the
+/// VM as a runtime error; the operator sees a clean failure
+/// instead of silent-empty data corruption downstream.
+pub struct StepInputHandler {
+    inputs: BTreeMap<String, Value>,
+    inner: Box<dyn CapabilityHandler>,
+}
+
+impl StepInputHandler {
+    pub fn new(inputs: BTreeMap<String, Value>, inner: Box<dyn CapabilityHandler>) -> Self {
+        Self { inputs, inner }
+    }
+}
+
+impl CapabilityHandler for StepInputHandler {
+    fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
+        if matches!(cap, Capability::StepInput) {
+            let name = match args.first() {
+                Some(Value::String(s)) => s.as_str(),
+                _ => return Err("step.input: expected String argument (input name)".to_string()),
+            };
+            // Look up the resolved upstream Value, then JSON-encode
+            // for the language-level String contract. The encoding
+            // matches `DataStore::hash_value` (compact JSON) so an
+            // operator running `sha256sum` on the embedded payload
+            // matches what the persistence layer wrote.
+            match self.inputs.get(name) {
+                Some(value) => match serde_json::to_string(value) {
+                    Ok(json) => Ok(Value::String(json)),
+                    Err(e) => Err(format!("step.input: serialize '{name}': {e}")),
+                },
+                None => {
+                    // 0.3-S14 review: surface unknown-name as a typed
+                    // error instead of silent empty (project-
+                    // conventions §1). The runner validates declared
+                    // inputs before dispatch; a name not in the map
+                    // is unambiguously a .ax-source bug.
+                    let mut declared: Vec<&str> = self.inputs.keys().map(String::as_str).collect();
+                    declared.sort();
+                    Err(format!(
+                        "step.input: unknown name '{name}' (declared inputs: {declared:?})"
+                    ))
+                }
+            }
+        } else {
+            self.inner.handle(cap, args)
         }
     }
 }

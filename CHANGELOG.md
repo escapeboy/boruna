@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Workflow step output piping via `step_input`** (sprint `0.3-S14`).
+  New built-in function in `.ax`:
+  ```
+  let received: String = step_input("msg")
+  ```
+  Returns the JSON-encoded upstream output for the named input
+  (declared in `workflow.json`'s `inputs: { msg: "upstream.result" }`).
+  Steps that need typed access parse the JSON inline. Determinism
+  preserved: same inputs → same per-step `output_hash` regardless
+  of concurrency level.
+- New `Capability::StepInput` (id=10, name="step.input", version="1").
+  **Bumps `capability_set_hash`** — additive surface change.
+  Integrators using the prior hash for cache keys MUST invalidate.
+  Old: `sha256:b0ca1793...`. New: `sha256:980d017d...`.
+- Compiler treats `step_input(name)` as a builtin (typeck arity 1;
+  codegen emits `Op::CapCall(StepInput, 1)`). Auto-adds
+  `Capability::StepInput` to the calling function's capability set so
+  the VM's runtime function-cap check passes.
+- New `boruna_vm::capability_gateway::StepInputHandler` — wraps an
+  inner handler and intercepts `step.input` calls. Composes with both
+  `MockHandler` and BYOH live handlers (sprint `0.3-S8`).
+- `WorkflowRunner::build_step_policy` auto-allows `step.input` when
+  the operator's policy is silent on it. `entry().or_insert()`
+  preserves explicit denies for hardened workflows.
+- Both sequential and concurrent execution paths resolve inputs
+  coordinator-side and pass the snapshot to workers — workers hold
+  no DataStore reference.
+- **Unknown input names error** (review-driven, project-conventions
+  §1). `step_input("undeclared_name")` returns a typed runtime error
+  with the declared list for triage, instead of silently returning
+  empty data and corrupting downstream output.
+
 ### Fixed
 
 - **Sequential failure path persists actual `attempt_count`** (sprint

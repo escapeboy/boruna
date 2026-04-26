@@ -181,7 +181,13 @@ mod tests {
         let report = capability_set_report("boruna", "0.2.0");
         assert_eq!(
             report.capability_set_hash,
-            "sha256:b0ca1793a79656447d560092bae7af4b0ebee82023c6d2bea82bd80621bd9637"
+            // Bumped in 0.3-S14 for the new step.input capability.
+            // Computed externally:
+            //   printf 'actor.send\t1\nactor.spawn\t1\ndb.query\t1\nfs.read\t1\nfs.write\t1\nllm.call\t1\nnet.fetch\t1\nrandom\t1\nstep.input\t1\ntime.now\t1\nui.render\t1\n' | shasum -a 256
+            // Integrators using the prior hash for cache keys MUST
+            // invalidate — additive surface change per the documented
+            // contract.
+            "sha256:980d017dc54e30c39c329484b501fbe46914d9ad344bfcb4610b0280f4300a67"
         );
     }
 
@@ -227,7 +233,7 @@ mod tests {
         );
         assert_eq!(report.name, "boruna");
         assert_eq!(report.version, "0.2.0");
-        assert_eq!(report.capabilities.len(), 10);
+        assert_eq!(report.capabilities.len(), 11);
         for ident in &report.capabilities {
             assert!(!ident.name.is_empty());
             assert!(!ident.version.is_empty());
