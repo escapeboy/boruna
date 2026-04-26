@@ -8,6 +8,63 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Audit-log integration of approval / trigger decisions** (sprint
+  `0.4-S9`). Closes a 0.3.0 carried-forward debt. Operator actions
+  (approval grants/denials, external trigger events) now produce
+  hash-chained audit entries, persisted as `metadata.audit_log` and
+  written atomically with the operator-facing decision via the
+  existing CAS-protected metadata writes.
+- New `AuditEvent::ExternalTriggerReceived { step_id, payload_hash }`
+  variant. The `payload_hash` matches the synthesized step
+  `output_hash` (since the trigger payload becomes the step's
+  output value), so the chain links to the replay-verified
+  output. Payload itself is hashed rather than logged verbatim —
+  webhook bodies may contain operator PII.
+- New `AuditLog::from_entries(Vec<AuditEntry>) -> Self` and
+  `AuditLog::into_entries(self) -> Vec<AuditEntry>` for round-
+  tripping the chain through a containing struct (e.g. the run's
+  persisted metadata) without re-serializing to JSON.
+- 7 new tests covering: approval-grant / approval-reject append the
+  right event, trigger appends with payload_hash equal to
+  output_hash, multi-decision chain integrity (prev_hash chains),
+  legacy 0.3.x metadata round-trip without audit_log field, audit
+  log persists unchanged across resume, first decision after legacy
+  metadata starts a fresh genesis chain.
+- Design doc: `docs/design-audit-decision-events.md`.
+
+#### Tamper-evidence vs replay-verification
+
+The audit chain's `prev_hash` linkage is **tamper-evident** — any
+post-hoc mutation (direct sqlite3 surgery, bit-flip in storage)
+surfaces when an auditor calls `AuditLog::verify()`. The chain is
+**not** processed by the run's deterministic-execution replay
+pipeline; replay verifies per-step `output_hash`, not the
+operator-action chain. Documented prominently in the
+`PersistedRunMetadata.audit_log` doc-comment to prevent confusion
+with the replay-verification subsystem.
+
+#### Backward compatibility
+
+A 0.3.x metadata blob with no `audit_log` field deserializes via
+`#[serde(default)]` to `Vec::new()`. The first decision recorded
+by a 0.4-S9 binary on a 0.3.x run starts a fresh genesis chain
+(sequence=0, prev_hash="0"*64). Locked by
+`first_decision_after_legacy_metadata_starts_chain_at_sequence_zero`.
+
+#### What this sprint does NOT ship
+
+- Full lifecycle audit events (`WorkflowStarted`, `StepStarted`,
+  `StepCompleted`, etc.) — separately scheduled. This sprint
+  surgically closes the operator-action audit gap without touching
+  the per-step hot path.
+- Audit log in evidence bundles — `EvidenceBundleBuilder::finalize`
+  already accepts an `AuditLog` parameter; wiring the in-metadata
+  log into bundle construction is a small follow-on sprint.
+- Operator identity capture — no auth subsystem yet. The `approver`
+  field is empty string until a future identity sprint wires real
+  auth. The field IS captured in the hash chain regardless so a
+  future upgrade can fill it in without re-keying past entries.
+
 - **Per-error-class retry classification** (sprint `0.4-S8`). The
   `RetryPolicy` schema gains an explicit `retry_on: Vec<String>`
   allowlist alongside the legacy binary `on_transient` gate. Operators
