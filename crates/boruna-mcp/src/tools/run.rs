@@ -153,12 +153,12 @@ where
     // Resolve policy
     let gw_policy = match parse_policy(policy) {
         Ok(p) => p,
-        Err(msg) => {
+        Err(err) => {
             return serde_json::json!({
                 "success": false,
                 "protocol_version": TOOL_RESPONSE_PROTOCOL_VERSION,
-                "error_kind": "invalid_policy",
-                "message": msg,
+                "error_kind": err.error_kind,
+                "message": err.message,
             })
             .to_string();
         }
@@ -529,22 +529,49 @@ fn validate_output_against_schema(
     )
 }
 
+/// Structured error from [`parse_policy`].
+///
+/// `error_kind` is a stable string from the locked taxonomy
+/// (project convention #2). String/non-object/non-string failures
+/// keep the legacy `"invalid_policy"` kind (unchanged since 0.2.0).
+/// Object failures produce more specific `policy.*` kinds emitted
+/// by the strict validator in [`boruna_vm::policy_validate`] —
+/// these are additive over `invalid_policy`.
+#[derive(Debug, Clone)]
+pub(crate) struct ParsePolicyError {
+    pub error_kind: String,
+    pub message: String,
+}
+
 /// Parse the MCP `policy` argument into a [`Policy`].
 ///
-/// See `docs/reference/policy-schema.md` for the object form.
-pub(crate) fn parse_policy(value: Option<&JsonValue>) -> Result<Policy, String> {
+/// See `docs/reference/policy-schema.md` for the object form and
+/// `docs/design-policy-as-code.md` for the strict-validator
+/// taxonomy.
+pub(crate) fn parse_policy(value: Option<&JsonValue>) -> Result<Policy, ParsePolicyError> {
     match value {
         None => Ok(Policy::allow_all()),
         Some(JsonValue::String(s)) => match s.as_str() {
             "allow-all" => Ok(Policy::allow_all()),
             "deny-all" => Ok(Policy::deny_all()),
-            other => Err(format!(
-                "policy string must be 'allow-all' or 'deny-all' (got '{other}'); \
-                 pass an object for fine-grained policy — see docs/reference/policy-schema.md"
-            )),
+            other => Err(ParsePolicyError {
+                error_kind: "invalid_policy".into(),
+                message: format!(
+                    "policy string must be 'allow-all' or 'deny-all' (got '{other}'); \
+                     pass an object for fine-grained policy — see docs/reference/policy-schema.md"
+                ),
+            }),
         },
-        Some(obj @ JsonValue::Object(_)) => serde_json::from_value::<Policy>(obj.clone())
-            .map_err(|e| format!("policy object failed to parse: {e}")),
+        Some(obj @ JsonValue::Object(_)) => {
+            // Route through the strict validator so MCP and CLI
+            // share one parser. Failures surface stable `policy.*`
+            // error_kind strings.
+            let json_str = obj.to_string();
+            boruna_vm::policy_validate::parse(&json_str).map_err(|e| ParsePolicyError {
+                error_kind: e.error_kind().to_string(),
+                message: e.to_string(),
+            })
+        }
         Some(other) => {
             let kind = match other {
                 JsonValue::Null => "null",
@@ -553,9 +580,12 @@ pub(crate) fn parse_policy(value: Option<&JsonValue>) -> Result<Policy, String> 
                 JsonValue::Array(_) => "array",
                 _ => "unknown",
             };
-            Err(format!(
-                "policy must be a string ('allow-all'/'deny-all') or an object; got {kind}"
-            ))
+            Err(ParsePolicyError {
+                error_kind: "invalid_policy".into(),
+                message: format!(
+                    "policy must be a string ('allow-all'/'deny-all') or an object; got {kind}"
+                ),
+            })
         }
     }
 }
@@ -639,22 +669,58 @@ mod tests {
     fn parse_policy_unknown_string_errors() {
         let v = json!("garbage");
         let err = parse_policy(Some(&v)).unwrap_err();
-        assert!(err.contains("must be 'allow-all' or 'deny-all'"));
-        assert!(err.contains("policy-schema.md"));
+        assert_eq!(err.error_kind, "invalid_policy");
+        assert!(err.message.contains("must be 'allow-all' or 'deny-all'"));
+        assert!(err.message.contains("policy-schema.md"));
     }
 
     #[test]
     fn parse_policy_array_errors() {
         let v = json!([]);
         let err = parse_policy(Some(&v)).unwrap_err();
-        assert!(err.contains("array"));
+        assert_eq!(err.error_kind, "invalid_policy");
+        assert!(err.message.contains("array"));
     }
 
     #[test]
     fn parse_policy_malformed_object_errors() {
+        // 0.4-S15: object parses now go through the strict validator,
+        // so a type error surfaces as policy.parse_error instead of
+        // the generic invalid_policy.
         let v = json!({ "default_allow": "yes" });
         let err = parse_policy(Some(&v)).unwrap_err();
-        assert!(err.contains("policy object failed to parse"));
+        assert_eq!(err.error_kind, "policy.parse_error");
+    }
+
+    // ── 0.4-S15: strict-validator paths ──
+
+    #[test]
+    fn parse_policy_object_unknown_field_returns_kind() {
+        let v = json!({ "foo": 1 });
+        let err = parse_policy(Some(&v)).unwrap_err();
+        assert_eq!(err.error_kind, "policy.unknown_field");
+    }
+
+    #[test]
+    fn parse_policy_object_invalid_capability_returns_kind() {
+        let v = json!({ "rules": { "net": { "allow": true, "budget": 0 } } });
+        let err = parse_policy(Some(&v)).unwrap_err();
+        assert_eq!(err.error_kind, "policy.invalid_capability");
+        assert!(err.message.contains("net.fetch"));
+    }
+
+    #[test]
+    fn parse_policy_object_unknown_schema_version() {
+        let v = json!({ "schema_version": 2 });
+        let err = parse_policy(Some(&v)).unwrap_err();
+        assert_eq!(err.error_kind, "policy.unknown_schema_version");
+    }
+
+    #[test]
+    fn parse_policy_object_invalid_net_policy() {
+        let v = json!({ "net_policy": { "timeout_ms": 0 } });
+        let err = parse_policy(Some(&v)).unwrap_err();
+        assert_eq!(err.error_kind, "policy.invalid_net_policy");
     }
 
     #[test]

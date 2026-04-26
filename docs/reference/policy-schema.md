@@ -55,7 +55,7 @@ These are the strings you use as keys in `rules`. They mirror `boruna_bytecode::
 | Spawn actor | `actor.spawn` | |
 | Send to actor | `actor.send` | |
 
-The CLI also accepts shorter aliases like `net`, `db`, `ui`, `time`, `llm` for the `from_name` round-trip; **the canonical form is the dotted name** above. Use the canonical form in `rules` to ensure the policy hash is stable across versions.
+**The strict validator rejects aliases.** Sprint `0.4-S15` locked the rule-key surface to canonical names only. A policy file with `"net"` as a rule key fails validation with `error_kind: "policy.invalid_capability"` and a hint to use `"net.fetch"`. Aliases were silently no-ops at gateway-check time before — fixing that footgun was the point of `0.4-S15` (project convention #1: reject at parse, don't silently override).
 
 ## Examples
 
@@ -95,10 +95,46 @@ When the budget is exceeded the run aborts with a `runtime_error` whose message 
 - **`budget: 0` means unlimited**, not "zero allowed." Use `{ "allow": false, "budget": 0 }` to deny.
 - **String shorthand and object form are not mixable.** Pass exactly one shape.
 - **Unknown JSON shapes are rejected.** Old MCP clients that accidentally posted typo'd strings (e.g. `"alow-all"`) used to be silently treated as `allow-all`. They now return `success: false, error_kind: "invalid_policy"`. This is intentional — silent fall-through to allow-all was the bug FleetQ reported.
+- **Unknown fields are rejected** (sprint `0.4-S15`). A typo like `"default_alow": true` no longer parses as `default_allow: false` (silent default); it fails with `error_kind: "policy.unknown_field"`.
+- **Unsupported `schema_version` values are rejected.** This binary supports `schema_version: 1`. Setting `2` or any other value fails with `error_kind: "policy.unknown_schema_version"`.
+
+## CLI tooling (sprint 0.4-S15)
+
+```sh
+# Strict-validate a policy file. Designed as a CI gate.
+boruna policy validate policies/prod.json
+# → exit 0 + "OK: ..." on success
+# → exit 2 + stderr "error: policy.<kind>: ..." on validation error
+# → exit 1 + stderr "error: policy.io_error: ..." on file IO error
+
+# Machine-parseable output:
+boruna policy validate --json policies/prod.json
+# → {"ok":true} or {"ok":false,"errors":[{"error_kind":"policy.unknown_field",...}]}
+
+# Print the effective policy (denormalized).
+boruna policy show policies/prod.json
+```
+
+The MCP server exposes the same validator as `boruna_policy_validate`.
+
+## Stable error_kind taxonomy
+
+The strict validator emits these stable strings (project convention #2 — locked forever):
+
+| `error_kind` | When |
+|---|---|
+| `policy.io_error` | File missing or unreadable |
+| `policy.parse_error` | JSON syntax error or value type mismatch |
+| `policy.unknown_schema_version` | `schema_version` is set to an unsupported value |
+| `policy.unknown_field` | Unknown field at any level (top-level, `net_policy`, or inside a rule) |
+| `policy.invalid_capability` | A rule key is not a recognized canonical capability name |
+| `policy.invalid_net_policy` | `net_policy` value out of range or unknown method |
+
+The `boruna_run` MCP tool **also** emits the legacy `error_kind: "invalid_policy"` for non-object input (string typos, arrays, numbers). The new `policy.*` kinds apply to object-form payloads only — they are additive over `invalid_policy`, not a replacement.
 
 ## Versioning
 
-The schema carries `schema_version: 1`. Future breaking changes will bump this number; the MCP tool will continue to accept the old shape as long as `schema_version` matches a supported value. This field is what lets you cache `(script_hash, policy_hash)` results safely across binary upgrades.
+The schema carries `schema_version: 1`. Future breaking changes will bump this number; the MCP tool will continue to accept the old shape as long as `schema_version` matches a supported value. This field is what lets you cache `(script_hash, policy_hash)` results safely across binary upgrades. Sprint `0.4-S15` locked this contract: only `1` is currently accepted; new optional fields can be added at v1; shape changes require a version bump.
 
 ## Hashing for caching
 

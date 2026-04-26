@@ -5,6 +5,7 @@ pub mod error;
 pub mod http_handler;
 #[cfg(feature = "http")]
 pub mod net_record_replay;
+pub mod policy_validate;
 pub mod replay;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
@@ -18,6 +19,10 @@ pub use error::VmError;
 #[cfg(feature = "http")]
 pub use net_record_replay::{
     NetTape, NetTransaction, RecordingHttpHandler, ReplayingHttpHandler, TAPE_FORMAT_VERSION,
+};
+pub use policy_validate::{
+    parse as parse_policy_file, parse_file as parse_policy_path, PolicyParseError,
+    POLICY_SCHEMA_VERSION,
 };
 pub use replay::{EventLog, ReplayEngine};
 #[cfg(feature = "telemetry")]

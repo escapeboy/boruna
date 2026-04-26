@@ -8,6 +8,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Policy management as code** (sprint `0.4-S15`). Operators now
+  treat `--policy` files as versioned, validated, code-reviewable
+  artifacts. Two new CLI subcommands:
+  - `boruna policy validate <file> [--json]` — strict-validate a
+    policy file. Designed as a CI gate. Exits 0 on ok, 2 on
+    validation error, 1 on file IO error.
+  - `boruna policy show <file>` — validate then print the
+    effective policy (default behavior, denormalized rule list,
+    net_policy bounds).
+  Plus a new MCP tool `boruna_policy_validate(policy_json)` that
+  runs the same validator. The CLI, MCP, and `boruna run --policy
+  <file>` paths now share **one parser** — passing validate but
+  failing run is structurally impossible.
+- New `boruna_vm::policy_validate::{parse, parse_file,
+  PolicyParseError, POLICY_SCHEMA_VERSION}`. The validator
+  enforces:
+  - `schema_version` ∈ {`1`} (other values rejected — locks the
+    contract for forwards-compat).
+  - Top-level / `net_policy` / per-rule fields are an allow-list —
+    unknown fields rejected (`policy.unknown_field`). Closes the
+    silent-default footgun where `"default_alow": true` parsed as
+    `default_allow: false`.
+  - `rules` keys must be canonical capability names. Aliases
+    (`"net"`, `"db"`, …) rejected with a hint to the canonical
+    name (`"net.fetch"`, `"db.query"`). Aliases used to silently
+    no-op at gateway-check time.
+  - `net_policy.max_response_bytes > 0`, `timeout_ms > 0`,
+    `allowed_methods` ⊆ `{GET, POST, PUT, DELETE, PATCH, HEAD,
+    OPTIONS}` (canonical upper-case; lower-case rejected).
+- Stable `error_kind` taxonomy — locked per project convention #2:
+  `policy.io_error`, `policy.parse_error`,
+  `policy.unknown_schema_version`, `policy.unknown_field`,
+  `policy.invalid_capability`, `policy.invalid_net_policy`. Future
+  validators can add new kinds; existing kinds never rename.
+- 26 unit tests in `boruna_vm::policy_validate` + 11 CLI
+  integration tests in `crates/llmvm-cli/tests/cli_policy.rs` + 7
+  MCP tests + 3 protocol_version regression tests.
+- Updated `docs/reference/policy-schema.md` with the strict-validator
+  rules, error_kind taxonomy, and CLI tooling examples. Design
+  rationale in `docs/design-policy-as-code.md`.
+
+### Fixed
+
+- `Policy::default()` now produces `schema_version: 1` (matching
+  what the lenient deserializer's `#[serde(default = "...")]`
+  produces for an empty input). The derived default leaked
+  `schema_version: 0` into round-trips — invisible until the
+  `0.4-S15` strict validator surfaced it. Affects `Policy::deny_all()`
+  and any caller that started from `Policy::default()`.
+
 - **Multi-environment support** (sprint `0.4-S14`). New global
   `--env <name>` flag (also from `BORUNA_ENV` env var). When set:
   - `--data-dir` is namespaced to `<data-dir>/<env>/` so each

@@ -2,6 +2,7 @@ pub mod capability;
 pub mod check;
 pub mod compile;
 pub mod framework;
+pub mod policy;
 pub mod run;
 pub mod template;
 pub mod workflow;
@@ -175,6 +176,26 @@ mod protocol_version_tests {
             false,
         );
         assert_protocol_version(&out, "template_apply template_error");
+    }
+
+    // ── policy_validate (0.4-S15) ──
+
+    #[test]
+    fn policy_validate_ok_carries_protocol_version() {
+        let out = policy::validate_policy("{}");
+        assert_protocol_version(&out, "policy_validate ok");
+    }
+
+    #[test]
+    fn policy_validate_failure_carries_protocol_version() {
+        let out = policy::validate_policy(r#"{"foo": 1}"#);
+        assert_protocol_version(&out, "policy_validate failure");
+    }
+
+    #[test]
+    fn policy_validate_parse_error_carries_protocol_version() {
+        let out = policy::validate_policy("{");
+        assert_protocol_version(&out, "policy_validate parse_error");
     }
 
     // ── meta ──

@@ -1,0 +1,15 @@
+{
+    "schema_version": 1,
+    "default_allow": false,
+    "rules": {
+        "net.fetch": { "allow": true, "budget": 10 },
+        "fs.read": { "allow": true, "budget": 0 }
+    },
+    "net_policy": {
+        "allowed_domains": ["api.example.com"],
+        "allowed_methods": ["GET", "POST"],
+        "max_response_bytes": 1048576,
+        "timeout_ms": 5000,
+        "allow_redirects": true
+    }
+}
