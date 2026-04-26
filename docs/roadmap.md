@@ -2,9 +2,15 @@
 
 This roadmap describes what Boruna is working toward. It is realistic, not aspirational marketing. Items without a milestone are under consideration but not scheduled.
 
-Last refreshed: 2026-04-25 (after v0.2.0 ship).
+Last refreshed: 2026-04-26 (after v0.3.0 ship).
 
-## Current: 0.2.0
+## Current: 0.3.0
+
+Released 2026-04-26 — closes every big-rock theme on the original 0.3.0 plan: persistent workflow state (crash-resumable), concurrent step execution within waves, step retry policies, idempotent invocation, workflow versioning for CI/CD safety, the LLM-handler decision (BYOH), per-step attempt tracking with the project's first schema migration, workflow step output piping via the `step_input` builtin, and async step execution via the external-trigger CLI for webhook-driven workflows. Plus review-driven safety work (atomic trigger-commit closing a TOCTOU race; SSRF-hardened real HTTP handler).
+
+See [`CHANGELOG.md`](../CHANGELOG.md#030--2026-04-26) for the full 0.3-S2a → 0.3-S16 sprint stack.
+
+## Previous: 0.2.0
 
 Released 2026-04-25 — driven by [FleetQ implementer feedback](https://github.com/escapeboy/boruna/issues?q=label%3Aenhancement). Closes the two P0 adoption blockers; other P1/P2 asks tracked as issues #3–#9.
 
@@ -39,21 +45,23 @@ The DX work originally scoped for 0.2.0 ships incrementally as point releases. E
 - [ ] Evidence bundle diff — compare two runs side-by-side
 - [ ] Expanded stdlib — `std-llm`, `std-json` libraries
 
-## 0.3.0 — Real-use durability
+## 0.3.0 — Real-use durability — SHIPPED (2026-04-26)
 
-Target: Q3 2026
+Focus: workflows that survive process restarts, handle long-running steps, and unblock production use cases. Combined original 0.3.0 plan with two FleetQ P1 asks that fit thematically.
 
-Focus: workflows that survive process restarts, handle long-running steps, and unblock production use cases. Combines original 0.3.0 plan with two FleetQ P1 asks that fit thematically.
-
-- [ ] **Persistent workflow state** — checkpoint and resume across process restarts
-- [ ] **Async step execution** — steps that wait for external events (webhooks, approvals)
-- [ ] **Scheduled workflows** — trigger workflows on a cron schedule
-- [ ] **Step retry policies** — configurable retry with backoff on transient failures
-- [ ] **Workflow versioning** — run a workflow at a specific commit/version
-- [ ] **Workflow step output piping** — pass step outputs as typed inputs to downstream steps (deferred from 0.2.0)
-- [ ] **Structured resource limits with typed errors** ([#5](https://github.com/escapeboy/boruna/issues/5)) — `max_memory_mb`, `max_wall_ms`, `max_output_bytes`, returning `error_kind: "limit_exceeded"`. P1 from FleetQ.
-- [ ] **Versioned capability identity** ([#3](https://github.com/escapeboy/boruna/issues/3)) — `boruna_capability_list` returns `capability_set_hash` so integrators can safely cache results across binary upgrades. P1 from FleetQ. Pairs with the `Policy.schema_version` already in 0.2.0.
-- [x] **LLM live handler decision** — **DECIDED (sprint `0.3-S8`):** Bring Your Own Handler (BYOH) is the supported model. No default LLM handler ships in core; integrators wire their provider via the `CapabilityHandler` trait. Rationale + integration contract + reference OpenAI handler in [`docs/guides/llm-integration.md`](./guides/llm-integration.md).
+- [x] **Persistent workflow state** — checkpoint and resume across process restarts (`0.3-S2a`/`S2b`/`S3`/`S6`)
+- [x] **Async step execution** — steps that wait for external events via webhook-driven CLI trigger (`0.3-S15`); approval gates (`0.3-S2c`)
+- [x] **Step retry policies** — configurable retry with backoff on transient failures (`0.3-S5`)
+- [x] **Workflow versioning** — `--expect-workflow-hash` for CI/CD safety (`0.3-S9`)
+- [x] **Workflow step output piping** — `step_input` builtin (`0.3-S14`)
+- [x] **Structured resource limits with typed errors** ([#5](https://github.com/escapeboy/boruna/issues/5)) — `max_memory_mb`, `max_wall_ms`, `max_output_bytes` (`0.3-S10`)
+- [x] **Versioned capability identity** ([#3](https://github.com/escapeboy/boruna/issues/3)) — `boruna_capability_list` returns `capability_set_hash` for safe caching
+- [x] **LLM live handler decision** — **DECIDED (sprint `0.3-S8`):** Bring Your Own Handler (BYOH). No default LLM handler ships in core; integrators wire their provider via the `CapabilityHandler` trait. Rationale + integration contract + reference OpenAI handler in [`docs/guides/llm-integration.md`](./guides/llm-integration.md).
+- [x] **Concurrent step execution within waves** — `--concurrency N` (`0.3-S4`)
+- [x] **Idempotent invocation** — `--skip-if-running` for cron-driven scheduling (`0.3-S7`/`S10`)
+- [x] **Per-step attempt tracking** with first schema migration v1→v2 (`0.3-S11`/`S12`/`S13`)
+- [x] **Atomic trigger commit** closing TOCTOU race (`0.3-S16`, review-driven)
+- [ ] **Scheduled workflows** — trigger workflows on a cron schedule (deferred to 0.3.x; partially addressed by `--skip-if-running` for safe cron invocation)
 
 ## 0.4.0 — Operations
 
