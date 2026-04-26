@@ -8,6 +8,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`workflow show` surfaces `attempt_count`** (sprint `0.3-S12`).
+  Plain mode adds an `ATTEMPTS` column to the steps table; `--json`
+  mode adds `attempt_count` to each step's object. Closes the
+  operator-visibility loop opened by 0.3-S11 — operators triaging
+  flaky steps no longer need to query SQLite directly.
+
 - **`step_checkpoints.attempt_count` column** (sprint `0.3-S11`).
   Tracks the number of attempts each step took to reach its terminal
   state — `1` for first-try success or single-attempt failure;

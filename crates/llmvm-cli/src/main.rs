@@ -1888,6 +1888,10 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                                 "started_at_ms": c.started_at_ms,
                                 "ended_at_ms": c.ended_at_ms,
                                 "error_msg": c.error_msg,
+                                // 0.3-S12: per-step retry attempt count
+                                // (column added in 0.3-S11 schema v2).
+                                // 1 = first-try; >1 = retry policy fired.
+                                "attempt_count": c.attempt_count,
                             })
                         })
                         .collect();
@@ -1939,9 +1943,18 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                     } else {
                         let mut steps: Vec<&_> = detail.checkpoints.iter().collect();
                         steps.sort_by(|a, b| a.step_id.cmp(&b.step_id));
+                        // 0.3-S12: ATTEMPTS column surfaces the
+                        // per-step retry count (1 = first-try, >1 =
+                        // retry policy fired). Operator visibility
+                        // signal for triage of flaky steps.
                         println!(
-                            "  {:<24} {:<20} {:<14} {:<14} {:<24}",
-                            "STEP_ID", "STATUS", "STARTED_AT", "ENDED_AT", "OUTPUT_HASH"
+                            "  {:<24} {:<20} {:<8} {:<14} {:<14} {:<24}",
+                            "STEP_ID",
+                            "STATUS",
+                            "ATTEMPTS",
+                            "STARTED_AT",
+                            "ENDED_AT",
+                            "OUTPUT_HASH"
                         );
                         for c in &steps {
                             let hash_display = c
@@ -1950,9 +1963,10 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                                 .map(|h| if h.len() >= 16 { &h[..16] } else { h })
                                 .unwrap_or("(none)");
                             println!(
-                                "  {:<24} {:<20} {:<14} {:<14} {}",
+                                "  {:<24} {:<20} {:<8} {:<14} {:<14} {}",
                                 c.step_id,
                                 c.status.as_str(),
+                                c.attempt_count,
                                 c.started_at_ms
                                     .map(|t| t.to_string())
                                     .unwrap_or_else(|| "-".into()),
