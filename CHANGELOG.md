@@ -8,6 +8,51 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Per-error-class retry classification** (sprint `0.4-S8`). The
+  `RetryPolicy` schema gains an explicit `retry_on: Vec<String>`
+  allowlist alongside the legacy binary `on_transient` gate. Operators
+  who want "retry on transient timeouts but NOT on auth errors or
+  bad code" now express it directly:
+  ```json
+  "retry": {
+    "max_attempts": 3,
+    "on_transient": false,
+    "retry_on": ["wall_time_exceeded", "io_error"]
+  }
+  ```
+- New `error_class` taxonomy with stable string constants:
+  `wall_time_exceeded`, `step_limit_exceeded`, `capability_denied`,
+  `capability_budget_exceeded`, `compile_error`, `runtime_error`,
+  `io_error`, `input_resolution`. Forward-compatible — new classes
+  add without breaking existing policies.
+- New `classify_vm_error(&VmError) -> &'static str` maps every VM
+  error variant to its taxonomy class. Catch-all is `runtime_error`
+  (assertions, type errors, OOB, divisions, stack errors, bytecode
+  errors all surface here).
+- `should_retry_class(policy, class) -> bool` — central decision
+  function. Resolution order: no policy / max_attempts ≤ 1 → false;
+  non-empty `retry_on` → match in list; empty → fall back to
+  `on_transient`.
+- `retry_with_backoff` short-circuits on non-retry-eligible failures
+  rather than running through the full backoff schedule. A compile
+  error no longer waits 100+200+400ms before giving up.
+- 17 new tests covering classification mappings, allowlist semantics,
+  legacy fallback, unknown-class-ignored, retry_on takes precedence
+  over on_transient=false, and serde round-trip for legacy 0.3.x
+  workflow.json files (no `retry_on` field).
+
+#### Backward compatibility
+
+- A 0.3.x `workflow.json` with `retry: {max_attempts, on_transient}`
+  (no `retry_on` field) deserializes with `retry_on = vec![]` via
+  `#[serde(default)]`. The empty allowlist falls back to the legacy
+  `on_transient` gate, so prior behavior is exactly preserved.
+- `class` strings are case-sensitive. Use the lowercase snake_case
+  forms documented in `error_class::*`. Unknown strings (typos like
+  `"transient_netwrok"`) are silently ignored — they never match a
+  real failure class, so the policy behaves as if the typo were
+  absent (conservative-by-default).
+
 - **Wave-loop multi-pause-per-level** (sprint `0.4-S7`). The
   concurrent execution path (`--concurrency >= 2`) now pauses ALL
   pause-steps in the same DAG level in a single execution pass —

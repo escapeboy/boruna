@@ -43,6 +43,7 @@ fn retry_actually_sleeps_between_attempts() {
         retry: Some(RetryPolicy {
             max_attempts: 3,
             on_transient: true,
+            retry_on: vec![],
         }),
         budget: None,
     };
