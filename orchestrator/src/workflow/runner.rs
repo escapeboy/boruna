@@ -459,6 +459,24 @@ impl WorkflowRunner {
         let mut data_store =
             DataStore::new(&run_data_dir).map_err(|e| WorkflowRunError::Io(e.to_string()))?;
 
+        // 0.4-S11: append WorkflowStarted to the audit chain. The
+        // run row was just inserted with an empty audit_log, so
+        // this is the chain's genesis entry.
+        let policy_hash_seed = serde_json::to_string(&options.policy).unwrap_or_default();
+        if let Err(e) = append_audit_event(
+            store,
+            &run_id,
+            crate::audit::AuditEvent::WorkflowStarted {
+                workflow_hash: Self::workflow_hash_from_def(def),
+                policy_hash: sha256_hex(&policy_hash_seed),
+            },
+        ) {
+            // Best-effort logging; don't shadow the workflow's result.
+            eprintln!(
+                "warning: failed to append WorkflowStarted audit event for run '{run_id}': {e}"
+            );
+        }
+
         let result = if options.concurrency > 1 {
             // Wave-based concurrent execution. Compute levels once;
             // the wave loop handles dispatch + halt semantics.
@@ -507,6 +525,35 @@ impl WorkflowRunner {
                 "warning: failed to persist terminal status for run '{run_id}': {e} \
                  (workflow result is still authoritative; resume will reconcile)"
             );
+        }
+
+        // 0.4-S11: append WorkflowCompleted at terminal status only.
+        // Pause states (Paused) leave the chain open — the next
+        // resume continues appending. result_hash is the hash of the
+        // last step's persisted output (deterministic over the
+        // run's outputs).
+        if let Ok(r) = &result {
+            if matches!(r.status, WorkflowStatus::Completed | WorkflowStatus::Failed) {
+                let result_hash = r
+                    .step_results
+                    .values()
+                    .next_back()
+                    .and_then(|sr| sr.output_hash.clone())
+                    .unwrap_or_else(|| "0".repeat(64));
+                if let Err(e) = append_audit_event(
+                    store,
+                    &run_id,
+                    crate::audit::AuditEvent::WorkflowCompleted {
+                        result_hash,
+                        total_duration_ms: r.total_duration_ms,
+                    },
+                ) {
+                    eprintln!(
+                        "warning: failed to append WorkflowCompleted audit event for \
+                         run '{run_id}': {e}"
+                    );
+                }
+            }
         }
 
         result
@@ -1022,6 +1069,33 @@ impl WorkflowRunner {
             );
         }
 
+        // 0.4-S11: append WorkflowCompleted on terminal status. Same
+        // logic as `execute_after_insert` — resume terminates the
+        // run in the same way, so the audit chain closes here.
+        if let Ok(r) = &result {
+            if matches!(r.status, WorkflowStatus::Completed | WorkflowStatus::Failed) {
+                let result_hash = r
+                    .step_results
+                    .values()
+                    .next_back()
+                    .and_then(|sr| sr.output_hash.clone())
+                    .unwrap_or_else(|| "0".repeat(64));
+                if let Err(e) = append_audit_event(
+                    &store,
+                    run_id,
+                    crate::audit::AuditEvent::WorkflowCompleted {
+                        result_hash,
+                        total_duration_ms: r.total_duration_ms,
+                    },
+                ) {
+                    eprintln!(
+                        "warning: failed to append WorkflowCompleted audit event for \
+                         resume of run '{run_id}': {e}"
+                    );
+                }
+            }
+        }
+
         result
     }
 
@@ -1436,6 +1510,15 @@ impl WorkflowRunner {
                                     attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                            emit_step_terminal_audit(
+                                store,
+                                run_id,
+                                &step_id,
+                                StepStatus::Completed,
+                                Some(&output_hash),
+                                None,
+                                duration_ms,
+                            );
                             step_results.insert(
                                 step_id.clone(),
                                 StepResult {
@@ -1464,6 +1547,15 @@ impl WorkflowRunner {
                                     attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                            emit_step_terminal_audit(
+                                store,
+                                run_id,
+                                &step_id,
+                                StepStatus::Failed,
+                                None,
+                                Some(&err_msg),
+                                duration_ms,
+                            );
                             step_results.insert(
                                 step_id.clone(),
                                 StepResult {
@@ -1507,6 +1599,15 @@ impl WorkflowRunner {
                                     attempt_count: 1,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                            emit_step_terminal_audit(
+                                store,
+                                run_id,
+                                &step_id,
+                                StepStatus::Failed,
+                                None,
+                                Some(&err_msg),
+                                0,
+                            );
                             step_results.insert(
                                 step_id.clone(),
                                 StepResult {
@@ -1732,6 +1833,15 @@ impl WorkflowRunner {
                                     attempt_count: sr.attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                                emit_step_terminal_audit(
+                                    s,
+                                    run_id,
+                                    step_id,
+                                    StepStatus::Completed,
+                                    sr.output_hash.as_deref(),
+                                    None,
+                                    sr.duration_ms,
+                                );
                             }
                             step_results.insert(step_id.clone(), sr);
                         }
@@ -1761,10 +1871,19 @@ impl WorkflowRunner {
                                     output_hash: None,
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
-                                    error_msg: Some(err_msg),
+                                    error_msg: Some(err_msg.clone()),
                                     attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                                emit_step_terminal_audit(
+                                    s,
+                                    run_id,
+                                    step_id,
+                                    StepStatus::Failed,
+                                    None,
+                                    Some(&err_msg),
+                                    duration_ms,
+                                );
                             }
                             break;
                         }
@@ -2411,6 +2530,120 @@ fn acquire_trigger_token(
     Err(WorkflowRunError::Internal(format!(
         "CAS retry budget exhausted acquiring trigger token for step '{step_id}' in run '{run_id}'"
     )))
+}
+
+/// Append a single audit event to the run's hash-chained
+/// `metadata.audit_log` (sprint `0.4-S11`). Uses the same CAS-retry
+/// pattern as [`record_approval_decision`] / [`record_external_trigger`]
+/// — concurrent operator decisions and runner-side lifecycle appends
+/// converge after at most one CAS retry.
+///
+/// **Persistent path only.** Ephemeral runs (`WorkflowRunner::run`)
+/// have no store, so this is never called from that path.
+///
+/// **Best-effort failure mode.** If the CAS budget exhausts (heavily
+/// contended runs with N concurrent operator decisions racing the
+/// runner), the append returns `Internal`. Callers in the lifecycle
+/// path SHOULD log + continue rather than failing the run — a missed
+/// audit event is operationally annoying but not a correctness
+/// failure. The existing chain entries remain valid; the gap is
+/// detectable by an auditor as "fewer step events than checkpoints"
+/// at verify time.
+#[cfg(feature = "persist-sqlite")]
+fn append_audit_event(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    event: crate::audit::AuditEvent,
+) -> Result<(), WorkflowRunError> {
+    const CAS_RETRY_BUDGET: usize = 5;
+    for _ in 0..CAS_RETRY_BUDGET {
+        let metadata_json = store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        let mut metadata: PersistedRunMetadata =
+            serde_json::from_str(&metadata_json).map_err(|e| {
+                WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+            })?;
+        let mut audit = crate::audit::AuditLog::from_entries(metadata.audit_log);
+        audit.append(event.clone());
+        metadata.audit_log = audit.into_entries();
+        let updated_metadata = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
+        let swapped = store
+            .compare_and_swap_metadata(run_id, &metadata_json, &updated_metadata, now_unix_ms())
+            .map_err(WorkflowRunError::from)?;
+        if swapped {
+            return Ok(());
+        }
+        // CAS lost — concurrent writer touched metadata. Re-read and
+        // rebuild the chain on top of whatever they committed; our
+        // event will be appended last.
+    }
+    Err(WorkflowRunError::Internal(format!(
+        "CAS retry budget exhausted appending audit event to run '{run_id}'"
+    )))
+}
+
+/// Compute a SHA-256 hash of a string for audit-event fields like
+/// `policy_hash` (sprint `0.4-S11`). Hex-encoded, lowercase.
+#[cfg(feature = "persist-sqlite")]
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(s.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Emit a step-terminal audit event (Completed or Failed) based on
+/// the step result's status (sprint `0.4-S11`). Best-effort: a CAS
+/// budget exhaustion logs and continues, never propagates.
+///
+/// Called by both the sequential `execute_steps` path and the
+/// concurrent `execute_steps_concurrent` worker-result handler. The
+/// helper centralizes the Completed/Failed mapping so the call sites
+/// stay terse.
+#[cfg(feature = "persist-sqlite")]
+fn emit_step_terminal_audit(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    status: StepStatus,
+    output_hash: Option<&str>,
+    error: Option<&str>,
+    duration_ms: u64,
+) {
+    use crate::audit::AuditEvent;
+    let event = match status {
+        StepStatus::Completed => AuditEvent::StepCompleted {
+            step_id: step_id.to_string(),
+            // Synthesize an all-zeros hash for steps without an
+            // output (approval gates that advance via sentinel
+            // produce empty Map values, which still hash). Should
+            // never be None for Completed in practice.
+            output_hash: output_hash
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "0".repeat(64)),
+            duration_ms,
+        },
+        StepStatus::Failed => AuditEvent::StepFailed {
+            step_id: step_id.to_string(),
+            error: error.unwrap_or("(no error message)").to_string(),
+        },
+        // Other statuses (Pending, Running, AwaitingApproval,
+        // AwaitingExternalEvent, Skipped) are not terminal — no
+        // audit event for them at this point. AwaitingApproval /
+        // AwaitingExternalEvent get their own ApprovalGranted /
+        // ExternalTriggerReceived events from the decision
+        // entrypoints.
+        _ => return,
+    };
+    if let Err(e) = append_audit_event(store, run_id, event) {
+        eprintln!(
+            "warning: failed to append step-terminal audit event for \
+             step '{step_id}' in run '{run_id}': {e}"
+        );
+    }
 }
 
 /// Persist a single pause-step's checkpoint and (for triggers) its
@@ -7390,7 +7623,7 @@ mod tests {
         use super::*;
         use crate::audit::{AuditEvent, AuditLog};
 
-        fn read_audit_log(data_dir: &Path, run_id: &str) -> AuditLog {
+        pub(super) fn read_audit_log(data_dir: &Path, run_id: &str) -> AuditLog {
             let store = open_store(data_dir).unwrap();
             let metadata_json = store.get_run_metadata(run_id).unwrap().unwrap();
             let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
@@ -7413,10 +7646,11 @@ mod tests {
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
 
-            // No audit entries until the first decision.
-            let log = read_audit_log(data_dir.path(), &r.run_id);
-            assert_eq!(log.entries().len(), 0);
-
+            // 0.4-S11: chain now starts with WorkflowStarted, plus
+            // any step-completion events from steps that ran before
+            // the gate (`analyze`). After approval grant, the chain
+            // contains the lifecycle events PLUS the new
+            // ApprovalGranted entry.
             record_approval_decision(
                 data_dir.path(),
                 &r.run_id,
@@ -7427,13 +7661,22 @@ mod tests {
             .unwrap();
 
             let log = read_audit_log(data_dir.path(), &r.run_id);
-            assert_eq!(log.entries().len(), 1);
-            match &log.entries()[0].event {
-                AuditEvent::ApprovalGranted { step_id, .. } => {
-                    assert_eq!(step_id, "human_review")
-                }
-                other => panic!("wrong event variant: {other:?}"),
-            }
+            let granted_count = log
+                .entries()
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        &e.event,
+                        AuditEvent::ApprovalGranted { step_id, .. } if step_id == "human_review"
+                    )
+                })
+                .count();
+            assert_eq!(granted_count, 1, "expect one ApprovalGranted event");
+            // First entry is the lifecycle WorkflowStarted (sprint 0.4-S11).
+            assert!(matches!(
+                log.entries()[0].event,
+                AuditEvent::WorkflowStarted { .. }
+            ));
             log.verify().expect("hash chain must verify");
         }
 
@@ -7460,14 +7703,20 @@ mod tests {
             .unwrap();
 
             let log = read_audit_log(data_dir.path(), &r.run_id);
-            assert_eq!(log.entries().len(), 1);
-            match &log.entries()[0].event {
-                AuditEvent::ApprovalDenied { step_id, reason } => {
-                    assert_eq!(step_id, "human_review");
-                    assert_eq!(reason, "policy violation");
-                }
-                other => panic!("wrong event variant: {other:?}"),
-            }
+            // 0.4-S11: chain contains WorkflowStarted + step events +
+            // the new ApprovalDenied. Find the denied entry by variant.
+            let denied = log
+                .entries()
+                .iter()
+                .find_map(|e| match &e.event {
+                    AuditEvent::ApprovalDenied { step_id, reason } => {
+                        Some((step_id.clone(), reason.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("ApprovalDenied event must be present");
+            assert_eq!(denied.0, "human_review");
+            assert_eq!(denied.1, "policy violation");
             log.verify().expect("hash chain must verify");
         }
 
@@ -7495,19 +7744,24 @@ mod tests {
                 .unwrap();
 
             let log = read_audit_log(data_dir.path(), &r.run_id);
-            assert_eq!(log.entries().len(), 1);
+            // 0.4-S11: chain contains WorkflowStarted + step events
+            // for `init` + the new ExternalTriggerReceived. Find the
+            // trigger entry by variant.
             let expected_hash =
                 DataStore::hash_value(&boruna_bytecode::Value::String(payload.to_string()));
-            match &log.entries()[0].event {
-                AuditEvent::ExternalTriggerReceived {
-                    step_id,
-                    payload_hash,
-                } => {
-                    assert_eq!(step_id, "webhook");
-                    assert_eq!(payload_hash, &expected_hash);
-                }
-                other => panic!("wrong event variant: {other:?}"),
-            }
+            let trigger = log
+                .entries()
+                .iter()
+                .find_map(|e| match &e.event {
+                    AuditEvent::ExternalTriggerReceived {
+                        step_id,
+                        payload_hash,
+                    } => Some((step_id.clone(), payload_hash.clone())),
+                    _ => None,
+                })
+                .expect("ExternalTriggerReceived event must be present");
+            assert_eq!(trigger.0, "webhook");
+            assert_eq!(trigger.1, expected_hash);
             log.verify().expect("hash chain must verify");
         }
 
@@ -7612,9 +7866,31 @@ mod tests {
             .unwrap();
 
             let log = read_audit_log(data_dir.path(), &r.run_id);
-            assert_eq!(log.entries().len(), 2);
-            // Second entry's prev_hash chains to first.
-            assert_eq!(log.entries()[1].prev_hash, log.entries()[0].entry_hash);
+            // 0.4-S11: chain integrity check — every entry's prev_hash
+            // chains to the previous entry's entry_hash, regardless of
+            // which event variants are present.
+            for window in log.entries().windows(2) {
+                assert_eq!(
+                    window[1].prev_hash, window[0].entry_hash,
+                    "prev_hash linkage must be intact across all entries"
+                );
+            }
+            // The two specific decisions must both appear.
+            let decisions: Vec<_> = log
+                .entries()
+                .iter()
+                .filter_map(|e| match &e.event {
+                    AuditEvent::ApprovalGranted { step_id, .. } => {
+                        Some(("granted", step_id.as_str()))
+                    }
+                    AuditEvent::ApprovalDenied { step_id, .. } => {
+                        Some(("denied", step_id.as_str()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(decisions.contains(&("granted", "gate_a")));
+            assert!(decisions.contains(&("denied", "gate_b")));
             log.verify().expect("hash chain must verify");
         }
 
@@ -7702,9 +7978,12 @@ mod tests {
         }
 
         #[test]
-        fn audit_log_persists_across_resume() {
-            // After a decision, the resume's metadata reload must
-            // round-trip the audit log unchanged.
+        fn audit_log_grows_across_resume_with_linked_chain() {
+            // 0.4-S11: resume now appends step-completion events for
+            // steps that ran during the resume + a final
+            // WorkflowCompleted. The pre-resume entries must remain
+            // unchanged (same entry_hash values), and the new entries
+            // chain on top via prev_hash linkage.
             let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
             let data_dir = tempfile::tempdir().unwrap();
             let options = RunOptions {
@@ -7723,7 +8002,13 @@ mod tests {
                 None,
             )
             .unwrap();
-            let pre_resume_hash = read_audit_log(data_dir.path(), &r.run_id).hash();
+            let pre_resume_log = read_audit_log(data_dir.path(), &r.run_id);
+            let pre_count = pre_resume_log.entries().len();
+            let pre_hashes: Vec<String> = pre_resume_log
+                .entries()
+                .iter()
+                .map(|e| e.entry_hash.clone())
+                .collect();
 
             let resumed = WorkflowRunner::resume(
                 &r.run_id,
@@ -7737,12 +8022,28 @@ mod tests {
             .unwrap();
             assert_eq!(resumed.status, WorkflowStatus::Completed);
 
-            let post_resume_hash = read_audit_log(data_dir.path(), &r.run_id).hash();
-            assert_eq!(
-                pre_resume_hash, post_resume_hash,
-                "audit log hash must be unchanged across resume — the decision \
-                 events were appended at decision time, not at advancement time"
+            let post_resume_log = read_audit_log(data_dir.path(), &r.run_id);
+            assert!(
+                post_resume_log.entries().len() > pre_count,
+                "resume must append lifecycle events to the chain"
             );
+            // Pre-resume entries must be byte-identical (no
+            // re-hashing or re-ordering).
+            for (i, expected_hash) in pre_hashes.iter().enumerate() {
+                assert_eq!(
+                    &post_resume_log.entries()[i].entry_hash,
+                    expected_hash,
+                    "pre-resume entry {i} must be unchanged"
+                );
+            }
+            // Final entry is WorkflowCompleted.
+            assert!(matches!(
+                post_resume_log.entries().last().unwrap().event,
+                AuditEvent::WorkflowCompleted { .. }
+            ));
+            post_resume_log
+                .verify()
+                .expect("hash chain must verify across resume");
         }
     }
 
@@ -7855,14 +8156,21 @@ mod tests {
             let bundle_path = output_dir.path().join(&r.run_id);
             let audit_json = std::fs::read_to_string(bundle_path.join("audit_log.json")).unwrap();
             let audit = AuditLog::from_json(&audit_json).unwrap();
-            assert_eq!(audit.entries().len(), 1);
-            match &audit.entries()[0].event {
-                AuditEvent::ApprovalDenied { step_id, reason } => {
-                    assert_eq!(step_id, "human_review");
-                    assert_eq!(reason, "over budget");
-                }
-                other => panic!("wrong event variant: {other:?}"),
-            }
+            // 0.4-S11: bundle now contains lifecycle events (started,
+            // step completions, possibly completed) plus the
+            // ApprovalDenied. Find the denial entry by variant.
+            let denied = audit
+                .entries()
+                .iter()
+                .find_map(|e| match &e.event {
+                    AuditEvent::ApprovalDenied { step_id, reason } => {
+                        Some((step_id.clone(), reason.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("ApprovalDenied event must be in bundled chain");
+            assert_eq!(denied.0, "human_review");
+            assert_eq!(denied.1, "over budget");
             audit.verify().expect("bundle's audit chain must verify");
         }
 
@@ -7988,10 +8296,174 @@ mod tests {
         }
 
         #[test]
-        fn create_bundle_empty_chain_for_run_without_decisions() {
-            // A run that completes without any approval/trigger
-            // decisions still gets a bundle with an empty audit
-            // chain. The chain must verify (trivially).
+        fn lifecycle_events_emitted_in_order_for_multi_step_run() {
+            // 0.4-S11: a 2-step linear workflow produces a chain with
+            // [WorkflowStarted, StepCompleted(s1), StepCompleted(s2),
+            //  WorkflowCompleted] in topological order.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("a.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("b.ax"), "fn main() -> Int { 2 }").unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "linear".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    (
+                        "a".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/a.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "b".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/b.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["a".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(r.status, WorkflowStatus::Completed);
+
+            let log = audit_decisions::read_audit_log(data_dir.path(), &r.run_id);
+            // Must have WorkflowStarted + 2 StepCompleted + WorkflowCompleted = 4
+            assert_eq!(log.entries().len(), 4);
+            // Order: WorkflowStarted first.
+            assert!(matches!(
+                log.entries()[0].event,
+                AuditEvent::WorkflowStarted { .. }
+            ));
+            // Next two are StepCompleted in topological order (a, b).
+            match &log.entries()[1].event {
+                AuditEvent::StepCompleted { step_id, .. } => assert_eq!(step_id, "a"),
+                other => panic!("entry 1 must be StepCompleted(a), got {other:?}"),
+            }
+            match &log.entries()[2].event {
+                AuditEvent::StepCompleted { step_id, .. } => assert_eq!(step_id, "b"),
+                other => panic!("entry 2 must be StepCompleted(b), got {other:?}"),
+            }
+            // Last is WorkflowCompleted.
+            assert!(matches!(
+                log.entries()[3].event,
+                AuditEvent::WorkflowCompleted { .. }
+            ));
+            log.verify().expect("lifecycle chain must verify");
+        }
+
+        #[test]
+        fn step_failed_event_emitted_on_runtime_error() {
+            // 0.4-S11: a step that hits a runtime error produces a
+            // StepFailed event with the error message captured in the
+            // chain.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(
+                steps_dir.join("boom.ax"),
+                "fn main() -> Int {\n    let xs: List<Int> = [1, 2, 3]\n    list_get(xs, 99)\n}",
+            )
+            .unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "boom".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([(
+                    "boom".into(),
+                    StepDef {
+                        kind: StepKind::Source {
+                            source: "steps/boom.ax".into(),
+                        },
+                        capabilities: vec![],
+                        inputs: BTreeMap::new(),
+                        outputs: BTreeMap::new(),
+                        depends_on: vec![],
+                        timeout_ms: None,
+                        retry: None,
+                        budget: None,
+                    },
+                )]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(r.status, WorkflowStatus::Failed);
+
+            let log = audit_decisions::read_audit_log(data_dir.path(), &r.run_id);
+            let failed = log
+                .entries()
+                .iter()
+                .find_map(|e| match &e.event {
+                    AuditEvent::StepFailed { step_id, error } => {
+                        Some((step_id.clone(), error.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("StepFailed event must be present");
+            assert_eq!(failed.0, "boom");
+            assert!(
+                failed.1.contains("runtime error"),
+                "error message should reference the runtime failure: {}",
+                failed.1
+            );
+            log.verify().expect("chain must verify");
+        }
+
+        #[test]
+        fn create_bundle_lifecycle_chain_for_run_without_decisions() {
+            // 0.4-S11: a run with no decisions still produces a chain
+            // — WorkflowStarted, one StepCompleted per source step,
+            // and WorkflowCompleted on terminal status. The chain
+            // verifies; the bundle includes it.
             let dir = tempfile::tempdir().unwrap();
             let steps_dir = dir.path().join("steps");
             std::fs::create_dir_all(&steps_dir).unwrap();
@@ -8041,10 +8513,25 @@ mod tests {
                 std::fs::read_to_string(output_dir.path().join(&r.run_id).join("audit_log.json"))
                     .unwrap();
             let audit = AuditLog::from_json(&audit_json).unwrap();
-            assert_eq!(audit.entries().len(), 0);
-            audit.verify().expect("empty chain trivially verifies");
-            // audit_log_hash for empty log = "0".repeat(64).
-            assert_eq!(manifest.audit_log_hash, "0".repeat(64));
+            // Lifecycle events: WorkflowStarted + StepCompleted(only)
+            // + WorkflowCompleted = 3 entries.
+            assert_eq!(audit.entries().len(), 3);
+            assert!(matches!(
+                audit.entries()[0].event,
+                AuditEvent::WorkflowStarted { .. }
+            ));
+            assert!(matches!(
+                audit.entries()[1].event,
+                AuditEvent::StepCompleted { .. }
+            ));
+            assert!(matches!(
+                audit.entries()[2].event,
+                AuditEvent::WorkflowCompleted { .. }
+            ));
+            audit.verify().expect("lifecycle chain must verify");
+            // Non-empty chain → audit_log_hash is the last entry's hash,
+            // not the all-zeros sentinel.
+            assert_ne!(manifest.audit_log_hash, "0".repeat(64));
         }
     }
 }

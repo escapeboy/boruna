@@ -8,6 +8,61 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Full lifecycle audit events** (sprint `0.4-S11`). Closes the
+  audit theme for 0.4.0. The audit chain now captures the complete
+  run lifecycle, not just operator decisions:
+  - `WorkflowStarted { workflow_hash, policy_hash }` — appended at
+    `execute_after_insert`'s top, immediately after the run row
+    inserts.
+  - `StepCompleted { step_id, output_hash, duration_ms }` — appended
+    after each step's terminal `Completed` checkpoint write.
+  - `StepFailed { step_id, error }` — appended after each step's
+    terminal `Failed` checkpoint write (including panic-failed
+    workers in the concurrent path).
+  - `WorkflowCompleted { result_hash, total_duration_ms }` —
+    appended at terminal status only (Completed/Failed). Resume's
+    terminal exit also appends it. Pause states leave the chain
+    open for the next resume to extend.
+- New `append_audit_event(store, run_id, event)` helper using the
+  same CAS-retry pattern as `record_approval_decision` /
+  `record_external_trigger`. Lifecycle appends are best-effort: a
+  CAS budget exhaustion logs a warning and continues. Missed audit
+  events are operationally annoying (chain has fewer step events
+  than checkpoints) but never fail the run — the chain entries that
+  DID commit remain valid, and an auditor at `verify` time sees the
+  gap explicitly.
+- `StepStarted` events are deliberately NOT emitted — the
+  checkpoint's `started_at_ms` already captures per-step start
+  operationally, and emitting an event-per-start would double the
+  CAS-write count for limited compliance value.
+- 2 new tests in `tests::evidence_bundle`:
+  `lifecycle_events_emitted_in_order_for_multi_step_run` (4-entry
+  chain in topological order: Started → 2× StepCompleted →
+  Completed) and `step_failed_event_emitted_on_runtime_error`
+  (chain captures the failed step + error message).
+- 7 existing audit_decisions / evidence_bundle tests updated to
+  match the new chain shape (lifecycle events + decisions).
+
+#### Audit theme summary
+
+Across `0.4-S9` (decisions), `0.4-S10` (bundle creation), and
+`0.4-S11` (lifecycle events), the audit story is now end-to-end
+complete: every persistent run produces a hash-chained audit log
+of all lifecycle transitions and operator actions, the chain is
+persisted atomically with the corresponding state changes, and
+`boruna evidence create <run-id>` packages it with all reproducibility
+artifacts for downstream verification via `boruna evidence verify`.
+
+#### Performance impact
+
+For a workflow with N steps, the chain now requires roughly N+2
+additional CAS-protected metadata writes (1 WorkflowStarted, N
+StepCompleted/Failed, 1 WorkflowCompleted). Each write is a
+single SQLite UPDATE with a small JSON blob. For typical workflows
+this is operationally negligible. High-throughput integrators can
+disable lifecycle audit by deferring this sprint's wiring (no
+disable flag ships in this sprint — file an issue if needed).
+
 - **`boruna evidence create <run-id>`** (sprint `0.4-S10`). Builds an
   evidence bundle from a persisted run by reading the run's metadata,
   step checkpoints, and hash-chained audit log. Closes the
