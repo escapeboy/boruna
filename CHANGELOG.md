@@ -8,6 +8,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`LlmRouterHandler` — multi-provider LLM dispatch helper** (sprint
+  `0.4-S13`). Direct extension of the BYOH decision in `0.3-S8`.
+  Integrators with multiple LLM providers (OpenAI + Anthropic +
+  local Ollama / vLLM) no longer need to write their own dispatch
+  logic — the router takes a registry of provider handlers and
+  routes each `Capability::LlmCall` based on a `provider/model`
+  prefix in `args[1]`:
+  ```rust
+  let mut providers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
+  providers.insert("openai".into(), Box::new(my_openai_handler));
+  providers.insert("anthropic".into(), Box::new(my_anthropic_handler));
+  let router = LlmRouterHandler::new(providers, Box::new(MockHandler));
+  ```
+  `.ax` callers then write `llm_call("Summarize:", "openai/gpt-4")` —
+  the prefix selects the provider; the full model string (including
+  the prefix) is forwarded unchanged so providers can use it for
+  internal tagging.
+- The router is pure routing logic — Boruna still ships **zero**
+  provider HTTP code. Each provider's handler implementation,
+  authentication, and response parsing belong to the integrator
+  per the BYOH model.
+- Non-LLM capability calls pass through to a fallback handler so
+  the router composes with the existing `StepInputHandler` /
+  `MockHandler` / `HttpHandler` stack.
+- Typed errors for: missing model arg, non-string model arg,
+  malformed model string (no `/`), empty provider prefix, unknown
+  provider (error message includes the registered providers list).
+- Late-registration support via `add_provider(name, handler)`
+  returning the previously-registered handler.
+- 11 unit tests covering routing, args forwarding, error variants,
+  fallback delegation, late registration, and deterministic
+  `registered_providers` ordering.
+- Updated `docs/guides/llm-integration.md` with a new section
+  walking through the router setup.
+
 - **Prometheus metrics export CLI** (sprint `0.4-S12`). New
   `boruna metrics export --data-dir <DIR>` command reads the
   persistent run store and writes Prometheus text format to stdout.

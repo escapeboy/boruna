@@ -259,6 +259,137 @@ impl CapabilityHandler for StepInputHandler {
     }
 }
 
+/// Multi-provider router for `Capability::LlmCall` (sprint `0.4-S13`).
+///
+/// Wraps a registry of provider handlers (one per LLM backend —
+/// OpenAI, Anthropic, Ollama, vLLM, custom) and dispatches each
+/// `Capability::LlmCall` to the right one based on a `provider/model`
+/// prefix in `args[1]`. Non-LLM capability calls delegate to a
+/// fallback handler so the router composes with the existing
+/// `StepInputHandler` / `MockHandler` / `HttpHandler` stack.
+///
+/// **Why this lives in core but doesn't ship provider implementations:**
+/// per the BYOH decision in `0.3-S8` (see `docs/guides/llm-integration.md`),
+/// Boruna does not ship default LLM handlers. Each provider's HTTP
+/// client, auth, and response-shape parsing belong to the integrator
+/// and follow their own release cadence. The router is pure routing
+/// logic — it adds no provider compatibility commitments to core.
+///
+/// **Routing convention:** `args[1]` is parsed as `provider/model`
+/// (e.g. `openai/gpt-4`, `anthropic/claude-3-5-sonnet-20241022`,
+/// `ollama/llama3:8b`). The portion before the first `/` selects the
+/// provider; the full string (including provider prefix) is forwarded
+/// to the provider's handler unchanged so providers can still use
+/// the model name internally.
+///
+/// **Conventions on the LLM call shape:** `args[0]` is the prompt
+/// (per the integration guide); `args[1]` is the routing key. Providers
+/// are free to interpret remaining args as they like.
+///
+/// # Minimal example
+///
+/// ```ignore
+/// use std::collections::BTreeMap;
+/// use boruna_vm::capability_gateway::{
+///     CapabilityHandler, LlmRouterHandler, MockHandler,
+/// };
+///
+/// let mut providers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
+/// providers.insert("openai".into(), Box::new(my_openai_handler));
+/// providers.insert("anthropic".into(), Box::new(my_anthropic_handler));
+///
+/// let router = LlmRouterHandler::new(providers, Box::new(MockHandler));
+///
+/// // .ax code: let response = llm_call("Summarize:", "openai/gpt-4")
+/// // → router parses "openai/gpt-4" → routes to my_openai_handler
+/// ```
+pub struct LlmRouterHandler {
+    providers: BTreeMap<String, Box<dyn CapabilityHandler>>,
+    fallback: Box<dyn CapabilityHandler>,
+}
+
+impl LlmRouterHandler {
+    /// Construct a router with a pre-built provider registry and a
+    /// fallback handler for non-LLM capability calls.
+    pub fn new(
+        providers: BTreeMap<String, Box<dyn CapabilityHandler>>,
+        fallback: Box<dyn CapabilityHandler>,
+    ) -> Self {
+        LlmRouterHandler {
+            providers,
+            fallback,
+        }
+    }
+
+    /// Register an additional provider after construction. Returns
+    /// the previously-registered handler if `name` was already in the
+    /// registry — caller chooses whether to log, panic, or chain.
+    pub fn add_provider(
+        &mut self,
+        name: &str,
+        handler: Box<dyn CapabilityHandler>,
+    ) -> Option<Box<dyn CapabilityHandler>> {
+        self.providers.insert(name.to_string(), handler)
+    }
+
+    /// List the registered provider names. Useful for surfacing a
+    /// helpful error message when an `.ax` step references an
+    /// unknown provider.
+    pub fn registered_providers(&self) -> Vec<&str> {
+        self.providers.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+impl CapabilityHandler for LlmRouterHandler {
+    fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
+        // Non-LLM calls pass through to the fallback unchanged.
+        // The router is specifically about multi-provider LLM
+        // dispatch; it shouldn't impose semantics on net.fetch /
+        // db.query / etc.
+        if !matches!(cap, Capability::LlmCall) {
+            return self.fallback.handle(cap, args);
+        }
+
+        // args[0] is the prompt (per the BYOH convention); args[1]
+        // is the routing key. A 0-arg or 1-arg LlmCall has no
+        // provider hint — surface a typed error rather than
+        // silently picking a default (no good default exists when
+        // multiple providers are registered).
+        let model_arg = args.get(1).ok_or_else(|| {
+            "llm router: llm.call requires a model name as args[1] in \
+             'provider/model' format (e.g. 'openai/gpt-4')"
+                .to_string()
+        })?;
+        let model_str = match model_arg {
+            Value::String(s) => s.as_str(),
+            other => {
+                return Err(format!(
+                    "llm router: args[1] (model) must be a String, got {}",
+                    other.type_name()
+                ));
+            }
+        };
+        let provider_name = match model_str.split_once('/') {
+            Some((provider, _model)) if !provider.is_empty() => provider,
+            _ => {
+                return Err(format!(
+                    "llm router: model '{model_str}' must be in 'provider/model' \
+                     format (e.g. 'openai/gpt-4'). Registered providers: {:?}",
+                    self.registered_providers()
+                ));
+            }
+        };
+
+        match self.providers.get_mut(provider_name) {
+            Some(handler) => handler.handle(cap, args),
+            None => Err(format!(
+                "llm router: unknown provider '{provider_name}' (registered: {:?})",
+                self.registered_providers()
+            )),
+        }
+    }
+}
+
 /// Replay handler that returns values from a recorded log.
 pub struct ReplayHandler {
     events: Vec<Value>,
@@ -425,4 +556,237 @@ fn approx_value_bytes(value: &Value) -> u64 {
 /// (recursively, through containers). See `approx_value_bytes`.
 fn approx_bytes(args: &[Value]) -> u64 {
     args.iter().map(approx_value_bytes).sum()
+}
+
+#[cfg(test)]
+mod llm_router_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Test handler that records every call and returns a tagged
+    /// response so tests can verify which provider was hit.
+    struct RecordingHandler {
+        tag: String,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
+    }
+
+    impl CapabilityHandler for RecordingHandler {
+        fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((cap.clone(), args.to_vec()));
+            Ok(Value::String(format!("response-from-{}", self.tag)))
+        }
+    }
+
+    fn make_recorder(
+        tag: &str,
+    ) -> (
+        Box<dyn CapabilityHandler>,
+        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = RecordingHandler {
+            tag: tag.to_string(),
+            calls: calls.clone(),
+        };
+        (Box::new(handler), calls)
+    }
+
+    fn make_router_with_two_providers() -> (
+        LlmRouterHandler,
+        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
+    ) {
+        let (openai_handler, openai_calls) = make_recorder("openai");
+        let (anthropic_handler, anthropic_calls) = make_recorder("anthropic");
+        let mut providers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
+        providers.insert("openai".to_string(), openai_handler);
+        providers.insert("anthropic".to_string(), anthropic_handler);
+        let router = LlmRouterHandler::new(providers, Box::new(MockHandler));
+        (router, openai_calls, anthropic_calls)
+    }
+
+    #[test]
+    fn routes_to_openai_provider_when_model_starts_with_openai_slash() {
+        let (mut router, openai_calls, anthropic_calls) = make_router_with_two_providers();
+        let result = router.handle(
+            &Capability::LlmCall,
+            &[
+                Value::String("Summarize:".into()),
+                Value::String("openai/gpt-4".into()),
+            ],
+        );
+        assert_eq!(
+            result.unwrap(),
+            Value::String("response-from-openai".into())
+        );
+        assert_eq!(openai_calls.lock().unwrap().len(), 1);
+        assert_eq!(anthropic_calls.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn routes_to_anthropic_provider_when_model_starts_with_anthropic_slash() {
+        let (mut router, openai_calls, anthropic_calls) = make_router_with_two_providers();
+        router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("Summarize:".into()),
+                    Value::String("anthropic/claude-3-5-sonnet-20241022".into()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(openai_calls.lock().unwrap().len(), 0);
+        assert_eq!(anthropic_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn forwards_full_args_to_provider_unchanged() {
+        // The provider handler must receive the prompt + the full
+        // model string (with provider prefix), not the model name
+        // alone — providers may want to use the prefix internally
+        // for telemetry / billing tagging.
+        let (mut router, openai_calls, _) = make_router_with_two_providers();
+        router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("Summarize:".into()),
+                    Value::String("openai/gpt-4".into()),
+                    Value::Float(0.7),
+                ],
+            )
+            .unwrap();
+        let calls = openai_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let (_, args) = &calls[0];
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], Value::String("Summarize:".into()));
+        assert_eq!(args[1], Value::String("openai/gpt-4".into()));
+        assert_eq!(args[2], Value::Float(0.7));
+    }
+
+    #[test]
+    fn errors_on_unknown_provider() {
+        let (mut router, _, _) = make_router_with_two_providers();
+        let err = router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("hello".into()),
+                    Value::String("unknown/model".into()),
+                ],
+            )
+            .expect_err("unknown provider must error");
+        assert!(err.contains("unknown provider 'unknown'"));
+        // Error message should list registered providers for triage.
+        assert!(err.contains("openai"));
+        assert!(err.contains("anthropic"));
+    }
+
+    #[test]
+    fn errors_on_missing_model_arg() {
+        let (mut router, _, _) = make_router_with_two_providers();
+        let err = router
+            .handle(&Capability::LlmCall, &[Value::String("hello".into())])
+            .expect_err("missing model arg must error");
+        assert!(err.contains("requires a model name as args[1]"));
+    }
+
+    #[test]
+    fn errors_when_model_arg_is_not_a_string() {
+        let (mut router, _, _) = make_router_with_two_providers();
+        let err = router
+            .handle(
+                &Capability::LlmCall,
+                &[Value::String("hello".into()), Value::Int(42)],
+            )
+            .expect_err("non-string model arg must error");
+        assert!(err.contains("args[1] (model) must be a String"));
+    }
+
+    #[test]
+    fn errors_on_malformed_model_string_no_slash() {
+        let (mut router, _, _) = make_router_with_two_providers();
+        let err = router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("hello".into()),
+                    Value::String("just-a-model-name".into()),
+                ],
+            )
+            .expect_err("missing slash must error");
+        assert!(err.contains("'provider/model' format"));
+    }
+
+    #[test]
+    fn errors_on_empty_provider_prefix() {
+        // "/gpt-4" has an empty provider prefix — not a valid lookup.
+        let (mut router, _, _) = make_router_with_two_providers();
+        let err = router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("hello".into()),
+                    Value::String("/gpt-4".into()),
+                ],
+            )
+            .expect_err("empty provider prefix must error");
+        assert!(err.contains("'provider/model' format"));
+    }
+
+    #[test]
+    fn non_llm_calls_pass_through_to_fallback() {
+        // A non-LLM capability call must hit the fallback handler,
+        // not error and not consult the provider registry. The
+        // fallback in the test setup is MockHandler, which returns
+        // canned values for each capability.
+        let (mut router, openai_calls, anthropic_calls) = make_router_with_two_providers();
+        let result = router
+            .handle(&Capability::TimeNow, &[])
+            .expect("non-LLM call must succeed via fallback");
+        // MockHandler returns Int(1700000000) for TimeNow.
+        assert_eq!(result, Value::Int(1700000000));
+        // Provider handlers were NOT consulted.
+        assert_eq!(openai_calls.lock().unwrap().len(), 0);
+        assert_eq!(anthropic_calls.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn add_provider_replaces_existing_and_returns_old() {
+        // The router supports late registration / replacement. The
+        // returned Option<Box<dyn ...>> lets callers chain or
+        // explicitly drop the previous handler.
+        let (mut router, _, _) = make_router_with_two_providers();
+        let (replacement, replacement_calls) = make_recorder("openai-v2");
+        let prior = router.add_provider("openai", replacement);
+        assert!(
+            prior.is_some(),
+            "replacing a provider must return the prior handler"
+        );
+
+        // After replacement, calls route to the new handler.
+        router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("hi".into()),
+                    Value::String("openai/gpt-4".into()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(replacement_calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registered_providers_returns_lexicographic_order() {
+        // BTreeMap keys are sorted, so registered_providers() output
+        // is deterministic. Lock that contract — tests that match
+        // on error-message provider lists rely on it.
+        let (router, _, _) = make_router_with_two_providers();
+        assert_eq!(router.registered_providers(), vec!["anthropic", "openai"]);
+    }
 }
