@@ -184,7 +184,14 @@ impl StepStatus {
 
 /// One row in the `runs` table. Fields documented per the determinism
 /// contract — timestamps are operational, hashes are replay-verified.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` is derived so read-only consumers (e.g. the workflow
+/// dashboard from sprint `0.4-S16`) can render rows directly. The type
+/// is NOT `Deserialize` — there is no scenario where a dashboard
+/// consumer should be reconstructing a row; if you find yourself
+/// wanting that, you probably want `RunRecord` (replay-verified
+/// subset) or to query the store directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunRow {
     pub run_id: String,
     pub workflow_name: String,
@@ -255,7 +262,9 @@ pub enum TriggerCommitOutcome {
 /// pattern-match a `RunStatus` directly.
 ///
 /// Introduced in sprint `0.3-S2b` per the H1 review finding from `0.3-S2a`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` (sprint `0.4-S16`) — read-only dashboard consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunRecord {
     pub run_id: String,
     pub workflow_name: String,
@@ -278,7 +287,9 @@ pub struct RunRecord {
 /// `transient_status` carries any [`RunStatus`] including transients
 /// (`Running`, `Paused`). Audit code that needs to assert a run completed
 /// MUST go through [`RunRecord::terminal_status`] instead.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` (sprint `0.4-S16`) — read-only dashboard consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunOperational {
     pub run_id: String,
     pub transient_status: RunStatus,
@@ -290,7 +301,9 @@ pub struct RunOperational {
 
 /// One row in the `step_checkpoints` table. The `(run_id, step_id)`
 /// composite key permits ordered scans for resume.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` (sprint `0.4-S16`) — read-only dashboard consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StepCheckpoint {
     pub run_id: String,
     pub step_id: String,
