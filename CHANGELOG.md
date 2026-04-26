@@ -6,6 +6,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Trigger-flow TOCTOU race** (sprint `0.3-S16`). The 0.3-S15 trigger
+  flow split metadata writes (CAS) and step-checkpoint transitions
+  (resume sentinel pass) across two separate SQL transactions. A
+  concurrent `boruna workflow resume` calling
+  `mark_step_running_clearing_output` between the trigger function's
+  metadata-CAS and the next resume's sentinel pass could leave the
+  payload silently logged-and-discarded. Fixed by wrapping the
+  metadata CAS and the checkpoint transition in a single
+  `BEGIN IMMEDIATE` SQL transaction (new
+  `RunCheckpointStore::commit_external_trigger`). SQLite's
+  write-locked transaction blocks concurrent writers, making the
+  checkpoint state read inside the transaction authoritative.
+- New `TriggerCommitOutcome` enum (`Committed | MetadataChanged |
+  CheckpointStateMismatch { current_status }`) for callers that need
+  to distinguish CAS-retry-eligible races from operator-error states.
+- Resume sentinel pass remains in place as a defensive recovery for
+  legacy 0.3-S15-format DBs (metadata.triggers populated with non-empty
+  payload but checkpoint still in `awaiting_external_event`). New
+  forward-compat test confirms the upgrade path.
+- 5 new persistence-layer unit tests + 3 new runner-level integration
+  tests cover the atomic-commit outcomes and the legacy upgrade
+  scenario.
+
 ### Added
 
 - **Async step execution via external trigger CLI** (sprint `0.3-S15`).

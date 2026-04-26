@@ -32,7 +32,7 @@ use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
 
-use rusqlite::{params, Connection, Error as SqlError};
+use rusqlite::{params, Connection, Error as SqlError, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 /// Wire-format version of the on-disk schema.
@@ -221,6 +221,25 @@ pub struct RunRow {
 pub enum InsertOrSkip {
     Inserted(String),
     Skipped(RunRow),
+}
+
+/// Outcome of [`RunCheckpointStore::commit_external_trigger`] (sprint
+/// 0.3-S16). Distinguishes the three terminal states of the atomic
+/// trigger-commit operation so the caller can decide whether to retry,
+/// surface an error, or treat the write as successful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerCommitOutcome {
+    /// Both the metadata CAS and the checkpoint transition committed.
+    Committed,
+    /// The on-disk metadata moved between the caller's read and the
+    /// CAS-write. Caller should re-read metadata, re-validate, and
+    /// retry within its CAS-retry budget.
+    MetadataChanged,
+    /// The step's checkpoint was not in `awaiting_external_event`
+    /// state (e.g., already `completed`, or a concurrent process
+    /// transitioned it to `running` and hasn't yet re-paused). Caller
+    /// surfaces a typed error to the operator.
+    CheckpointStateMismatch { current_status: String },
 }
 
 /// Replay-verified subset of a [`RunRow`]. Audit, replay, and any code
@@ -583,6 +602,139 @@ impl RunCheckpointStore {
                 Ok(swapped) => {
                     self.conn.execute_batch("COMMIT")?;
                     Ok(swapped)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Atomic commit of an external-trigger event (sprint 0.3-S16):
+    /// CAS-update the run's `metadata_json` AND transition the named
+    /// step's checkpoint from `awaiting_external_event` to `completed`
+    /// (with the synthesized output) in a single `BEGIN IMMEDIATE`
+    /// transaction.
+    ///
+    /// **Closes the TOCTOU race** between [`compare_and_swap_metadata`]
+    /// and a concurrent runner's `mark_step_running_clearing_output`.
+    /// Without this method, a webhook-driven trigger could commit its
+    /// metadata write at the same instant as a `boruna workflow resume`
+    /// transitioned the same step to `running` — the next resume's
+    /// trigger-sentinel pass would then see the checkpoint past the
+    /// gate and silently discard the payload. SQLite's `BEGIN IMMEDIATE`
+    /// acquires a write lock that blocks concurrent writers until this
+    /// transaction commits or rolls back, so the checkpoint state
+    /// observed inside this method is the authoritative state the
+    /// metadata write commits against.
+    ///
+    /// Returns:
+    /// - [`TriggerCommitOutcome::Committed`] — both writes committed.
+    /// - [`TriggerCommitOutcome::MetadataChanged`] — the metadata_json
+    ///   on disk did not match `expected_prior_metadata`. Caller should
+    ///   re-read metadata, re-validate, and retry.
+    /// - [`TriggerCommitOutcome::CheckpointStateMismatch`] — the
+    ///   step's checkpoint is not in `awaiting_external_event` state.
+    ///   Caller should surface a typed error to the operator.
+    /// - `Err(NotFound)` — the run does not exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_external_trigger(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        expected_prior_metadata: &str,
+        new_metadata_json: &str,
+        output_json: &str,
+        output_hash: &str,
+        triggered_at_ms: i64,
+    ) -> Result<TriggerCommitOutcome, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<TriggerCommitOutcome, PersistenceError> {
+                // Verify the run exists.
+                let exists: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Err(PersistenceError::NotFound {
+                        entity: "run",
+                        key: run_id.to_string(),
+                    });
+                }
+
+                // Read checkpoint status under write-lock. A concurrent
+                // resume's `mark_step_running_clearing_output` is blocked
+                // by BEGIN IMMEDIATE, so this snapshot is authoritative.
+                let cp_status: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT status FROM step_checkpoints \
+                         WHERE run_id = ?1 AND step_id = ?2",
+                        params![run_id, step_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let current_status = match cp_status {
+                    Some(s) => s,
+                    None => {
+                        return Ok(TriggerCommitOutcome::CheckpointStateMismatch {
+                            current_status: "missing".to_string(),
+                        });
+                    }
+                };
+                if current_status != StepStatus::AwaitingExternalEvent.as_str() {
+                    return Ok(TriggerCommitOutcome::CheckpointStateMismatch { current_status });
+                }
+
+                // CAS the metadata. If the on-disk metadata moved while
+                // the caller was validating its read snapshot, surface
+                // MetadataChanged so the caller's CAS-retry loop can
+                // re-validate.
+                let metadata_swapped = self.conn.execute(
+                    "UPDATE runs SET metadata_json = ?1, updated_at = ?2 \
+                     WHERE run_id = ?3 AND metadata_json = ?4",
+                    params![
+                        new_metadata_json,
+                        triggered_at_ms,
+                        run_id,
+                        expected_prior_metadata
+                    ],
+                )?;
+                if metadata_swapped == 0 {
+                    return Ok(TriggerCommitOutcome::MetadataChanged);
+                }
+
+                // Transition the checkpoint to Completed with the
+                // synthesized output. The `started_at` column is
+                // preserved (we don't touch it). `attempt_count` stays
+                // at whatever the gate-entry upsert wrote (typically 1).
+                self.conn.execute(
+                    "UPDATE step_checkpoints SET \
+                       status      = 'completed', \
+                       output_json = ?1, \
+                       output_hash = ?2, \
+                       ended_at    = ?3, \
+                       error_msg   = NULL \
+                     WHERE run_id = ?4 AND step_id = ?5",
+                    params![output_json, output_hash, triggered_at_ms, run_id, step_id],
+                )?;
+
+                Ok(TriggerCommitOutcome::Committed)
+            };
+            match body() {
+                Ok(TriggerCommitOutcome::Committed) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(TriggerCommitOutcome::Committed)
+                }
+                Ok(other) => {
+                    // No mutation happened (or only a CAS that didn't
+                    // match): roll back so we don't accidentally commit
+                    // a partial write.
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Ok(other)
                 }
                 Err(e) => {
                     let _ = self.conn.execute_batch("ROLLBACK");
@@ -2080,5 +2232,148 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(calls, 1, "non-busy errors must not retry");
+    }
+
+    // ── 0.3-S16: commit_external_trigger atomic commit ──
+
+    fn paused_run_with_trigger_gate(store: &RunCheckpointStore, run_id: &str) {
+        store.insert_run(&sample_run(run_id)).unwrap();
+        store
+            .upsert_step_checkpoint(&sample_checkpoint(
+                run_id,
+                "webhook",
+                StepStatus::AwaitingExternalEvent,
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn commit_external_trigger_succeeds_under_normal_conditions() {
+        let store = fresh_store();
+        paused_run_with_trigger_gate(&store, "R-T1");
+        let outcome = store
+            .commit_external_trigger(
+                "R-T1",
+                "webhook",
+                "{}",
+                "{\"triggers\":{\"webhook\":\"x\"}}",
+                "\"payload\"",
+                "sha256:abc",
+                1_700_000_002_000,
+            )
+            .unwrap();
+        assert_eq!(outcome, TriggerCommitOutcome::Committed);
+        // Checkpoint must be Completed with output and ended_at.
+        let cps = store.list_step_checkpoints("R-T1").unwrap();
+        let cp = cps.iter().find(|c| c.step_id == "webhook").unwrap();
+        assert_eq!(cp.status, StepStatus::Completed);
+        assert_eq!(cp.output_json.as_deref(), Some("\"payload\""));
+        assert_eq!(cp.output_hash.as_deref(), Some("sha256:abc"));
+        assert_eq!(cp.ended_at_ms, Some(1_700_000_002_000));
+        // Metadata must reflect the new value.
+        let metadata = store.get_run_metadata("R-T1").unwrap().unwrap();
+        assert_eq!(metadata, "{\"triggers\":{\"webhook\":\"x\"}}");
+    }
+
+    #[test]
+    fn commit_external_trigger_returns_metadata_changed_when_cas_loses() {
+        let store = fresh_store();
+        paused_run_with_trigger_gate(&store, "R-T2");
+        // The expected_prior_metadata doesn't match what's on disk
+        // ("{}"), so the CAS should fail.
+        let outcome = store
+            .commit_external_trigger(
+                "R-T2",
+                "webhook",
+                "{\"different\":\"snapshot\"}",
+                "{\"triggers\":{\"webhook\":\"x\"}}",
+                "\"payload\"",
+                "sha256:abc",
+                1_700_000_002_000,
+            )
+            .unwrap();
+        assert_eq!(outcome, TriggerCommitOutcome::MetadataChanged);
+        // No mutations should have committed: checkpoint still
+        // AwaitingExternalEvent, metadata still "{}".
+        let cps = store.list_step_checkpoints("R-T2").unwrap();
+        let cp = cps.iter().find(|c| c.step_id == "webhook").unwrap();
+        assert_eq!(cp.status, StepStatus::AwaitingExternalEvent);
+        let metadata = store.get_run_metadata("R-T2").unwrap().unwrap();
+        assert_eq!(metadata, "{}");
+    }
+
+    #[test]
+    fn commit_external_trigger_returns_state_mismatch_when_checkpoint_advanced() {
+        let store = fresh_store();
+        paused_run_with_trigger_gate(&store, "R-T3");
+        // Simulate a concurrent resume marking the step Running. The
+        // commit must surface CheckpointStateMismatch.
+        store
+            .upsert_step_checkpoint(&sample_checkpoint("R-T3", "webhook", StepStatus::Running))
+            .unwrap();
+        let outcome = store
+            .commit_external_trigger(
+                "R-T3",
+                "webhook",
+                "{}",
+                "{\"triggers\":{\"webhook\":\"x\"}}",
+                "\"payload\"",
+                "sha256:abc",
+                1_700_000_002_000,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            TriggerCommitOutcome::CheckpointStateMismatch {
+                current_status: "running".to_string()
+            }
+        );
+        // Both the metadata CAS and the checkpoint write must have
+        // been rolled back.
+        let metadata = store.get_run_metadata("R-T3").unwrap().unwrap();
+        assert_eq!(metadata, "{}");
+    }
+
+    #[test]
+    fn commit_external_trigger_state_mismatch_when_checkpoint_missing() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-T4")).unwrap();
+        // No step checkpoint at all.
+        let outcome = store
+            .commit_external_trigger(
+                "R-T4",
+                "webhook",
+                "{}",
+                "{}",
+                "\"payload\"",
+                "sha256:abc",
+                1_700_000_002_000,
+            )
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            TriggerCommitOutcome::CheckpointStateMismatch { ref current_status }
+                if current_status == "missing"
+        ));
+    }
+
+    #[test]
+    fn commit_external_trigger_run_not_found_surfaces_typed_error() {
+        let store = fresh_store();
+        let err = store
+            .commit_external_trigger(
+                "R-MISSING",
+                "webhook",
+                "{}",
+                "{}",
+                "\"payload\"",
+                "sha256:abc",
+                0,
+            )
+            .expect_err("missing run must surface typed error");
+        assert!(matches!(
+            err,
+            PersistenceError::NotFound { entity: "run", .. }
+        ));
     }
 }

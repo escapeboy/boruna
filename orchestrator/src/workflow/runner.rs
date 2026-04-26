@@ -2612,26 +2612,66 @@ pub fn record_external_trigger(
             });
         }
 
+        let triggered_at_ms = now_unix_ms();
         metadata.triggers.insert(
             step_id.to_string(),
             TriggerRecord {
                 token: stashed_token,
                 payload: payload.to_string(),
-                triggered_at_ms: now_unix_ms(),
+                triggered_at_ms,
             },
         );
         let updated_metadata = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
-        let swapped = store
-            .compare_and_swap_metadata(run_id, &metadata_json, &updated_metadata, now_unix_ms())
-            .map_err(WorkflowRunError::from)?;
-        if swapped {
-            return Ok(());
+
+        // 0.3-S16: atomic commit. The persistence layer transitions
+        // the step's checkpoint to Completed (with the synthesized
+        // output) AND CAS-updates the metadata in a single SQL
+        // transaction under BEGIN IMMEDIATE. This closes the TOCTOU
+        // race where a concurrent `boruna workflow resume` could mark
+        // the step Running between separate metadata-CAS and
+        // checkpoint-write paths — leaving a non-empty payload + a
+        // non-AwaitingExternalEvent checkpoint that the next resume's
+        // sentinel pass would silently log-and-discard.
+        //
+        // The synthesized output value is `Value::String(payload)` —
+        // downstream steps read it via `step_input(name)` (sprint
+        // 0.3-S14) and parse the JSON inline if they want typed access.
+        let synthetic = boruna_bytecode::Value::String(payload.to_string());
+        let output_json = serde_json::to_string(&synthetic)
+            .map_err(|e| WorkflowRunError::Internal(format!("trigger output serialize: {e}")))?;
+        let output_hash = DataStore::hash_value(&synthetic);
+
+        match store
+            .commit_external_trigger(
+                run_id,
+                step_id,
+                &metadata_json,
+                &updated_metadata,
+                &output_json,
+                &output_hash,
+                triggered_at_ms,
+            )
+            .map_err(WorkflowRunError::from)?
+        {
+            crate::persistence::TriggerCommitOutcome::Committed => return Ok(()),
+            crate::persistence::TriggerCommitOutcome::CheckpointStateMismatch {
+                current_status,
+            } => {
+                return Err(WorkflowRunError::StepNotAtExternalTriggerGate {
+                    run_id: run_id.to_string(),
+                    step_id: step_id.to_string(),
+                    current_status,
+                });
+            }
+            crate::persistence::TriggerCommitOutcome::MetadataChanged => {
+                // Concurrent writer touched metadata. Loop and
+                // re-validate. The re-read either reveals their
+                // trigger (we surface StepAlreadyTriggered) or just
+                // bumped an unrelated field (we re-attempt our CAS).
+                continue;
+            }
         }
-        // CAS lost — concurrent writer modified metadata. Loop and re-
-        // validate. The re-read either reveals their trigger (we surface
-        // StepAlreadyTriggered) or just bumped an unrelated field (we
-        // re-attempt our CAS).
     }
     Err(WorkflowRunError::Internal(format!(
         "CAS retry budget exhausted recording trigger for step '{step_id}' in run '{run_id}'"
@@ -5844,6 +5884,186 @@ mod tests {
                 "{\"v\":1}",
             )
             .expect("original token must validate after resume");
+        }
+
+        // ── 0.3-S16: atomic commit (TOCTOU fix) ──
+
+        #[test]
+        fn trigger_transitions_checkpoint_to_completed_atomically() {
+            // Reviewed 0.3-S15 → fixed in 0.3-S16. Earlier flow had:
+            //  1. record_external_trigger CAS-writes metadata.payload
+            //  2. resume's trigger-sentinel pass flips checkpoint to
+            //     Completed
+            // The two writes were not atomic — a concurrent resume
+            // could mark_step_running between them and the next
+            // resume's sentinel pass would silently skip the payload.
+            //
+            // The fix: record_external_trigger commits BOTH writes in
+            // a single SQLite transaction under BEGIN IMMEDIATE.
+            // Confirm the checkpoint is Completed immediately after
+            // the trigger function returns, BEFORE any resume runs.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "{\"v\":1}")
+                .unwrap();
+
+            // No resume yet — but the checkpoint should already be
+            // Completed because the trigger function's SQL transaction
+            // transitions both metadata and checkpoint atomically.
+            let store = open_store(data_dir.path()).unwrap();
+            let cps = store.list_step_checkpoints(&run_id).unwrap();
+            let webhook_cp = cps.iter().find(|c| c.step_id == "webhook").unwrap();
+            assert_eq!(
+                webhook_cp.status,
+                PersistStepStatus::Completed,
+                "checkpoint must be Completed immediately after trigger commit"
+            );
+            // Output must already be persisted; downstream steps read
+            // it from output_json on the next resume's checkpoint walk.
+            assert!(webhook_cp.output_json.is_some());
+            assert!(webhook_cp.output_hash.is_some());
+            assert!(webhook_cp.error_msg.is_none());
+        }
+
+        #[test]
+        fn trigger_after_step_already_completed_returns_state_mismatch() {
+            // After the atomic commit, a second call to
+            // record_external_trigger sees the checkpoint as Completed.
+            // The CheckpointStateMismatch outcome from the persistence
+            // layer surfaces as StepNotAtExternalTriggerGate.
+            //
+            // Note: the metadata-side `StepAlreadyTriggered` guard
+            // (line ~2562) catches this earlier in the function — the
+            // payload is non-empty after the first trigger. Confirm
+            // that's the surfaced error, not the lower-level state-
+            // mismatch.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "{\"v\":1}")
+                .unwrap();
+            let err =
+                record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "{\"v\":2}")
+                    .expect_err("second trigger must error");
+            // The metadata guard fires first — that's the user-facing
+            // semantic (webhook replay).
+            assert!(matches!(err, WorkflowRunError::StepAlreadyTriggered { .. }));
+        }
+
+        #[test]
+        fn resume_after_atomic_trigger_uses_persisted_output_not_sentinel_pass() {
+            // The atomic commit makes the resume sentinel pass mostly
+            // defensive: by the time resume runs, the checkpoint is
+            // already Completed and the output is in step_checkpoints.
+            // The walk-checkpoints loop restores the output into the
+            // in-memory data store; the trigger sentinel pass sees a
+            // Completed checkpoint and falls through. Downstream steps
+            // read the payload via step_input as expected.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+            let payload = r#"{"order":42}"#;
+
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, payload).unwrap();
+
+            // Confirm the test setup: checkpoint is Completed BEFORE
+            // resume.
+            let store = open_store(data_dir.path()).unwrap();
+            let cps = store.list_step_checkpoints(&run_id).unwrap();
+            assert_eq!(
+                cps.iter().find(|c| c.step_id == "webhook").unwrap().status,
+                PersistStepStatus::Completed
+            );
+
+            let resumed = WorkflowRunner::resume(
+                &run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+            assert_eq!(
+                resumed.step_results["webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(resumed.step_results["after"].status, StepStatus::Completed);
+        }
+
+        #[test]
+        fn legacy_0_3_s15_db_format_upgrades_via_resume_sentinel_pass() {
+            // Forward-compat: a 0.3-S15-formatted DB has metadata.triggers
+            // with non-empty payload BUT checkpoint still in
+            // awaiting_external_event (because S15's record path didn't
+            // atomically transition the checkpoint). On 0.3-S16 the
+            // resume sentinel pass must still upgrade these runs.
+            //
+            // Reproduces the S15 shape by injecting metadata + leaving
+            // the checkpoint at AwaitingExternalEvent, bypassing the
+            // S16 atomic commit.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+
+            // Inject the S15 shape: read metadata, fill in payload,
+            // write back via the metadata-only CAS path. Leave the
+            // checkpoint untouched (still AwaitingExternalEvent).
+            let store = open_store(data_dir.path()).unwrap();
+            let metadata_json = store.get_run_metadata(&run_id).unwrap().unwrap();
+            let mut metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            let token = metadata.triggers.get("webhook").unwrap().token.clone();
+            metadata.triggers.insert(
+                "webhook".to_string(),
+                TriggerRecord {
+                    token,
+                    payload: "{\"legacy\":true}".to_string(),
+                    triggered_at_ms: 1_700_000_000_000,
+                },
+            );
+            let updated_metadata = serde_json::to_string(&metadata).unwrap();
+            let swapped = store
+                .compare_and_swap_metadata(
+                    &run_id,
+                    &metadata_json,
+                    &updated_metadata,
+                    now_unix_ms(),
+                )
+                .unwrap();
+            assert!(swapped);
+
+            // Confirm the legacy shape: payload non-empty, checkpoint
+            // still AwaitingExternalEvent.
+            let cps = store.list_step_checkpoints(&run_id).unwrap();
+            let cp = cps.iter().find(|c| c.step_id == "webhook").unwrap();
+            assert_eq!(cp.status, PersistStepStatus::AwaitingExternalEvent);
+
+            // Resume must pick up the legacy shape via the sentinel
+            // pass and complete the run.
+            let resumed = WorkflowRunner::resume(
+                &run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+            assert_eq!(
+                resumed.step_results["webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(resumed.step_results["after"].status, StepStatus::Completed);
         }
 
         #[test]
