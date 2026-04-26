@@ -8,6 +8,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Wave-loop multi-pause-per-level** (sprint `0.4-S7`). The
+  concurrent execution path (`--concurrency >= 2`) now pauses ALL
+  pause-steps in the same DAG level in a single execution pass —
+  previously only the first was processed and remaining pauses were
+  silently deferred to subsequent resumes. Enables "wait for payment
+  AND fraud-check" webhook fan-in patterns where multiple
+  `external_trigger` (or `approval_gate`) steps depend on a shared
+  upstream and a downstream step depends on all of them. Each pause
+  persists its own checkpoint and (for trigger steps) mints its own
+  distinct token. The resume sentinel pass advances each pause
+  independently as its decision/event arrives.
+- New `persist_one_pause` helper isolates per-pause persistence
+  errors. If one pause's `acquire_trigger_token` or
+  `upsert_step_checkpoint` fails (transient `/dev/urandom` error,
+  CAS retry exhaustion, disk error), the loop logs a warning and
+  continues to the next pause. The run is marked `Paused` on the
+  pauses that DID commit, leaving operators with a recoverable
+  state. The next resume's wave loop is idempotent — `acquire_trigger_token`
+  reuses existing tokens and `upsert_step_checkpoint` is re-write-safe
+  — so the failed pauses retry cleanly. Reviewed in 0.4-S7 — earlier
+  draft propagated the first per-pause error, terminally-failing the
+  run and stranding pause #1's token with no recovery path.
+- 5 new tests in `tests::multi_pause_per_wave`: 2-trigger parallel
+  pause, partial trigger fire keeps other paused, full trigger fire
+  advances downstream, mixed approval+trigger pauses, partial-pause
+  failure recovery via direct-SQL state injection.
+
+#### Asymmetry note
+
+The sequential execution path (`--concurrency 1`) is unchanged: it
+processes one step at a time and serializes parallel pauses across
+multiple resumes. Operators expecting AND-fan-in webhook patterns
+must use `--concurrency 2` or higher.
+
 - **Streaming progress notifications from `boruna_run`** (sprint
   `0.4-S6`, closes [#4](https://github.com/escapeboy/boruna/issues/4)).
   When the MCP caller supplies a `progressToken` in the request `_meta`

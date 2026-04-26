@@ -1144,76 +1144,66 @@ impl WorkflowRunner {
                 }
             }
 
-            // Process the first pause-step inline. If the wave
-            // contains one, the run pauses there — any other pause
-            // or source step in the same wave is left for resume to
-            // discover. Multiple pauses at the same level is
-            // structurally unusual but legal; only the first
-            // determines the run's pause behavior.
-            if let Some(pause_id) = pauses.first() {
-                let step_def = &def.steps[*pause_id];
+            // 0.4-S7: process ALL pause-steps in this wave, not just
+            // the first. Multiple pauses at the same DAG level enables
+            // "wait for payment AND fraud-check" webhook fan-in
+            // patterns. Each pause persists its own checkpoint and
+            // (for ExternalTrigger) mints its own token; the resume
+            // sentinel pass iterates approvals and triggers
+            // independently and advances each pause as its decision
+            // arrives.
+            //
+            // Source steps in the same wave are left for resume to
+            // discover — pause-causing steps still halt the wave.
+            // Reviewed 0.3-S15 (residual risk) — earlier behavior
+            // processed only `pauses.first()`, silently serializing
+            // parallel pauses across multiple resumes.
+            // **Per-pause errors are isolated.** If acquiring a token
+            // or persisting a checkpoint fails for one pause (e.g.,
+            // transient `/dev/urandom` error, CAS retry exhaustion),
+            // the loop logs the error and continues to the next pause.
+            // The run is still marked Paused on the pauses that DID
+            // commit, leaving operators with a recoverable state. The
+            // next resume's wave loop is idempotent —
+            // `acquire_trigger_token` reuses existing tokens and
+            // `upsert_step_checkpoint` is re-write-safe — so the
+            // failed pauses retry cleanly.
+            //
+            // Reviewed 0.4-S7 — earlier draft propagated the first
+            // per-pause error via `?`, which terminally-failed the run
+            // via `run_persistent`'s trailing `update_run_status`,
+            // stranding any pause #1 token with no recovery path
+            // (resume short-circuits on terminal status; record_*
+            // entry points refuse RunNotResumable). Isolating per-pause
+            // errors preserves the invariant that a partial wave
+            // commit is always advanced via subsequent resume.
+            if !pauses.is_empty() {
                 let now = now_unix_ms();
-                let (persist_status, ax_status, message) = match &step_def.kind {
-                    StepKind::ApprovalGate { required_role, .. } => (
-                        PersistStepStatus::AwaitingApproval,
-                        StepStatus::AwaitingApproval,
-                        format!(
-                            "Awaiting approval for step '{}' (role: {}). \
-                             Run: boruna workflow approve {} {}",
-                            pause_id, required_role, run_id, pause_id
-                        ),
-                    ),
-                    StepKind::ExternalTrigger { .. } => {
-                        // 0.3-S15: acquire (or recover) the trigger
-                        // token. On first entry mints fresh + persists;
-                        // on re-entry returns the previously-persisted
-                        // token unchanged so the printed value always
-                        // matches the value the trigger CLI validates
-                        // against. Reviewed 0.3-S15 — earlier draft
-                        // generated-then-persisted with a no-op-if-
-                        // already-set persist, which silently broke
-                        // the printed-vs-stashed contract on resume.
-                        let token = acquire_trigger_token(store, run_id, pause_id)?;
-                        (
-                            PersistStepStatus::AwaitingExternalEvent,
-                            StepStatus::AwaitingExternalEvent,
-                            format!(
-                                "Awaiting external event for step '{}'. \
-                                 Run: boruna workflow trigger {} {} \
-                                 --token {} --payload '<json>'",
-                                pause_id, run_id, pause_id, token
-                            ),
-                        )
+                for pause_id in &pauses {
+                    match persist_one_pause(def, store, run_id, pause_id, now) {
+                        Ok(ax_status) => {
+                            step_results.insert(
+                                pause_id.to_string(),
+                                StepResult {
+                                    step_id: pause_id.to_string(),
+                                    status: ax_status,
+                                    output_hash: None,
+                                    duration_ms: 0,
+                                    capabilities_used: vec![],
+                                    error: None,
+                                    attempt_count: 1,
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "warning: failed to persist pause for step '{pause_id}' in run \
+                                 '{run_id}': {e}; will retry on next resume"
+                            );
+                        }
                     }
-                    _ => unreachable!(),
-                };
-                store
-                    .upsert_step_checkpoint(&StepCheckpoint {
-                        run_id: run_id.to_string(),
-                        step_id: pause_id.to_string(),
-                        status: persist_status,
-                        output_json: None,
-                        output_hash: None,
-                        started_at_ms: Some(now),
-                        ended_at_ms: None,
-                        error_msg: None,
-                        attempt_count: 1,
-                    })
-                    .map_err(WorkflowRunError::from)?;
-                step_results.insert(
-                    pause_id.to_string(),
-                    StepResult {
-                        step_id: pause_id.to_string(),
-                        status: ax_status,
-                        output_hash: None,
-                        duration_ms: 0,
-                        capabilities_used: vec![],
-                        error: None,
-                        attempt_count: 1,
-                    },
-                );
+                }
                 workflow_status = WorkflowStatus::Paused;
-                eprintln!("{message}");
                 break 'outer;
             }
 
@@ -2270,6 +2260,70 @@ fn acquire_trigger_token(
     Err(WorkflowRunError::Internal(format!(
         "CAS retry budget exhausted acquiring trigger token for step '{step_id}' in run '{run_id}'"
     )))
+}
+
+/// Persist a single pause-step's checkpoint and (for triggers) its
+/// token, printing the operator-facing pause message (sprint `0.4-S7`).
+/// Returns the corresponding `StepStatus` on success so the caller can
+/// build a `StepResult` for the in-memory result map.
+///
+/// Extracted from the wave-loop's per-pause body so the loop can call
+/// it inside a per-pause `match` and isolate failures: a transient
+/// error on pause #N must not strand pauses #1..N-1 in a half-committed
+/// state, nor terminally-fail the run. See the call site comment for
+/// the full rationale.
+#[cfg(feature = "persist-sqlite")]
+fn persist_one_pause(
+    def: &WorkflowDef,
+    store: &RunCheckpointStore,
+    run_id: &str,
+    pause_id: &str,
+    now: i64,
+) -> Result<StepStatus, WorkflowRunError> {
+    let step_def = &def.steps[pause_id];
+    let (persist_status, ax_status, message) = match &step_def.kind {
+        StepKind::ApprovalGate { required_role, .. } => (
+            PersistStepStatus::AwaitingApproval,
+            StepStatus::AwaitingApproval,
+            format!(
+                "Awaiting approval for step '{pause_id}' (role: {required_role}). \
+                 Run: boruna workflow approve {run_id} {pause_id}"
+            ),
+        ),
+        StepKind::ExternalTrigger { .. } => {
+            // 0.3-S15: acquire (or recover) the trigger token. On
+            // first entry mints fresh + persists; on re-entry returns
+            // the previously-persisted token unchanged so the printed
+            // value always matches the value the trigger CLI
+            // validates against.
+            let token = acquire_trigger_token(store, run_id, pause_id)?;
+            (
+                PersistStepStatus::AwaitingExternalEvent,
+                StepStatus::AwaitingExternalEvent,
+                format!(
+                    "Awaiting external event for step '{pause_id}'. \
+                     Run: boruna workflow trigger {run_id} {pause_id} \
+                     --token {token} --payload '<json>'"
+                ),
+            )
+        }
+        _ => unreachable!("persist_one_pause called with non-pause StepKind"),
+    };
+    store
+        .upsert_step_checkpoint(&StepCheckpoint {
+            run_id: run_id.to_string(),
+            step_id: pause_id.to_string(),
+            status: persist_status,
+            output_json: None,
+            output_hash: None,
+            started_at_ms: Some(now),
+            ended_at_ms: None,
+            error_msg: None,
+            attempt_count: 1,
+        })
+        .map_err(WorkflowRunError::from)?;
+    eprintln!("{message}");
+    Ok(ax_status)
 }
 
 /// Record an approval-gate decision for a paused workflow run.
@@ -6286,6 +6340,448 @@ mod tests {
             let output: boruna_bytecode::Value =
                 serde_json::from_str(webhook_cp.output_json.as_ref().unwrap()).unwrap();
             assert_eq!(output, boruna_bytecode::Value::String(payload.to_string()));
+        }
+    }
+
+    // ── 0.4-S7: multi-pause-per-wave (parallel webhook fan-in) ──
+
+    #[cfg(feature = "persist-sqlite")]
+    mod multi_pause_per_wave {
+        use super::*;
+
+        /// Build a workflow with TWO ExternalTrigger steps at the same
+        /// DAG level (both depend on a single root source step). A
+        /// downstream step depends on both. Models a "wait for payment
+        /// AND fraud-check" webhook fan-in pattern.
+        fn workflow_with_two_parallel_triggers() -> (WorkflowDef, tempfile::TempDir) {
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("init.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("after.ax"), "fn main() -> Int { 99 }").unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "two-trigger-parallel".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    (
+                        "init".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/init.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "payment_webhook".into(),
+                        StepDef {
+                            kind: StepKind::ExternalTrigger {
+                                description: Some("Stripe payment.succeeded".into()),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "fraud_check_webhook".into(),
+                        StepDef {
+                            kind: StepKind::ExternalTrigger {
+                                description: Some("Sift fraud-check verdict".into()),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "after".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/after.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![
+                                "payment_webhook".into(),
+                                "fraud_check_webhook".into(),
+                            ],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            (def, dir)
+        }
+
+        fn read_token_for(data_dir: &Path, run_id: &str, step_id: &str) -> String {
+            let store = open_store(data_dir).unwrap();
+            let metadata_json = store.get_run_metadata(run_id).unwrap().unwrap();
+            let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            metadata
+                .triggers
+                .get(step_id)
+                .expect("trigger record must exist after pause")
+                .token
+                .clone()
+        }
+
+        #[test]
+        fn run_pauses_at_both_triggers_in_one_wave() {
+            // 0.4-S7 contract: a wave with TWO ExternalTrigger steps
+            // pauses BOTH in a single execution pass — earlier
+            // behavior processed only the first and left the second
+            // for the next resume.
+            //
+            // Concurrency must be > 1 to engage the wave-loop path
+            // (the sequential `execute_steps` serializes pauses by
+            // design).
+            let (def, wf_dir) = workflow_with_two_parallel_triggers();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 2,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+            assert_eq!(
+                r.step_results["payment_webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+            assert_eq!(
+                r.step_results["fraud_check_webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+
+            // Both checkpoints must be persisted as
+            // AwaitingExternalEvent and both must have distinct tokens.
+            let store = open_store(data_dir.path()).unwrap();
+            let cps = store.list_step_checkpoints(&r.run_id).unwrap();
+            let payment_cp = cps.iter().find(|c| c.step_id == "payment_webhook").unwrap();
+            let fraud_cp = cps
+                .iter()
+                .find(|c| c.step_id == "fraud_check_webhook")
+                .unwrap();
+            assert_eq!(payment_cp.status, PersistStepStatus::AwaitingExternalEvent);
+            assert_eq!(fraud_cp.status, PersistStepStatus::AwaitingExternalEvent);
+
+            let payment_token = read_token_for(data_dir.path(), &r.run_id, "payment_webhook");
+            let fraud_token = read_token_for(data_dir.path(), &r.run_id, "fraud_check_webhook");
+            assert_ne!(
+                payment_token, fraud_token,
+                "each pause must mint a distinct token"
+            );
+            assert_eq!(payment_token.len(), 32);
+            assert_eq!(fraud_token.len(), 32);
+        }
+
+        #[test]
+        fn triggering_one_keeps_other_paused() {
+            // After triggering the first webhook, the run should
+            // remain Paused on the second.
+            let (def, wf_dir) = workflow_with_two_parallel_triggers();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 2,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+
+            let payment_token = read_token_for(data_dir.path(), &r.run_id, "payment_webhook");
+            record_external_trigger(
+                data_dir.path(),
+                &r.run_id,
+                "payment_webhook",
+                &payment_token,
+                "{\"paid\":true}",
+            )
+            .unwrap();
+
+            let resumed = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    concurrency: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Paused);
+            assert_eq!(
+                resumed.step_results["payment_webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(
+                resumed.step_results["fraud_check_webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+            // The downstream `after` step must NOT have run yet —
+            // it depends on both pauses.
+            assert!(!resumed.step_results.contains_key("after"));
+        }
+
+        #[test]
+        fn triggering_both_advances_downstream_step() {
+            // Triggering both pauses (across two record_external_trigger
+            // calls) and resuming should run the downstream `after`
+            // step exactly once.
+            let (def, wf_dir) = workflow_with_two_parallel_triggers();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 2,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+
+            let payment_token = read_token_for(data_dir.path(), &r.run_id, "payment_webhook");
+            let fraud_token = read_token_for(data_dir.path(), &r.run_id, "fraud_check_webhook");
+
+            record_external_trigger(
+                data_dir.path(),
+                &r.run_id,
+                "payment_webhook",
+                &payment_token,
+                "{\"paid\":true}",
+            )
+            .unwrap();
+            record_external_trigger(
+                data_dir.path(),
+                &r.run_id,
+                "fraud_check_webhook",
+                &fraud_token,
+                "{\"verdict\":\"clean\"}",
+            )
+            .unwrap();
+
+            let resumed = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    concurrency: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+            assert_eq!(
+                resumed.step_results["payment_webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(
+                resumed.step_results["fraud_check_webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(resumed.step_results["after"].status, StepStatus::Completed);
+        }
+
+        #[test]
+        fn resume_recovers_partial_pause_state() {
+            // 0.4-S7 contract: if a wave's pause loop committed pause
+            // #1 but failed mid-loop on pause #2 (transient urandom /
+            // upsert error), the next resume must re-encounter pause
+            // #2 and persist it cleanly without disturbing pause #1.
+            //
+            // Simulates the partial state by dropping pause #2's
+            // checkpoint + metadata entry via direct SQL after the run
+            // pauses successfully. Then resume — expect both pauses
+            // re-present, pause #1's token unchanged, pause #2 freshly
+            // minted.
+            use rusqlite::Connection;
+            let (def, wf_dir) = workflow_with_two_parallel_triggers();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 2,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+            let payment_token_before =
+                read_token_for(data_dir.path(), &r.run_id, "payment_webhook");
+
+            // Simulate the partial-failure on-disk shape: pause #1
+            // committed, pause #2 never touched.
+            let db_path = data_dir.path().join("runs.db");
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "DELETE FROM step_checkpoints WHERE run_id = ?1 AND step_id = ?2",
+                rusqlite::params![&r.run_id, "fraud_check_webhook"],
+            )
+            .unwrap();
+            let metadata_json: String = conn
+                .query_row(
+                    "SELECT metadata_json FROM runs WHERE run_id = ?1",
+                    rusqlite::params![&r.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            metadata.triggers.remove("fraud_check_webhook");
+            let updated = serde_json::to_string(&metadata).unwrap();
+            conn.execute(
+                "UPDATE runs SET metadata_json = ?1 WHERE run_id = ?2",
+                rusqlite::params![&updated, &r.run_id],
+            )
+            .unwrap();
+            drop(conn);
+
+            // Resume — wave loop must re-encounter fraud_check_webhook
+            // (no checkpoint, no metadata entry) and persist fresh.
+            // payment_webhook stays untouched.
+            let resumed = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    concurrency: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Paused);
+            assert_eq!(
+                resumed.step_results["payment_webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+            assert_eq!(
+                resumed.step_results["fraud_check_webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+
+            let payment_token_after = read_token_for(data_dir.path(), &r.run_id, "payment_webhook");
+            assert_eq!(
+                payment_token_before, payment_token_after,
+                "pause #1 token must be preserved across recovery resume"
+            );
+            let fraud_token = read_token_for(data_dir.path(), &r.run_id, "fraud_check_webhook");
+            assert_eq!(fraud_token.len(), 32);
+            assert_ne!(fraud_token, payment_token_after);
+        }
+
+        #[test]
+        fn mixed_approval_and_trigger_in_same_wave_both_pause() {
+            // Cross-kind parallel pauses: an approval gate and an
+            // external trigger at the same DAG level.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("init.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(steps_dir.join("after.ax"), "fn main() -> Int { 2 }").unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "mixed-pause".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    (
+                        "init".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/init.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "approval".into(),
+                        StepDef {
+                            kind: StepKind::ApprovalGate {
+                                required_role: "ops".into(),
+                                condition: None,
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "webhook".into(),
+                        StepDef {
+                            kind: StepKind::ExternalTrigger { description: None },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 2,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+            assert_eq!(
+                r.step_results["approval"].status,
+                StepStatus::AwaitingApproval
+            );
+            assert_eq!(
+                r.step_results["webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
         }
     }
 }
