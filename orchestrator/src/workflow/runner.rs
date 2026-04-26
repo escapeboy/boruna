@@ -109,6 +109,11 @@ struct PersistedRunMetadata {
     /// cleanly.
     #[serde(default)]
     approvals: BTreeMap<String, ApprovalDecision>,
+    /// Per-step external-trigger payloads recorded by
+    /// `boruna workflow trigger` (sprint 0.3-S15). Defaulted so
+    /// pre-0.3-S15 databases parse cleanly. Operational only.
+    #[serde(default)]
+    triggers: BTreeMap<String, TriggerRecord>,
 }
 
 /// Per-step approval decision recorded by `boruna workflow approve` /
@@ -151,6 +156,33 @@ impl ApprovalKind {
     }
 }
 
+/// Per-step external-trigger record (sprint 0.3-S15). Stored in the
+/// run's `metadata_json.triggers.<step_id>`. The trigger payload
+/// becomes the step's output value when resume processes the
+/// sentinel — downstream steps read it via `step_input` (sprint
+/// 0.3-S14).
+///
+/// **OPERATIONAL ONLY** for the timestamp; the **payload** itself
+/// becomes the step's output (which IS replay-verified). Cross-
+/// machine replay of an externally-triggered run requires the same
+/// payload to arrive — typically captured via the operator's webhook
+/// receiver and replayed from a tape (similar to net record/replay).
+#[cfg(feature = "persist-sqlite")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct TriggerRecord {
+    /// Token issued at pause-time, validated at trigger-time. Random
+    /// 32-hex-char (16 bytes) generated when the runner enters an
+    /// `awaiting_external_event` state. The CLI requires the operator
+    /// to pass this token to prevent accidental cross-step triggers.
+    token: String,
+    /// JSON-encoded payload supplied by the operator. Becomes the
+    /// step's output value: `Value::String(payload)` so downstream
+    /// steps read it via `step_input` and parse the JSON inline.
+    payload: String,
+    /// Wall-clock ms of when the trigger arrived. Operational only.
+    triggered_at_ms: i64,
+}
+
 /// Executes a validated workflow definition step by step.
 pub struct WorkflowRunner;
 
@@ -174,6 +206,23 @@ impl WorkflowRunner {
                     .join("; "),
             )
         })?;
+
+        // 0.3-S15: external_trigger steps require persistent metadata
+        // to stash the trigger token; the ephemeral path has no store,
+        // so a paused trigger could never be advanced. Refuse upfront
+        // rather than executing prior steps and then erroring at the
+        // pause. Reviewed in 0.3-S15 — earlier draft caught this at
+        // step-entry time, which silently allowed prior steps to
+        // execute before the typed error surfaced.
+        for (step_id, step) in &def.steps {
+            if matches!(step.kind, StepKind::ExternalTrigger { .. }) {
+                return Err(WorkflowRunError::Validation(format!(
+                    "step '{step_id}' is an external_trigger step; \
+                     external triggers require persistent runs \
+                     (use `run_persistent`, not `run`)"
+                )));
+            }
+        }
 
         let order =
             WorkflowValidator::topological_order(def).map_err(WorkflowRunError::Validation)?;
@@ -290,6 +339,7 @@ impl WorkflowRunner {
             inputs_hash: inputs_hash.clone(),
             boruna_version: env!("CARGO_PKG_VERSION").to_string(),
             approvals: BTreeMap::new(),
+            triggers: BTreeMap::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -343,6 +393,7 @@ impl WorkflowRunner {
             inputs_hash: inputs_hash.clone(),
             boruna_version: env!("CARGO_PKG_VERSION").to_string(),
             approvals: BTreeMap::new(),
+            triggers: BTreeMap::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -751,6 +802,106 @@ impl WorkflowRunner {
             }
         }
 
+        // 0.3-S15: honor external-trigger sentinels recorded by
+        // `record_external_trigger`. Mirrors the approval-sentinel pass
+        // above. A trigger sentinel is identified by a non-empty
+        // `payload` field on the `TriggerRecord` — pause-time inserts a
+        // placeholder with `payload: ""` to stash the token; trigger-
+        // time fills in the payload.
+        //
+        // For each trigger with a non-empty payload whose checkpoint is
+        // still `awaiting_external_event`: persist a Completed
+        // checkpoint, store the payload as the step's output (as a JSON
+        // String value so downstream `step_input(...)` returns it
+        // verbatim), add to already_completed, and seed prior_results.
+        //
+        // Same warning surface for misaligned sentinels as approvals
+        // (see comments above), and same defense-in-depth check that
+        // the StepDef.kind is actually ExternalTrigger.
+        for (step_id, trigger) in &metadata.triggers {
+            if trigger.payload.is_empty() {
+                // Pause-time placeholder; no actual trigger arrived yet.
+                continue;
+            }
+            let cp = checkpoints.iter().find(|c| &c.step_id == step_id);
+            let cp_status = cp.map(|c| c.status);
+            match cp_status {
+                Some(PersistStepStatus::AwaitingExternalEvent) => {
+                    // Eligible — fall through.
+                }
+                Some(PersistStepStatus::Completed | PersistStepStatus::Failed) => {
+                    continue;
+                }
+                Some(other) => {
+                    eprintln!(
+                        "warning: trigger sentinel for step '{step_id}' in run '{run_id}' \
+                         ignored: checkpoint is in state '{}' (expected awaiting_external_event)",
+                        other.as_str()
+                    );
+                    continue;
+                }
+                None => {
+                    eprintln!(
+                        "warning: trigger sentinel for step '{step_id}' in run '{run_id}' \
+                         ignored: no checkpoint exists (workflow has not reached the gate)"
+                    );
+                    continue;
+                }
+            }
+
+            let step_def = def.steps.get(step_id);
+            if !matches!(
+                step_def.map(|s| &s.kind),
+                Some(StepKind::ExternalTrigger { .. })
+            ) {
+                return Err(WorkflowRunError::Internal(format!(
+                    "trigger sentinel for step '{step_id}' in run '{run_id}' targets a \
+                     non-ExternalTrigger step (workflow_hash check should have prevented this)"
+                )));
+            }
+
+            // Payload is treated as an opaque JSON-encoded string. The
+            // step's output Value is `Value::String(payload)` — downstream
+            // steps read it via `step_input(name)` (sprint 0.3-S14) and
+            // parse the JSON inline if they want typed access. This
+            // mirrors the BYOH net-handler pattern: the receiver bridges
+            // raw bytes; the .ax program decodes.
+            let synthetic = boruna_bytecode::Value::String(trigger.payload.clone());
+            let output_json = serde_json::to_string(&synthetic).map_err(|e| {
+                WorkflowRunError::Internal(format!("trigger output serialize: {e}"))
+            })?;
+            let output_hash = DataStore::hash_value(&synthetic);
+            store
+                .upsert_step_checkpoint(&StepCheckpoint {
+                    run_id: run_id.to_string(),
+                    step_id: step_id.clone(),
+                    status: PersistStepStatus::Completed,
+                    output_json: Some(output_json),
+                    output_hash: Some(output_hash.clone()),
+                    started_at_ms: None,
+                    ended_at_ms: Some(now_unix_ms()),
+                    error_msg: None,
+                    attempt_count: 1,
+                })
+                .map_err(WorkflowRunError::from)?;
+            data_store
+                .store_output(step_id, "result", &synthetic)
+                .map_err(|e| WorkflowRunError::Io(e.to_string()))?;
+            already_completed.insert(step_id.clone());
+            prior_results.insert(
+                step_id.clone(),
+                StepResult {
+                    step_id: step_id.clone(),
+                    status: StepStatus::Completed,
+                    output_hash: Some(output_hash),
+                    duration_ms: 0,
+                    capabilities_used: vec![],
+                    error: None,
+                    attempt_count: 1,
+                },
+            );
+        }
+
         if halt_with_failed_step.is_some() {
             // Refuse to advance past a previously-failed step. Set the
             // run to Failed and return — without re-executing anything
@@ -888,6 +1039,7 @@ impl WorkflowRunner {
                 PersistStepStatus::Completed => StepStatus::Completed,
                 PersistStepStatus::Failed => StepStatus::Failed,
                 PersistStepStatus::AwaitingApproval => StepStatus::AwaitingApproval,
+                PersistStepStatus::AwaitingExternalEvent => StepStatus::AwaitingExternalEvent,
                 PersistStepStatus::Running => StepStatus::Running,
                 PersistStepStatus::Pending => StepStatus::Pending,
             };
@@ -971,9 +1123,10 @@ impl WorkflowRunner {
 
         'outer: for level in levels {
             // Filter out skip-on-resume steps and partition into
-            // approval gates vs source steps. Approval gates are
-            // sequential by definition (they pause the run).
-            let mut gates: Vec<&str> = Vec::new();
+            // pause-causing kinds (approval gates, external triggers)
+            // vs source steps. Pauses are sequential — they halt the
+            // wave for an external decision/event.
+            let mut pauses: Vec<&str> = Vec::new();
             let mut sources: Vec<&str> = Vec::new();
             for id in level {
                 if already_completed.contains(id) {
@@ -984,30 +1137,61 @@ impl WorkflowRunner {
                     .get(id)
                     .ok_or_else(|| WorkflowRunError::Internal(format!("step not found: {id}")))?;
                 match &step_def.kind {
-                    StepKind::ApprovalGate { .. } => gates.push(id.as_str()),
+                    StepKind::ApprovalGate { .. } | StepKind::ExternalTrigger { .. } => {
+                        pauses.push(id.as_str())
+                    }
                     StepKind::Source { .. } => sources.push(id.as_str()),
                 }
             }
 
-            // Process the first approval gate inline. If the wave
-            // contains a gate, the run pauses there — any other gate
+            // Process the first pause-step inline. If the wave
+            // contains one, the run pauses there — any other pause
             // or source step in the same wave is left for resume to
-            // discover (correctness equivalent to sequential
-            // semantics, which encounter at most one gate per wave in
-            // topological order). Multiple gates at the same level is
-            // structurally unusual but legal; only the first pauses.
-            if let Some(gate_id) = gates.first() {
-                let step_def = &def.steps[*gate_id];
-                let role = match &step_def.kind {
-                    StepKind::ApprovalGate { required_role, .. } => required_role.clone(),
+            // discover. Multiple pauses at the same level is
+            // structurally unusual but legal; only the first
+            // determines the run's pause behavior.
+            if let Some(pause_id) = pauses.first() {
+                let step_def = &def.steps[*pause_id];
+                let now = now_unix_ms();
+                let (persist_status, ax_status, message) = match &step_def.kind {
+                    StepKind::ApprovalGate { required_role, .. } => (
+                        PersistStepStatus::AwaitingApproval,
+                        StepStatus::AwaitingApproval,
+                        format!(
+                            "Awaiting approval for step '{}' (role: {}). \
+                             Run: boruna workflow approve {} {}",
+                            pause_id, required_role, run_id, pause_id
+                        ),
+                    ),
+                    StepKind::ExternalTrigger { .. } => {
+                        // 0.3-S15: acquire (or recover) the trigger
+                        // token. On first entry mints fresh + persists;
+                        // on re-entry returns the previously-persisted
+                        // token unchanged so the printed value always
+                        // matches the value the trigger CLI validates
+                        // against. Reviewed 0.3-S15 — earlier draft
+                        // generated-then-persisted with a no-op-if-
+                        // already-set persist, which silently broke
+                        // the printed-vs-stashed contract on resume.
+                        let token = acquire_trigger_token(store, run_id, pause_id)?;
+                        (
+                            PersistStepStatus::AwaitingExternalEvent,
+                            StepStatus::AwaitingExternalEvent,
+                            format!(
+                                "Awaiting external event for step '{}'. \
+                                 Run: boruna workflow trigger {} {} \
+                                 --token {} --payload '<json>'",
+                                pause_id, run_id, pause_id, token
+                            ),
+                        )
+                    }
                     _ => unreachable!(),
                 };
-                let now = now_unix_ms();
                 store
                     .upsert_step_checkpoint(&StepCheckpoint {
                         run_id: run_id.to_string(),
-                        step_id: gate_id.to_string(),
-                        status: PersistStepStatus::AwaitingApproval,
+                        step_id: pause_id.to_string(),
+                        status: persist_status,
                         output_json: None,
                         output_hash: None,
                         started_at_ms: Some(now),
@@ -1017,10 +1201,10 @@ impl WorkflowRunner {
                     })
                     .map_err(WorkflowRunError::from)?;
                 step_results.insert(
-                    gate_id.to_string(),
+                    pause_id.to_string(),
                     StepResult {
-                        step_id: gate_id.to_string(),
-                        status: StepStatus::AwaitingApproval,
+                        step_id: pause_id.to_string(),
+                        status: ax_status,
                         output_hash: None,
                         duration_ms: 0,
                         capabilities_used: vec![],
@@ -1029,11 +1213,7 @@ impl WorkflowRunner {
                     },
                 );
                 workflow_status = WorkflowStatus::Paused;
-                eprintln!(
-                    "Awaiting approval for step '{}' (role: {}). \
-                     Run: boruna workflow approve {} {}",
-                    gate_id, role, run_id, gate_id
-                );
+                eprintln!("{message}");
                 break 'outer;
             }
 
@@ -1423,6 +1603,70 @@ impl WorkflowRunner {
                         .map_err(WorkflowRunError::from)?;
                     }
                     break;
+                }
+                StepKind::ExternalTrigger { .. } => {
+                    // 0.3-S15: external trigger pauses the run identically
+                    // to an approval gate, but the resume mechanism is
+                    // `boruna workflow trigger` instead of `approve`. The
+                    // trigger payload becomes the step's output value.
+                    //
+                    // Ephemeral path (`store: None`) doesn't support
+                    // triggers — there's no persistent metadata to stash
+                    // a token in, so an operator could never advance the
+                    // run. Surface a typed validation error rather than
+                    // silently hanging.
+                    #[cfg(feature = "persist-sqlite")]
+                    let s = match store {
+                        Some(s) => s,
+                        None => {
+                            return Err(WorkflowRunError::Validation(format!(
+                                "step '{step_id}' is an external_trigger step; \
+                                 external triggers require persistent runs \
+                                 (use `run_persistent`, not `run`)"
+                            )));
+                        }
+                    };
+                    #[cfg(not(feature = "persist-sqlite"))]
+                    {
+                        return Err(WorkflowRunError::Validation(format!(
+                            "step '{step_id}' is an external_trigger step; \
+                             requires the `persist-sqlite` feature"
+                        )));
+                    }
+                    #[cfg(feature = "persist-sqlite")]
+                    {
+                        let token = acquire_trigger_token(s, run_id, step_id)?;
+                        let cp = StepResult {
+                            step_id: step_id.clone(),
+                            status: StepStatus::AwaitingExternalEvent,
+                            output_hash: None,
+                            duration_ms: 0,
+                            capabilities_used: vec![],
+                            error: None,
+                            attempt_count: 1,
+                        };
+                        step_results.insert(step_id.clone(), cp);
+                        workflow_status = WorkflowStatus::Paused;
+                        eprintln!(
+                            "Awaiting external event for step '{}'. \
+                             Run: boruna workflow trigger {} {} \
+                             --token {} --payload '<json>'",
+                            step_id, run_id, step_id, token
+                        );
+                        s.upsert_step_checkpoint(&StepCheckpoint {
+                            run_id: run_id.to_string(),
+                            step_id: step_id.clone(),
+                            status: PersistStepStatus::AwaitingExternalEvent,
+                            output_json: None,
+                            output_hash: None,
+                            started_at_ms: Some(step_started_at_ms),
+                            ended_at_ms: None,
+                            error_msg: None,
+                            attempt_count: 1,
+                        })
+                        .map_err(WorkflowRunError::from)?;
+                        break;
+                    }
                 }
                 StepKind::Source { source } => {
                     let result = Self::execute_source_step(
@@ -1911,6 +2155,123 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Generate a fresh 16-byte trigger token from `/dev/urandom`, hex-
+/// encoded (sprint 0.3-S15). The token is the operator-facing security
+/// boundary that binds a `boruna workflow trigger` invocation to a
+/// specific pause instance.
+///
+/// **Why `/dev/urandom` and not the `rand` crate?** Avoids a dep for
+/// one helper. Posix-only by design — the persistence feature already
+/// requires file-backed SQLite, so the orchestrator never runs where
+/// `/dev/urandom` is absent.
+///
+/// **No fallback.** If `/dev/urandom` cannot be read, the function
+/// returns `Err`. Reviewed in 0.3-S15 — a prior version degraded to a
+/// `SystemTime + pid + counter` hash, which gave low-entropy,
+/// observer-predictable tokens silently. The trigger token IS the
+/// security boundary, so entropy failure is not a graceful-degradation
+/// concern. A `/dev/urandom` failure on a real Unix system signals a
+/// fundamentally misconfigured environment (chroot/cgroup denying the
+/// device, or filesystem corruption); the trigger flow refusing to
+/// pause loudly is the right response.
+#[cfg(feature = "persist-sqlite")]
+fn generate_trigger_token() -> Result<String, WorkflowRunError> {
+    use std::io::Read;
+    let mut buf = [0u8; 16];
+    let mut f = std::fs::File::open("/dev/urandom").map_err(|e| {
+        WorkflowRunError::Io(format!(
+            "trigger token entropy unavailable: cannot open /dev/urandom: {e}"
+        ))
+    })?;
+    f.read_exact(&mut buf).map_err(|e| {
+        WorkflowRunError::Io(format!(
+            "trigger token entropy unavailable: short read from /dev/urandom: {e}"
+        ))
+    })?;
+    Ok(hex_lower(&buf))
+}
+
+#[cfg(feature = "persist-sqlite")]
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Acquire the trigger token for a paused step at pause-time (sprint
+/// 0.3-S15). On first entry, generates a fresh token and persists a
+/// placeholder `TriggerRecord` (with empty `payload`) via CAS. On
+/// re-entry (resume after crash before the operator triggered), reads
+/// and returns the existing token — does NOT rotate it, otherwise the
+/// token printed in the original pause's stderr would silently stop
+/// validating.
+///
+/// Returns the **persisted** token, which the caller MUST use in the
+/// "Run: boruna workflow trigger ... --token <X>" message it prints to
+/// the operator. Reviewed in 0.3-S15 — a prior version separated
+/// generate-then-persist, which printed the freshly-generated token
+/// while persist's "leave existing" branch kept the original. Operators
+/// would copy the just-printed token from the resume's stderr and get
+/// `InvalidTriggerToken`.
+///
+/// **Concurrency:** at pause-time the runner is the only writer for
+/// THIS step's pause flow, but a contemporaneous `boruna workflow
+/// approve` against another step in the same run could race the read.
+/// CAS retries handle that — same pattern as
+/// [`record_approval_decision`].
+#[cfg(feature = "persist-sqlite")]
+fn acquire_trigger_token(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+) -> Result<String, WorkflowRunError> {
+    const CAS_RETRY_BUDGET: usize = 5;
+    for _ in 0..CAS_RETRY_BUDGET {
+        let metadata_json = store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        let mut metadata: PersistedRunMetadata =
+            serde_json::from_str(&metadata_json).map_err(|e| {
+                WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+            })?;
+        if let Some(existing) = metadata.triggers.get(step_id) {
+            // Re-entry path: pause was previously taken and the token
+            // is already persisted. Return it verbatim. We don't even
+            // CAS — there's nothing to write.
+            return Ok(existing.token.clone());
+        }
+        // First entry: mint a fresh token and persist as a placeholder.
+        let token = generate_trigger_token()?;
+        metadata.triggers.insert(
+            step_id.to_string(),
+            TriggerRecord {
+                token: token.clone(),
+                payload: String::new(),
+                triggered_at_ms: 0,
+            },
+        );
+        let updated_metadata = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
+        let swapped = store
+            .compare_and_swap_metadata(run_id, &metadata_json, &updated_metadata, now_unix_ms())
+            .map_err(WorkflowRunError::from)?;
+        if swapped {
+            return Ok(token);
+        }
+        // CAS lost — another writer touched metadata. Re-read; the
+        // re-read may now reveal an existing token (if the other
+        // writer was a concurrent pause), in which case we'll return
+        // that one rather than minting a third.
+    }
+    Err(WorkflowRunError::Internal(format!(
+        "CAS retry budget exhausted acquiring trigger token for step '{step_id}' in run '{run_id}'"
+    )))
+}
+
 /// Record an approval-gate decision for a paused workflow run.
 ///
 /// Public entry for the `boruna workflow approve` / `reject` CLI handlers.
@@ -2059,6 +2420,221 @@ pub fn record_approval_decision(
     Err(WorkflowRunError::Internal(format!(
         "CAS retry budget exhausted recording approval for step '{step_id}' in run '{run_id}' \
          (likely a contended hot run; try again)"
+    )))
+}
+
+/// Record an external-trigger event for a paused workflow run (sprint
+/// 0.3-S15).
+///
+/// Public entry for the `boruna workflow trigger` CLI handler. Validates
+/// the run + step state, validates the operator-supplied token against
+/// the one stashed at pause-time, mutates the run's `metadata.triggers`
+/// blob with the payload, and writes back via compare-and-swap.
+///
+/// **Does not advance the run.** Like the approval-gate flow, the
+/// operator must subsequently invoke `boruna workflow resume <run-id>`.
+/// Resume notices the trigger sentinel (a `TriggerRecord` with non-empty
+/// `payload`) and advances the paused step to `Completed`, with the
+/// payload as its output value.
+///
+/// ## Validation order
+///
+/// 1. Run must exist (`RunNotFound`)
+/// 2. Run must not be in a terminal state (`RunNotResumable`)
+/// 3. Workflow def must be loadable from persisted metadata
+/// 4. Step must exist in the workflow def (`StepNotFound`)
+/// 5. Step must be a `StepKind::ExternalTrigger` (`NotAnExternalTriggerStep`)
+/// 6. Step's persisted checkpoint must be `awaiting_external_event`
+///    (`StepNotAtExternalTriggerGate { current_status }` if not)
+/// 7. Step's stashed trigger token must match the supplied `token`
+///    (`InvalidTriggerToken` if not)
+/// 8. Step must not already have a recorded payload
+///    (`StepAlreadyTriggered { prior_triggered_at_ms }` if so) —
+///    idempotency guard against webhook replay.
+///
+/// ## Concurrency
+///
+/// Read + validate + write run inside the same compare-and-swap loop
+/// pattern as [`record_approval_decision`]: contended writes converge
+/// after a re-read, where the re-read either reveals the prior trigger
+/// (we surface `StepAlreadyTriggered`) or just bumped some unrelated
+/// metadata key (we re-attempt the CAS).
+#[cfg(feature = "persist-sqlite")]
+pub fn record_external_trigger(
+    data_dir: &Path,
+    run_id: &str,
+    step_id: &str,
+    token: &str,
+    payload: &str,
+) -> Result<(), WorkflowRunError> {
+    // Defense-in-depth contract: the resume sentinel pass uses
+    // `payload.is_empty()` to discriminate "pause-time placeholder"
+    // from "trigger arrived." An empty payload here would leave the
+    // trigger record indistinguishable from the placeholder and the
+    // step would never advance. The CLI's serde_json validation also
+    // catches empty input ("EOF while parsing"), but enforcing the
+    // invariant locally protects future callers (e.g. a programmatic
+    // embedder).
+    if payload.is_empty() {
+        return Err(WorkflowRunError::Validation(
+            "trigger payload must not be empty".into(),
+        ));
+    }
+    let store = open_store(data_dir)?;
+
+    const CAS_RETRY_BUDGET: usize = 5;
+    for _ in 0..CAS_RETRY_BUDGET {
+        let record = store
+            .get_run_record(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        if let Some(terminal) = record.terminal_status {
+            return Err(WorkflowRunError::RunNotResumable {
+                run_id: run_id.to_string(),
+                terminal_status: terminal.as_str().to_string(),
+            });
+        }
+
+        let metadata_json = store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        let mut metadata: PersistedRunMetadata =
+            serde_json::from_str(&metadata_json).map_err(|e| {
+                WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+            })?;
+
+        let def_path = Path::new(&metadata.workflow_dir).join("workflow.json");
+        let def_json = std::fs::read_to_string(&def_path).map_err(|e| {
+            WorkflowRunError::Io(format!(
+                "cannot read {} (workflow_dir from run metadata): {e}",
+                def_path.display()
+            ))
+        })?;
+        let def: WorkflowDef = serde_json::from_str(&def_json)
+            .map_err(|e| WorkflowRunError::Internal(format!("invalid workflow.json: {e}")))?;
+
+        let step_def = def
+            .steps
+            .get(step_id)
+            .ok_or_else(|| WorkflowRunError::StepNotFound {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+            })?;
+        if !matches!(step_def.kind, StepKind::ExternalTrigger { .. }) {
+            return Err(WorkflowRunError::NotAnExternalTriggerStep {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+            });
+        }
+
+        let existing = metadata.triggers.get(step_id).cloned();
+        let stashed_token = match &existing {
+            Some(rec) => rec.token.clone(),
+            None => {
+                // No stashed token means the runner never reached this
+                // step's pause — the operator triggered too early. Surface
+                // as the gate-state error (cleanest fit) so the CLI
+                // distinguishes "wrong gate state" from "wrong token."
+                let checkpoints = store
+                    .list_step_checkpoints(run_id)
+                    .map_err(WorkflowRunError::from)?;
+                let cp = checkpoints
+                    .iter()
+                    .find(|c| c.step_id == step_id)
+                    .ok_or_else(|| WorkflowRunError::StepNotFound {
+                        run_id: run_id.to_string(),
+                        step_id: step_id.to_string(),
+                    })?;
+                return Err(WorkflowRunError::StepNotAtExternalTriggerGate {
+                    run_id: run_id.to_string(),
+                    step_id: step_id.to_string(),
+                    current_status: cp.status.as_str().to_string(),
+                });
+            }
+        };
+
+        // Idempotency guard: if a payload already exists for this step,
+        // refuse rather than overwriting. Webhook delivery often retries;
+        // we surface the prior timestamp so the caller can detect this is
+        // a duplicate delivery, not a fresh trigger.
+        if let Some(rec) = &existing {
+            if !rec.payload.is_empty() {
+                return Err(WorkflowRunError::StepAlreadyTriggered {
+                    run_id: run_id.to_string(),
+                    step_id: step_id.to_string(),
+                    prior_triggered_at_ms: rec.triggered_at_ms,
+                });
+            }
+        }
+
+        // Token validation. Constant-time compare avoids the (extremely
+        // narrow) timing-leak where short-circuit `==` could disclose
+        // the prefix of a token byte-by-byte. Tokens are 32 hex chars
+        // either way, so `subtle::ConstantTimeEq` is overkill — the
+        // minimum-length-equality + xor-fold is enough.
+        let supplied = token.as_bytes();
+        let stashed = stashed_token.as_bytes();
+        let token_match = supplied.len() == stashed.len() && {
+            let mut acc: u8 = 0;
+            for (a, b) in supplied.iter().zip(stashed.iter()) {
+                acc |= a ^ b;
+            }
+            acc == 0
+        };
+        if !token_match {
+            return Err(WorkflowRunError::InvalidTriggerToken {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+            });
+        }
+
+        // Verify the persisted checkpoint is still in the gate state. The
+        // metadata-side token check is necessary but not sufficient: a
+        // crashed-mid-resume run might have advanced the checkpoint past
+        // the gate while leaving the metadata triggers blob behind. Re-
+        // checking the checkpoint is the authoritative gate.
+        let checkpoints = store
+            .list_step_checkpoints(run_id)
+            .map_err(WorkflowRunError::from)?;
+        let cp = checkpoints
+            .iter()
+            .find(|c| c.step_id == step_id)
+            .ok_or_else(|| WorkflowRunError::StepNotFound {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+            })?;
+        if cp.status != PersistStepStatus::AwaitingExternalEvent {
+            return Err(WorkflowRunError::StepNotAtExternalTriggerGate {
+                run_id: run_id.to_string(),
+                step_id: step_id.to_string(),
+                current_status: cp.status.as_str().to_string(),
+            });
+        }
+
+        metadata.triggers.insert(
+            step_id.to_string(),
+            TriggerRecord {
+                token: stashed_token,
+                payload: payload.to_string(),
+                triggered_at_ms: now_unix_ms(),
+            },
+        );
+        let updated_metadata = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
+        let swapped = store
+            .compare_and_swap_metadata(run_id, &metadata_json, &updated_metadata, now_unix_ms())
+            .map_err(WorkflowRunError::from)?;
+        if swapped {
+            return Ok(());
+        }
+        // CAS lost — concurrent writer modified metadata. Loop and re-
+        // validate. The re-read either reveals their trigger (we surface
+        // StepAlreadyTriggered) or just bumped an unrelated field (we
+        // re-attempt our CAS).
+    }
+    Err(WorkflowRunError::Internal(format!(
+        "CAS retry budget exhausted recording trigger for step '{step_id}' in run '{run_id}'"
     )))
 }
 
@@ -2265,6 +2841,44 @@ pub enum WorkflowRunError {
         run_id: String,
         terminal_status: String,
     },
+    /// `boruna workflow trigger` named a step whose `StepDef` is NOT a
+    /// `StepKind::ExternalTrigger` (sprint 0.3-S15). Distinguishes
+    /// "triggering a non-trigger" from "triggering a step that's not
+    /// paused."
+    #[cfg(feature = "persist-sqlite")]
+    NotAnExternalTriggerStep {
+        run_id: String,
+        step_id: String,
+    },
+    /// `boruna workflow trigger` named a step whose persisted checkpoint
+    /// is not in `awaiting_external_event` state (sprint 0.3-S15).
+    /// Distinguishes "trigger arrived too late" (step already advanced)
+    /// from "trigger arrived too early" (step not yet paused).
+    #[cfg(feature = "persist-sqlite")]
+    StepNotAtExternalTriggerGate {
+        run_id: String,
+        step_id: String,
+        current_status: String,
+    },
+    /// `boruna workflow trigger` was invoked with a `--token` value that
+    /// does not match the token stashed at pause-time (sprint 0.3-S15).
+    /// Prevents accidental cross-step triggers in the "operator pasted
+    /// the wrong webhook payload" footgun.
+    #[cfg(feature = "persist-sqlite")]
+    InvalidTriggerToken {
+        run_id: String,
+        step_id: String,
+    },
+    /// `boruna workflow trigger` named a step that already has a
+    /// recorded payload (sprint 0.3-S15). Idempotency guard: replay of
+    /// a webhook should not re-trigger the same step. Caller can detect
+    /// the prior trigger via this typed error.
+    #[cfg(feature = "persist-sqlite")]
+    StepAlreadyTriggered {
+        run_id: String,
+        step_id: String,
+        prior_triggered_at_ms: i64,
+    },
 }
 
 #[cfg(feature = "persist-sqlite")]
@@ -2329,6 +2943,36 @@ impl std::fmt::Display for WorkflowRunError {
             } => write!(
                 f,
                 "run '{run_id}' is {terminal_status}; cannot mutate"
+            ),
+            #[cfg(feature = "persist-sqlite")]
+            Self::NotAnExternalTriggerStep { run_id, step_id } => write!(
+                f,
+                "step '{step_id}' in run '{run_id}' is not an external_trigger step"
+            ),
+            #[cfg(feature = "persist-sqlite")]
+            Self::StepNotAtExternalTriggerGate {
+                run_id,
+                step_id,
+                current_status,
+            } => write!(
+                f,
+                "step '{step_id}' in run '{run_id}' is in state '{current_status}', \
+                 not awaiting_external_event"
+            ),
+            #[cfg(feature = "persist-sqlite")]
+            Self::InvalidTriggerToken { run_id, step_id } => write!(
+                f,
+                "trigger token mismatch for step '{step_id}' in run '{run_id}'"
+            ),
+            #[cfg(feature = "persist-sqlite")]
+            Self::StepAlreadyTriggered {
+                run_id,
+                step_id,
+                prior_triggered_at_ms,
+            } => write!(
+                f,
+                "step '{step_id}' in run '{run_id}' was already triggered \
+                 at unix_ms={prior_triggered_at_ms}"
             ),
         }
     }
@@ -5044,6 +5688,384 @@ mod tests {
                     "step '{step_id}' hash differs across concurrency levels"
                 );
             }
+        }
+    }
+
+    // ── 0.3-S15: external_trigger step (async step execution) ──
+
+    #[cfg(feature = "persist-sqlite")]
+    mod external_trigger {
+        use super::*;
+
+        fn workflow_with_external_trigger() -> (WorkflowDef, tempfile::TempDir) {
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            // Pre-trigger source step + external_trigger gate +
+            // post-trigger source step. The post-trigger step reads the
+            // payload via step_input("event") and echoes it.
+            std::fs::write(steps_dir.join("init.ax"), "fn main() -> Int { 1 }").unwrap();
+            std::fs::write(
+                steps_dir.join("after.ax"),
+                "fn main() -> String {\n    let payload: String = step_input(\"event\")\n    payload\n}",
+            )
+            .unwrap();
+            let mut after = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/after.ax".into(),
+                },
+                capabilities: vec!["step.input".into()],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec!["webhook".into()],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            after.inputs.insert("event".into(), "webhook.result".into());
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "trigger-test".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    (
+                        "init".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/init.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "webhook".into(),
+                        StepDef {
+                            kind: StepKind::ExternalTrigger {
+                                description: Some("test webhook".into()),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    ("after".into(), after),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            (def, dir)
+        }
+
+        fn paused_run(data_dir: &Path, wf_dir: &Path, def: &WorkflowDef) -> String {
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+            assert_eq!(
+                r.step_results["webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+            r.run_id
+        }
+
+        fn read_token(data_dir: &Path, run_id: &str, step_id: &str) -> String {
+            let store = open_store(data_dir).unwrap();
+            let metadata_json = store.get_run_metadata(run_id).unwrap().unwrap();
+            let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            metadata
+                .triggers
+                .get(step_id)
+                .expect("trigger record must exist after pause")
+                .token
+                .clone()
+        }
+
+        // ── happy path ──
+
+        #[test]
+        fn resume_without_trigger_preserves_persisted_token() {
+            // Reviewed 0.3-S15 — earlier draft generated a fresh token
+            // on every pause entry while persist_trigger_token's
+            // "leave existing" branch kept the original. The token
+            // printed on resume's stderr would silently disconnect from
+            // the validated token; operators copying the just-printed
+            // value would get InvalidTriggerToken.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token_after_initial_pause = read_token(data_dir.path(), &run_id, "webhook");
+
+            // Resume without triggering — should re-pause and the
+            // persisted token must be unchanged.
+            let resumed = WorkflowRunner::resume(
+                &run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Paused);
+            assert_eq!(
+                resumed.step_results["webhook"].status,
+                StepStatus::AwaitingExternalEvent
+            );
+            let token_after_resume = read_token(data_dir.path(), &run_id, "webhook");
+            assert_eq!(
+                token_after_initial_pause, token_after_resume,
+                "token must not rotate on resume — operators may have copied the original"
+            );
+
+            // The original token should still validate.
+            record_external_trigger(
+                data_dir.path(),
+                &run_id,
+                "webhook",
+                &token_after_initial_pause,
+                "{\"v\":1}",
+            )
+            .expect("original token must validate after resume");
+        }
+
+        #[test]
+        fn empty_payload_returns_validation_error() {
+            // The resume sentinel pass uses payload.is_empty() to
+            // discriminate placeholder from triggered. An empty
+            // payload would be silently treated as "still waiting" and
+            // the run would never advance.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+            let err = record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "")
+                .expect_err("empty payload must error");
+            assert!(matches!(err, WorkflowRunError::Validation(_)));
+        }
+
+        #[test]
+        fn run_pauses_at_external_trigger() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            // The token is stashed in metadata.
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+            assert_eq!(token.len(), 32, "token must be 32 hex chars");
+            assert!(
+                token.chars().all(|c| c.is_ascii_hexdigit()),
+                "token must be hex"
+            );
+        }
+
+        #[test]
+        fn trigger_then_resume_advances_with_payload() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+
+            let payload = r#"{"order_id":"42","status":"paid"}"#;
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, payload).unwrap();
+
+            let resumed = WorkflowRunner::resume(
+                &run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+            assert_eq!(
+                resumed.step_results["webhook"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(resumed.step_results["after"].status, StepStatus::Completed);
+        }
+
+        // ── token validation ──
+
+        #[test]
+        fn trigger_with_wrong_token_returns_invalid_token() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+
+            let err = record_external_trigger(
+                data_dir.path(),
+                &run_id,
+                "webhook",
+                "00000000000000000000000000000000",
+                "{}",
+            )
+            .expect_err("wrong token must error");
+            match err {
+                WorkflowRunError::InvalidTriggerToken { step_id, .. } => {
+                    assert_eq!(step_id, "webhook")
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn trigger_with_short_token_returns_invalid_token() {
+            // Defense against any short-circuit equality comparison.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+
+            let err = record_external_trigger(data_dir.path(), &run_id, "webhook", "abc", "{}")
+                .expect_err("short token must error");
+            assert!(matches!(err, WorkflowRunError::InvalidTriggerToken { .. }));
+        }
+
+        // ── replay / idempotency ──
+
+        #[test]
+        fn duplicate_trigger_returns_step_already_triggered() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "{\"v\":1}")
+                .unwrap();
+            // Second trigger with the same token: webhook replay
+            // scenario. Idempotency guard refuses.
+            let err =
+                record_external_trigger(data_dir.path(), &run_id, "webhook", &token, "{\"v\":2}")
+                    .expect_err("duplicate trigger must error");
+            match err {
+                WorkflowRunError::StepAlreadyTriggered { step_id, .. } => {
+                    assert_eq!(step_id, "webhook")
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+
+        // ── wrong-state validation ──
+
+        #[test]
+        fn trigger_unknown_run_id_returns_run_not_found() {
+            let data_dir = tempfile::tempdir().unwrap();
+            let _ = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let err = record_external_trigger(
+                data_dir.path(),
+                "ffffffffffffffff",
+                "webhook",
+                "deadbeef",
+                "{}",
+            )
+            .expect_err("missing run must error");
+            assert!(matches!(err, WorkflowRunError::RunNotFound(_)));
+        }
+
+        #[test]
+        fn trigger_non_trigger_step_returns_not_an_external_trigger_step() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let err = record_external_trigger(
+                data_dir.path(),
+                &run_id,
+                "init",
+                "deadbeefdeadbeefdeadbeefdeadbeef",
+                "{}",
+            )
+            .expect_err("non-trigger step must error");
+            assert!(matches!(
+                err,
+                WorkflowRunError::NotAnExternalTriggerStep { .. }
+            ));
+        }
+
+        #[test]
+        fn trigger_unknown_step_returns_step_not_found() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let err = record_external_trigger(
+                data_dir.path(),
+                &run_id,
+                "no-such-step",
+                "deadbeefdeadbeefdeadbeefdeadbeef",
+                "{}",
+            )
+            .expect_err("missing step must error");
+            assert!(matches!(err, WorkflowRunError::StepNotFound { .. }));
+        }
+
+        #[test]
+        fn ephemeral_run_with_external_trigger_returns_validation_error() {
+            // Without persistence there's nowhere to stash the token,
+            // so an operator could never advance the run. The runner
+            // surfaces a typed Validation error instead of pausing
+            // forever.
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let err = WorkflowRunner::run(&def, &options).expect_err("ephemeral path must error");
+            assert!(matches!(err, WorkflowRunError::Validation(_)));
+        }
+
+        // ── end-to-end: payload becomes step output ──
+
+        #[test]
+        fn payload_propagates_to_downstream_step_via_step_input() {
+            let (def, wf_dir) = workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let run_id = paused_run(data_dir.path(), wf_dir.path(), &def);
+            let token = read_token(data_dir.path(), &run_id, "webhook");
+
+            let payload = r#"{"order_id":"42","status":"paid"}"#;
+            record_external_trigger(data_dir.path(), &run_id, "webhook", &token, payload).unwrap();
+
+            let resumed = WorkflowRunner::resume(
+                &run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+
+            // Confirm the persisted output_json for `webhook` is the
+            // payload as a JSON-encoded String value (i.e. the JSON
+            // string literal of the payload, not the parsed object).
+            let store = open_store(data_dir.path()).unwrap();
+            let cps = store.list_step_checkpoints(&run_id).unwrap();
+            let webhook_cp = cps.iter().find(|c| c.step_id == "webhook").unwrap();
+            let output: boruna_bytecode::Value =
+                serde_json::from_str(webhook_cp.output_json.as_ref().unwrap()).unwrap();
+            assert_eq!(output, boruna_bytecode::Value::String(payload.to_string()));
         }
     }
 }

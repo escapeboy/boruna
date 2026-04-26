@@ -8,6 +8,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Async step execution via external trigger CLI** (sprint `0.3-S15`).
+  New `external_trigger` step kind for webhook-driven workflows. The
+  runner pauses at the gate; an operator (or webhook receiver) advances
+  it with `boruna workflow trigger <run-id> <step-id> --token <X>
+  --payload <json>`, and the payload becomes the step's output value
+  (visible to downstream steps via `step_input`).
+  ```json
+  "webhook": {
+    "kind": "external_trigger",
+    "description": "Stripe payment.succeeded webhook",
+    "depends_on": ["init"]
+  }
+  ```
+  Pause-time prints a 32-hex-char trigger token (16 bytes from
+  `/dev/urandom`); the CLI rejects mismatching tokens to prevent
+  accidental cross-step triggers from a misrouted webhook. Boruna stays
+  a CLI tool — no in-binary HTTP server. The operator's webhook
+  receiver bridges to the CLI.
+- New `StepKind::ExternalTrigger { description }` variant on workflow
+  step definitions; new `StepStatus::AwaitingExternalEvent` (persisted
+  as `"awaiting_external_event"`).
+- Public entry `boruna_orchestrator::workflow::record_external_trigger`
+  for programmatic embedders. Validates the run/step/state, validates
+  the operator-supplied token in constant time, refuses replays of
+  already-triggered steps (`StepAlreadyTriggered { prior_triggered_at_ms }`),
+  and writes the payload via compare-and-swap.
+- Resume sentinel pass advances paused trigger steps when a payload is
+  recorded (mirrors the approval-decision pattern from sprint `0.3-S2c`).
+  The payload is stored as `Value::String(payload)`; the audit hash
+  chain captures the synthesized `output_hash`.
+- Five new typed errors: `NotAnExternalTriggerStep`,
+  `StepNotAtExternalTriggerGate`, `InvalidTriggerToken`,
+  `StepAlreadyTriggered`, plus an empty-payload `Validation` guard.
+- **Ephemeral runs reject external_trigger steps upfront**
+  (review-driven). `WorkflowRunner::run` (no persistence) refuses
+  workflows that contain trigger steps with a typed `Validation` error
+  — earlier draft caught this at step-entry time, which silently
+  allowed prior steps to execute before the typed error surfaced.
+- **Trigger token reuse across resume** (review-driven). The token is
+  acquired via `acquire_trigger_token`: if a previously-persisted
+  token exists for the step, it's returned verbatim. Earlier draft
+  generated a fresh token on every pause entry while
+  persist-trigger-token's "leave existing" branch kept the original;
+  the printed value would silently disconnect from the validated
+  value, and operators copying the just-printed token would get
+  `InvalidTriggerToken`.
+- **No fallback for entropy failure** (review-driven). If
+  `/dev/urandom` cannot be read, `generate_trigger_token` returns
+  `Err`. Earlier draft fell back to a `SystemTime + pid + counter`
+  hash, which gave low-entropy observer-predictable tokens silently.
 - **Workflow step output piping via `step_input`** (sprint `0.3-S14`).
   New built-in function in `.ax`:
   ```

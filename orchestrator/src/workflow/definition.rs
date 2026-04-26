@@ -39,7 +39,18 @@ pub struct StepDef {
     pub budget: Option<StepBudget>,
 }
 
-/// The kind of step — either source code execution or an approval gate.
+/// The kind of step.
+///
+/// - `Source` — compile and run an `.ax` file.
+/// - `ApprovalGate` — pause the run until an operator records an
+///   approval/rejection via `boruna workflow approve` (sprint 0.3-S2c).
+/// - `ExternalTrigger` — pause the run until an external event arrives
+///   via `boruna workflow trigger <run-id> <step-id>` (sprint 0.3-S15).
+///   Designed for webhook-driven workflows: the operator's webhook
+///   receiver bridges to the CLI. The trigger payload becomes the
+///   step's output value, available to downstream steps via
+///   `step_input`. Boruna stays a CLI tool — no in-binary HTTP
+///   server. See `docs/design-0.3-s15-external-trigger.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StepKind {
@@ -50,6 +61,15 @@ pub enum StepKind {
         required_role: String,
         #[serde(default)]
         condition: Option<String>,
+    },
+    #[serde(rename = "external_trigger")]
+    ExternalTrigger {
+        /// Optional human-readable description of what event the
+        /// workflow expects (e.g. "Stripe payment.succeeded webhook").
+        /// Surfaced in `boruna workflow show` and operator logs;
+        /// purely informational, not enforced.
+        #[serde(default)]
+        description: Option<String>,
     },
 }
 
@@ -104,6 +124,10 @@ pub enum StepStatus {
     Failed,
     Skipped,
     AwaitingApproval,
+    /// Step is paused waiting for an external event (sprint 0.3-S15).
+    /// Resume after `boruna workflow trigger <run-id> <step-id>` to
+    /// advance with the trigger payload as the step's output.
+    AwaitingExternalEvent,
 }
 
 /// Overall status of a workflow run.

@@ -317,6 +317,38 @@ enum WorkflowCommand {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+    /// Trigger a paused external_trigger step (sprint 0.3-S15). Records
+    /// the supplied payload as the step's output and primes resume to
+    /// advance past the gate. Operator must run `boruna workflow resume
+    /// <run-id>` afterward to actually execute downstream steps.
+    ///
+    /// Designed for webhook-driven workflows: the operator's webhook
+    /// receiver bridges the incoming HTTP body to this CLI. The payload
+    /// becomes a JSON-encoded String value visible to downstream steps
+    /// via the `step_input(name)` builtin (sprint 0.3-S14).
+    ///
+    /// `--token` is the value printed at pause-time when the runner
+    /// entered the gate. The trigger CLI rejects mismatching tokens to
+    /// prevent accidental cross-step triggers from a misrouted webhook.
+    Trigger {
+        /// Run id (16-hex deterministic id from `boruna workflow run`).
+        run_id: String,
+        /// Step id of the external_trigger step to advance.
+        step_id: String,
+        /// Token printed at pause-time. Required.
+        #[arg(long)]
+        token: String,
+        /// JSON-encoded payload to record as the step's output. Mutually
+        /// exclusive with `--payload-file`.
+        #[arg(long, conflicts_with = "payload_file")]
+        payload: Option<String>,
+        /// Path to a file whose contents are the JSON payload. Mutually
+        /// exclusive with `--payload`. Useful for large webhook bodies.
+        #[arg(long)]
+        payload_file: Option<PathBuf>,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Show the full state of a single run: row, step checkpoints, and
     /// approval-gate decisions. Use `--json` for machine-readable output
     /// (jq-friendly). Reads from the same `--data-dir` as `run`/`resume`.
@@ -1856,6 +1888,55 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             {
                 let _ = (run_id, step_id, reason, data_dir);
                 return Err("`workflow reject` requires the `persist-sqlite` feature".into());
+            }
+        }
+        WorkflowCommand::Trigger {
+            run_id,
+            step_id,
+            token,
+            payload,
+            payload_file,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::record_external_trigger;
+                let payload_str = match (payload, payload_file) {
+                    (Some(p), None) => p,
+                    (None, Some(path)) => std::fs::read_to_string(&path).map_err(|e| {
+                        format!("cannot read --payload-file '{}': {e}", path.display())
+                    })?,
+                    (Some(_), Some(_)) => {
+                        // clap's `conflicts_with` should prevent this; defensive check.
+                        return Err("--payload and --payload-file are mutually exclusive".into());
+                    }
+                    (None, None) => {
+                        return Err(
+                            "either --payload or --payload-file is required for `workflow trigger`"
+                                .into(),
+                        );
+                    }
+                };
+                // Defense-in-depth: confirm the payload is well-formed
+                // JSON. The persistence layer treats it as opaque, but
+                // downstream `step_input` consumers will parse it — give
+                // operators an early failure rather than a confusing
+                // "step crashed parsing JSON" three layers down.
+                serde_json::from_str::<serde_json::Value>(&payload_str)
+                    .map_err(|e| format!("--payload is not valid JSON: {e}"))?;
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
+                    .map_err(|e| format!("{e}"))?;
+                println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, token, payload, payload_file, data_dir);
+                return Err("`workflow trigger` requires the `persist-sqlite` feature".into());
             }
         }
         WorkflowCommand::Show {
