@@ -183,6 +183,22 @@ pub struct RunRow {
     pub metadata_json: String,
 }
 
+/// Outcome of [`RunCheckpointStore::insert_run_with_derived_id_skip_if_in_flight`].
+///
+/// `Inserted(run_id)` — the new run was inserted and is now Running.
+/// `Skipped(prior_row)` — a prior in-flight run was found; the new
+/// run was NOT inserted. The carried `RunRow` is the prior run that
+/// caused the skip (the FIRST one matched by deterministic
+/// `(workflow_name, run_id)` order).
+///
+/// Introduced in `0.3-S10` to close the race window in the prior
+/// 0.3-S7 two-call check-then-insert flow.
+#[derive(Debug, Clone)]
+pub enum InsertOrSkip {
+    Inserted(String),
+    Skipped(RunRow),
+}
+
 /// Replay-verified subset of a [`RunRow`]. Audit, replay, and any code
 /// path whose output enters a hash chain MUST consume `RunRecord` rather
 /// than `RunRow`. Operational columns (`started_at_ms`, `updated_at_ms`,
@@ -743,6 +759,99 @@ impl RunCheckpointStore {
                     // Best-effort rollback. If ROLLBACK itself fails, the
                     // connection is in a degraded state but we still
                     // surface the underlying cause.
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Atomic check-then-insert for the `--skip-if-running` cron pattern.
+    ///
+    /// In one `BEGIN IMMEDIATE` transaction:
+    /// 1. Query for any in-flight (`Running` or `Paused`) run with the
+    ///    same `workflow_hash`. If any: ROLLBACK and return
+    ///    `Ok(InsertOrSkip::Skipped(prior_row))`.
+    /// 2. Else: derive a fresh `run_id` (per [`derive_run_id`]) and
+    ///    INSERT a new run row. COMMIT. Return
+    ///    `Ok(InsertOrSkip::Inserted(run_id))`.
+    ///
+    /// Closes the race window in the prior 0.3-S7 two-call flow
+    /// ([`list_in_flight_runs_for_workflow`] then
+    /// [`insert_run_with_derived_id`]): two concurrent processes
+    /// could both pass the SELECT and both INSERT, producing
+    /// overlapping in-flight runs the operator wanted skipped.
+    ///
+    /// Both sub-operations run under the writer lock acquired by
+    /// `BEGIN IMMEDIATE`, so the second process either:
+    /// - sees the first's just-inserted row (and gets Skipped), or
+    /// - blocks on the writer lock (handled by [`with_busy_retry`])
+    ///   until the first commits, then sees the row.
+    ///
+    /// Reviewed in 0.3-S10 (carried-forward debt from 0.3-S7).
+    pub fn insert_run_with_derived_id_skip_if_in_flight(
+        &self,
+        workflow_name: &str,
+        workflow_hash: &str,
+        inputs_hash: &str,
+        policy_json: &str,
+        metadata_json: &str,
+        started_at_ms: i64,
+    ) -> Result<InsertOrSkip, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<InsertOrSkip, PersistenceError> {
+                // Step 1: check for in-flight prior. We fetch the
+                // first matching row by deterministic order
+                // (workflow_name, run_id) so the returned "prior" is
+                // stable across processes.
+                let mut stmt = self.conn.prepare(
+                    "SELECT run_id, workflow_name, workflow_hash, status, started_at, updated_at, policy_json, metadata_json \
+                     FROM runs WHERE workflow_hash = ?1 AND status IN ('running', 'paused') \
+                     ORDER BY workflow_name, run_id LIMIT 1",
+                )?;
+                let prior: Option<RunRow> = stmt
+                    .query_row(params![workflow_hash], parse_run_row)
+                    .map(Some)
+                    .or_else(|e| match e {
+                        SqlError::QueryReturnedNoRows => Ok(None),
+                        other => Err(other),
+                    })?;
+                if let Some(row) = prior {
+                    return Ok(InsertOrSkip::Skipped(row));
+                }
+                // Step 2: derive run_id + INSERT — same logic as
+                // `insert_run_with_derived_id`, but folded into the
+                // outer transaction.
+                let counter: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE workflow_hash = ?1",
+                    params![workflow_hash],
+                    |row| row.get(0),
+                )?;
+                let run_id = derive_run_id(workflow_hash, inputs_hash, counter);
+                self.conn.execute(
+                    "INSERT INTO runs \
+                     (run_id, workflow_name, workflow_hash, status, started_at, updated_at, policy_json, metadata_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        run_id,
+                        workflow_name,
+                        workflow_hash,
+                        RunStatus::Running.as_str(),
+                        started_at_ms,
+                        started_at_ms,
+                        policy_json,
+                        metadata_json,
+                    ],
+                )?;
+                Ok(InsertOrSkip::Inserted(run_id))
+            };
+            match body() {
+                Ok(outcome) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(outcome)
+                }
+                Err(e) => {
                     let _ = self.conn.execute_batch("ROLLBACK");
                     Err(e)
                 }
@@ -1637,6 +1746,156 @@ mod tests {
         // Sorted by (workflow_name, run_id) — a-early before z-late.
         assert_eq!(runs[0].run_id, "R-2");
         assert_eq!(runs[1].run_id, "R-1");
+    }
+
+    // ── 0.3-S10: atomic skip-if-in-flight ──
+
+    #[test]
+    fn skip_if_in_flight_inserts_when_no_prior() {
+        let store = fresh_store();
+        let outcome = store
+            .insert_run_with_derived_id_skip_if_in_flight(
+                "wf",
+                "wh-X",
+                "ih-1",
+                "{}",
+                "{}",
+                1_700_000_000_000,
+            )
+            .unwrap();
+        match outcome {
+            InsertOrSkip::Inserted(run_id) => {
+                assert!(!run_id.is_empty());
+                // Confirm the row landed.
+                assert!(store.get_run(&run_id).unwrap().is_some());
+            }
+            InsertOrSkip::Skipped(_) => panic!("expected Inserted, got Skipped"),
+        }
+    }
+
+    #[test]
+    fn skip_if_in_flight_skips_when_running_prior_exists() {
+        let store = fresh_store();
+        let mut prior = sample_run("R-1");
+        prior.workflow_hash = "wh-X".into();
+        prior.status = RunStatus::Running;
+        store.insert_run(&prior).unwrap();
+        let outcome = store
+            .insert_run_with_derived_id_skip_if_in_flight(
+                "wf",
+                "wh-X",
+                "ih-1",
+                "{}",
+                "{}",
+                1_700_000_000_000,
+            )
+            .unwrap();
+        match outcome {
+            InsertOrSkip::Skipped(row) => assert_eq!(row.run_id, "R-1"),
+            InsertOrSkip::Inserted(_) => panic!("expected Skipped, got Inserted"),
+        }
+        // Verify only the original row exists.
+        assert_eq!(store.count_runs_for_workflow("wh-X").unwrap(), 1);
+    }
+
+    #[test]
+    fn skip_if_in_flight_skips_when_paused_prior_exists() {
+        let store = fresh_store();
+        let mut prior = sample_run("R-1");
+        prior.workflow_hash = "wh-X".into();
+        prior.status = RunStatus::Paused;
+        store.insert_run(&prior).unwrap();
+        let outcome = store
+            .insert_run_with_derived_id_skip_if_in_flight(
+                "wf",
+                "wh-X",
+                "ih-1",
+                "{}",
+                "{}",
+                1_700_000_000_000,
+            )
+            .unwrap();
+        assert!(matches!(outcome, InsertOrSkip::Skipped(_)));
+    }
+
+    #[test]
+    fn skip_if_in_flight_inserts_when_only_terminal_priors_exist() {
+        let store = fresh_store();
+        let mut completed = sample_run("R-old1");
+        completed.workflow_hash = "wh-X".into();
+        completed.status = RunStatus::Completed;
+        let mut failed = sample_run("R-old2");
+        failed.workflow_hash = "wh-X".into();
+        failed.status = RunStatus::Failed;
+        store.insert_run(&completed).unwrap();
+        store.insert_run(&failed).unwrap();
+        let outcome = store
+            .insert_run_with_derived_id_skip_if_in_flight(
+                "wf",
+                "wh-X",
+                "ih-1",
+                "{}",
+                "{}",
+                1_700_000_000_000,
+            )
+            .unwrap();
+        assert!(matches!(outcome, InsertOrSkip::Inserted(_)));
+        assert_eq!(store.count_runs_for_workflow("wh-X").unwrap(), 3);
+    }
+
+    #[test]
+    fn skip_if_in_flight_concurrent_invocations_at_most_one_inserts() {
+        // Headline regression: N concurrent threads racing the
+        // check-then-insert. Without the atomic transaction (the
+        // 0.3-S7 flow), multiple threads could both pass the check
+        // and both insert. With the atomic transaction (0.3-S10),
+        // at most ONE thread inserts; others see Skipped or each
+        // other's Inserted result and Skip.
+        //
+        // Note: the FIRST thread to acquire the writer lock inserts;
+        // subsequent threads see that insert and Skip. The expected
+        // outcome distribution is 1 Inserted + (N-1) Skipped.
+        use std::sync::Arc;
+        use std::thread;
+        let data_dir = tempfile::tempdir().unwrap();
+        let db_path = data_dir.path().join("runs.db");
+        let _ = RunCheckpointStore::open(&db_path).unwrap();
+        let db_path = Arc::new(db_path);
+        const N: usize = 8;
+        let mut handles = Vec::new();
+        for _ in 0..N {
+            let path = Arc::clone(&db_path);
+            handles.push(thread::spawn(move || {
+                let store = RunCheckpointStore::open(&path).unwrap();
+                store
+                    .insert_run_with_derived_id_skip_if_in_flight(
+                        "wf",
+                        "shared-wh",
+                        "ih-1",
+                        "{}",
+                        "{}",
+                        1_700_000_000_000,
+                    )
+                    .expect("must not error")
+            }));
+        }
+        let outcomes: Vec<InsertOrSkip> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let inserted_count = outcomes
+            .iter()
+            .filter(|o| matches!(o, InsertOrSkip::Inserted(_)))
+            .count();
+        let skipped_count = outcomes
+            .iter()
+            .filter(|o| matches!(o, InsertOrSkip::Skipped(_)))
+            .count();
+        assert_eq!(
+            inserted_count, 1,
+            "exactly one writer must insert; got {inserted_count} inserts and {skipped_count} skips"
+        );
+        assert_eq!(skipped_count, N - 1);
+        // Confirm only one row landed in the store.
+        let store = RunCheckpointStore::open(&db_path).unwrap();
+        assert_eq!(store.count_runs_for_workflow("shared-wh").unwrap(), 1);
     }
 
     // ── retry policy ──

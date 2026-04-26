@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--skip-if-running` race window closed** (sprint `0.3-S10`,
+  carried-forward debt from 0.3-S7). Prior implementation's two-call
+  flow (`find_in_flight_runs` then `run_persistent`) let two
+  concurrent processes both pass the in-flight check and both insert
+  new run rows. Now folded into a single `BEGIN IMMEDIATE` SQL
+  transaction via the new
+  `RunCheckpointStore::insert_run_with_derived_id_skip_if_in_flight`
+  method: at most one of N concurrent invocations inserts; the rest
+  cleanly Skip. Locked by an 8-thread regression test that asserts
+  exactly 1 Inserted + 7 Skipped outcomes. New library API:
+  `WorkflowRunner::run_persistent_or_skip` returning
+  `Option<WorkflowRunResult>` (Some = ran, None = skipped). The CLI
+  flow now uses this atomic path under `--skip-if-running`.
+
 ### Added
 
 - **`--expect-workflow-hash <HEX>`** on `boruna workflow run` and
