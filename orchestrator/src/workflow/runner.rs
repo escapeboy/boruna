@@ -115,6 +115,30 @@ struct PersistedRunMetadata {
     /// pre-0.3-S15 databases parse cleanly. Operational only.
     #[serde(default)]
     triggers: BTreeMap<String, TriggerRecord>,
+    /// Hash-chained audit log of operator actions (sprint 0.4-S9).
+    /// Captures `ApprovalGranted` / `ApprovalDenied` /
+    /// `ExternalTriggerReceived` events at the moment the operator
+    /// authorizes a transition. Defaulted so pre-0.4-S9 databases
+    /// parse cleanly with an empty chain.
+    ///
+    /// **Tamper-evident, NOT replay-verified.** The chain's
+    /// `prev_hash` linkage detects any post-hoc mutation when an
+    /// auditor calls [`crate::audit::AuditLog::verify`]. The chain
+    /// is NOT processed by the run's deterministic-execution
+    /// replay pipeline — replay verifies `output_hash` for each
+    /// step, not the operator-action chain. Each entry IS
+    /// committed atomically with the operator-facing decision in
+    /// the same CAS-protected metadata write, so the chain stays
+    /// consistent with the persisted decision state.
+    ///
+    /// Chain order reflects CAS-commit order, not operator-decision
+    /// wall-clock order. Two concurrent operators acting on
+    /// different steps produce a chain whose order is determined
+    /// by which CAS won the SQLite write lock first; per-decision
+    /// `decided_at_ms` (in the approvals/triggers blobs) preserves
+    /// wall-clock ordering for callers that need it.
+    #[serde(default)]
+    audit_log: Vec<crate::audit::AuditEntry>,
 }
 
 /// Per-step approval decision recorded by `boruna workflow approve` /
@@ -341,6 +365,7 @@ impl WorkflowRunner {
             boruna_version: env!("CARGO_PKG_VERSION").to_string(),
             approvals: BTreeMap::new(),
             triggers: BTreeMap::new(),
+            audit_log: Vec::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -395,6 +420,7 @@ impl WorkflowRunner {
             boruna_version: env!("CARGO_PKG_VERSION").to_string(),
             approvals: BTreeMap::new(),
             triggers: BTreeMap::new(),
+            audit_log: Vec::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -2582,6 +2608,33 @@ pub fn record_approval_decision(
                 reason: reason.clone(),
             },
         );
+
+        // 0.4-S9: append the decision to the run's hash-chained
+        // audit log. The append is committed atomically with the
+        // approvals-blob write below — both live inside the same
+        // metadata_json column and the CAS protects them as a unit.
+        // The hash chain entry's format is dictated by the AuditLog
+        // contract (sha256 of sequence || prev_hash || event_json).
+        let mut audit = crate::audit::AuditLog::from_entries(metadata.audit_log.clone());
+        let audit_event = match decision {
+            ApprovalKind::Approved => crate::audit::AuditEvent::ApprovalGranted {
+                step_id: step_id.to_string(),
+                // Approver identity is operator-supplied via the CLI;
+                // 0.4-S9 surfaces an empty string until a future
+                // identity sprint wires real auth. The field is
+                // captured in the hash chain regardless so a future
+                // upgrade can fill it in without re-keying past
+                // entries.
+                approver: String::new(),
+            },
+            ApprovalKind::Rejected => crate::audit::AuditEvent::ApprovalDenied {
+                step_id: step_id.to_string(),
+                reason: reason.clone().unwrap_or_default(),
+            },
+        };
+        audit.append(audit_event);
+        metadata.audit_log = audit.into_entries();
+
         let updated_metadata = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
 
@@ -2800,8 +2853,6 @@ pub fn record_external_trigger(
                 triggered_at_ms,
             },
         );
-        let updated_metadata = serde_json::to_string(&metadata)
-            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
 
         // 0.3-S16: atomic commit. The persistence layer transitions
         // the step's checkpoint to Completed (with the synthesized
@@ -2820,6 +2871,25 @@ pub fn record_external_trigger(
         let output_json = serde_json::to_string(&synthetic)
             .map_err(|e| WorkflowRunError::Internal(format!("trigger output serialize: {e}")))?;
         let output_hash = DataStore::hash_value(&synthetic);
+
+        // 0.4-S9: append the trigger to the run's hash-chained audit
+        // log. The chain captures `payload_hash` (matches the
+        // synthesized output_hash above) — the payload itself is
+        // operator-supplied and may contain PII, so we hash rather
+        // than log it verbatim. The append is committed atomically
+        // with the metadata + checkpoint write via
+        // `commit_external_trigger`; if the CAS loses, the loop
+        // re-reads metadata (now with whatever event the racing
+        // writer appended) and rebuilds the chain on top.
+        let mut audit = crate::audit::AuditLog::from_entries(metadata.audit_log.clone());
+        audit.append(crate::audit::AuditEvent::ExternalTriggerReceived {
+            step_id: step_id.to_string(),
+            payload_hash: output_hash.clone(),
+        });
+        metadata.audit_log = audit.into_entries();
+
+        let updated_metadata = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
 
         match store
             .commit_external_trigger(
@@ -6204,7 +6274,7 @@ mod tests {
     mod external_trigger {
         use super::*;
 
-        fn workflow_with_external_trigger() -> (WorkflowDef, tempfile::TempDir) {
+        pub(super) fn workflow_with_external_trigger() -> (WorkflowDef, tempfile::TempDir) {
             let dir = tempfile::tempdir().unwrap();
             let steps_dir = dir.path().join("steps");
             std::fs::create_dir_all(&steps_dir).unwrap();
@@ -7194,6 +7264,369 @@ mod tests {
             assert_eq!(
                 r.step_results["webhook"].status,
                 StepStatus::AwaitingExternalEvent
+            );
+        }
+    }
+
+    // ── 0.4-S9: audit-log integration of approval / trigger decisions ──
+
+    #[cfg(feature = "persist-sqlite")]
+    mod audit_decisions {
+        use super::*;
+        use crate::audit::{AuditEvent, AuditLog};
+
+        fn read_audit_log(data_dir: &Path, run_id: &str) -> AuditLog {
+            let store = open_store(data_dir).unwrap();
+            let metadata_json = store.get_run_metadata(run_id).unwrap().unwrap();
+            let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            AuditLog::from_entries(metadata.audit_log)
+        }
+
+        // ── approval_gate ──
+
+        #[test]
+        fn approval_grant_appends_audit_event_and_chain_verifies() {
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+
+            // No audit entries until the first decision.
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 0);
+
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 1);
+            match &log.entries()[0].event {
+                AuditEvent::ApprovalGranted { step_id, .. } => {
+                    assert_eq!(step_id, "human_review")
+                }
+                other => panic!("wrong event variant: {other:?}"),
+            }
+            log.verify().expect("hash chain must verify");
+        }
+
+        #[test]
+        fn approval_reject_appends_audit_event_with_reason() {
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Rejected,
+                Some("policy violation".to_string()),
+            )
+            .unwrap();
+
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 1);
+            match &log.entries()[0].event {
+                AuditEvent::ApprovalDenied { step_id, reason } => {
+                    assert_eq!(step_id, "human_review");
+                    assert_eq!(reason, "policy violation");
+                }
+                other => panic!("wrong event variant: {other:?}"),
+            }
+            log.verify().expect("hash chain must verify");
+        }
+
+        // ── external_trigger ──
+
+        #[test]
+        fn trigger_appends_audit_event_with_payload_hash() {
+            let (def, wf_dir) = external_trigger::workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            let store = open_store(data_dir.path()).unwrap();
+            let metadata_json = store.get_run_metadata(&r.run_id).unwrap().unwrap();
+            let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            let token = metadata.triggers.get("webhook").unwrap().token.clone();
+
+            let payload = "{\"order_id\":\"42\"}";
+            record_external_trigger(data_dir.path(), &r.run_id, "webhook", &token, payload)
+                .unwrap();
+
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 1);
+            let expected_hash =
+                DataStore::hash_value(&boruna_bytecode::Value::String(payload.to_string()));
+            match &log.entries()[0].event {
+                AuditEvent::ExternalTriggerReceived {
+                    step_id,
+                    payload_hash,
+                } => {
+                    assert_eq!(step_id, "webhook");
+                    assert_eq!(payload_hash, &expected_hash);
+                }
+                other => panic!("wrong event variant: {other:?}"),
+            }
+            log.verify().expect("hash chain must verify");
+        }
+
+        // ── chain integrity ──
+
+        #[test]
+        fn multiple_decisions_chain_correctly() {
+            // A workflow with two approval gates. Two record_approval_decision
+            // calls produce a 2-entry chain whose hashes link.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("init.ax"), "fn main() -> Int { 1 }").unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "two-gates".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    (
+                        "init".into(),
+                        StepDef {
+                            kind: StepKind::Source {
+                                source: "steps/init.ax".into(),
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec![],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "gate_a".into(),
+                        StepDef {
+                            kind: StepKind::ApprovalGate {
+                                required_role: "ops".into(),
+                                condition: None,
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                    (
+                        "gate_b".into(),
+                        StepDef {
+                            kind: StepKind::ApprovalGate {
+                                required_role: "ops".into(),
+                                condition: None,
+                            },
+                            capabilities: vec![],
+                            inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            depends_on: vec!["init".into()],
+                            timeout_ms: None,
+                            retry: None,
+                            budget: None,
+                        },
+                    ),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 2,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(r.status, WorkflowStatus::Paused);
+
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "gate_a",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "gate_b",
+                ApprovalKind::Rejected,
+                Some("blocked".into()),
+            )
+            .unwrap();
+
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 2);
+            // Second entry's prev_hash chains to first.
+            assert_eq!(log.entries()[1].prev_hash, log.entries()[0].entry_hash);
+            log.verify().expect("hash chain must verify");
+        }
+
+        // ── back-compat ──
+
+        #[test]
+        fn legacy_metadata_without_audit_log_field_deserializes_with_empty_chain() {
+            // A 0.3.x metadata blob has no `audit_log` key. With
+            // #[serde(default)] on the new field, deserialization
+            // produces an empty Vec.
+            let legacy_json = r#"{
+                "workflow_dir": "/tmp/wf",
+                "inputs_hash": "deadbeef",
+                "boruna_version": "0.3.0",
+                "approvals": {},
+                "triggers": {}
+            }"#;
+            let m: PersistedRunMetadata = serde_json::from_str(legacy_json).unwrap();
+            assert_eq!(m.workflow_dir, "/tmp/wf");
+            assert_eq!(m.inputs_hash, "deadbeef");
+            assert!(m.audit_log.is_empty());
+        }
+
+        #[test]
+        fn first_decision_after_legacy_metadata_starts_chain_at_sequence_zero() {
+            // Forward-compat: a 0.3.x DB whose metadata was written
+            // before this sprint has no `audit_log` field. The first
+            // decision recorded by a 0.4-S9 binary on that run must
+            // start a fresh chain — sequence=0, prev_hash="0"*64 —
+            // not error or panic. Validates that the
+            // `from_entries(Vec::new())` path in record_approval_decision
+            // produces a clean genesis entry.
+            use rusqlite::Connection;
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+
+            // Strip the audit_log field from on-disk metadata to
+            // simulate a 0.3.x-format row.
+            let db_path = data_dir.path().join("runs.db");
+            let conn = Connection::open(&db_path).unwrap();
+            let metadata_json: String = conn
+                .query_row(
+                    "SELECT metadata_json FROM runs WHERE run_id = ?1",
+                    rusqlite::params![&r.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut meta_value: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+            meta_value.as_object_mut().unwrap().remove("audit_log");
+            let stripped = serde_json::to_string(&meta_value).unwrap();
+            conn.execute(
+                "UPDATE runs SET metadata_json = ?1 WHERE run_id = ?2",
+                rusqlite::params![&stripped, &r.run_id],
+            )
+            .unwrap();
+            drop(conn);
+
+            // Decide — the new entry should be the chain's genesis.
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+
+            let log = read_audit_log(data_dir.path(), &r.run_id);
+            assert_eq!(log.entries().len(), 1);
+            assert_eq!(log.entries()[0].sequence, 0);
+            assert_eq!(log.entries()[0].prev_hash, "0".repeat(64));
+            log.verify().expect("genesis chain must verify");
+        }
+
+        #[test]
+        fn audit_log_persists_across_resume() {
+            // After a decision, the resume's metadata reload must
+            // round-trip the audit log unchanged.
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+            let pre_resume_hash = read_audit_log(data_dir.path(), &r.run_id).hash();
+
+            let resumed = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+
+            let post_resume_hash = read_audit_log(data_dir.path(), &r.run_id).hash();
+            assert_eq!(
+                pre_resume_hash, post_resume_hash,
+                "audit log hash must be unchanged across resume — the decision \
+                 events were appended at decision time, not at advancement time"
             );
         }
     }

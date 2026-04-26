@@ -57,6 +57,18 @@ pub enum AuditEvent {
         step_id: String,
         reason: String,
     },
+    /// External-trigger gate advanced via `boruna workflow trigger`
+    /// (sprint `0.4-S9`). `payload_hash` is the SHA-256 of the
+    /// trigger payload — captured rather than the payload itself
+    /// because webhook bodies can be large and may contain operator
+    /// PII. The hash matches the step's `output_hash` (since the
+    /// payload becomes the step's output value), but the dedicated
+    /// event distinguishes "advanced via external event" from
+    /// "advanced via source step completion" in the audit trail.
+    ExternalTriggerReceived {
+        step_id: String,
+        payload_hash: String,
+    },
     WorkflowCompleted {
         result_hash: String,
         total_duration_ms: u64,
@@ -139,6 +151,23 @@ impl AuditLog {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let entries: Vec<AuditEntry> = serde_json::from_str(json)?;
         Ok(AuditLog { entries })
+    }
+
+    /// Construct an `AuditLog` from an owned `Vec<AuditEntry>` (sprint
+    /// `0.4-S9`). Used by callers that round-trip the log through a
+    /// surrounding container (e.g., a run's persisted metadata blob)
+    /// and need to restore the in-memory log without re-serializing
+    /// to JSON. The chain is **not** re-verified here — call
+    /// [`Self::verify`] explicitly if the source is untrusted.
+    pub fn from_entries(entries: Vec<AuditEntry>) -> Self {
+        AuditLog { entries }
+    }
+
+    /// Consume the log and return its owned entries (sprint `0.4-S9`).
+    /// Companion to [`Self::from_entries`] for round-tripping through
+    /// a containing struct.
+    pub fn into_entries(self) -> Vec<AuditEntry> {
+        self.entries
     }
 
     fn compute_hash(sequence: u64, prev_hash: &str, event: &AuditEvent) -> String {
