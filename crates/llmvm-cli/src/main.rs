@@ -1583,29 +1583,60 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 #[cfg(feature = "persist-sqlite")]
                 {
                     let resolved = resolve_data_dir(data_dir.as_ref());
-                    // 0.3-S7: cron-friendly idempotent invocation.
-                    // Check the persistent store for any in-flight
-                    // run of this workflow BEFORE inserting a new
-                    // one. Skip cleanly (exit 0) if found.
+                    // 0.3-S7 → 0.3-S10: cron-friendly idempotent
+                    // invocation. With --skip-if-running, the
+                    // (check-in-flight + insert) sequence runs as a
+                    // single SQL transaction so concurrent operators
+                    // can't both pass the check and both insert.
+                    // Returns Ok(None) on skip, Ok(Some(result)) on
+                    // executed run.
                     if skip_if_running {
-                        let in_flight =
-                            boruna_orchestrator::workflow::find_in_flight_runs(&resolved, &def)
-                                .map_err(|e| format!("{e}"))?;
-                        if let Some(prior) = in_flight.first() {
-                            eprintln!(
-                                "skipped: workflow '{}' has {} run '{}' (started_at_ms={}); \
-                                 not starting a new run",
-                                prior.workflow_name,
-                                prior.status.as_str(),
-                                prior.run_id,
-                                prior.started_at_ms,
-                            );
-                            return Ok(());
+                        println!("  data_dir: {}", resolved.display());
+                        match WorkflowRunner::run_persistent_or_skip(&def, &options, &resolved)
+                            .map_err(|e| format!("{e}"))?
+                        {
+                            Some(result) => result,
+                            None => {
+                                // Look up the prior run for the skip
+                                // message. This is a separate read
+                                // outside the atomic write txn, but
+                                // it's purely informational — by the
+                                // time we get here, the writer has
+                                // already chosen to skip, so even if
+                                // the prior just terminated the
+                                // operator's intent (don't double-
+                                // run) was honored.
+                                if let Some(prior) =
+                                    boruna_orchestrator::workflow::find_in_flight_runs(
+                                        &resolved, &def,
+                                    )
+                                    .map_err(|e| format!("{e}"))?
+                                    .first()
+                                {
+                                    eprintln!(
+                                        "skipped: workflow '{}' has {} run '{}' \
+                                         (started_at_ms={}); not starting a new run",
+                                        prior.workflow_name,
+                                        prior.status.as_str(),
+                                        prior.run_id,
+                                        prior.started_at_ms,
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "skipped: workflow '{}' had an in-flight prior at \
+                                         insert-check time (since terminated); not starting a \
+                                         new run",
+                                        def.name
+                                    );
+                                }
+                                return Ok(());
+                            }
                         }
+                    } else {
+                        println!("  data_dir: {}", resolved.display());
+                        WorkflowRunner::run_persistent(&def, &options, &resolved)
+                            .map_err(|e| format!("{e}"))?
                     }
-                    println!("  data_dir: {}", resolved.display());
-                    WorkflowRunner::run_persistent(&def, &options, &resolved)
-                        .map_err(|e| format!("{e}"))?
                 }
                 // Reject-at-parse per project-conventions §1: a binary
                 // built without `persist-sqlite` cannot honor a

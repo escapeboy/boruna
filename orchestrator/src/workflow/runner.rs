@@ -242,6 +242,33 @@ impl WorkflowRunner {
         options: &RunOptions,
         data_dir: &Path,
     ) -> Result<WorkflowRunResult, WorkflowRunError> {
+        let (store, run_id) = Self::prepare_persistent_run(def, options, data_dir)?;
+        Self::execute_after_insert(def, options, data_dir, &store, run_id)
+    }
+
+    /// Atomic variant of [`run_persistent`] for the cron-driven
+    /// scheduling pattern. Wraps the (check-in-flight + insert) sequence
+    /// in a single SQL transaction so concurrent processes can no
+    /// longer both pass the check and both insert.
+    ///
+    /// Returns:
+    /// - `Ok(Some(WorkflowRunResult))` — a new run was inserted and
+    ///   executed.
+    /// - `Ok(None)` — a prior in-flight run exists; this invocation
+    ///   skipped cleanly without inserting or executing anything.
+    /// - `Err(...)` — validation or persistence failure.
+    ///
+    /// Replaces the racy 2-call flow from sprint 0.3-S7
+    /// (`find_in_flight_runs` then `run_persistent`). Reviewed in
+    /// 0.3-S10. The previous flow remains correct in single-operator
+    /// cron invocations but could double-insert under concurrent
+    /// operators.
+    #[cfg(feature = "persist-sqlite")]
+    pub fn run_persistent_or_skip(
+        def: &WorkflowDef,
+        options: &RunOptions,
+        data_dir: &Path,
+    ) -> Result<Option<WorkflowRunResult>, WorkflowRunError> {
         WorkflowValidator::validate(def).map_err(|errors| {
             WorkflowRunError::Validation(
                 errors
@@ -251,11 +278,62 @@ impl WorkflowRunner {
                     .join("; "),
             )
         })?;
-        let order =
-            WorkflowValidator::topological_order(def).map_err(WorkflowRunError::Validation)?;
+        WorkflowValidator::topological_order(def).map_err(WorkflowRunError::Validation)?;
 
         let store = open_store(data_dir)?;
+        let workflow_hash = Self::workflow_hash_from_def(def);
+        let inputs_hash = Self::ephemeral_inputs_hash();
+        let policy_json = serde_json::to_string(&options.policy)
+            .map_err(|e| WorkflowRunError::Internal(format!("policy serialize: {e}")))?;
+        let metadata = PersistedRunMetadata {
+            workflow_dir: options.workflow_dir.clone(),
+            inputs_hash: inputs_hash.clone(),
+            boruna_version: env!("CARGO_PKG_VERSION").to_string(),
+            approvals: BTreeMap::new(),
+        };
+        let metadata_json = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
 
+        let outcome = store
+            .insert_run_with_derived_id_skip_if_in_flight(
+                &def.name,
+                &workflow_hash,
+                &inputs_hash,
+                &policy_json,
+                &metadata_json,
+                now_unix_ms(),
+            )
+            .map_err(WorkflowRunError::from)?;
+        match outcome {
+            crate::persistence::InsertOrSkip::Skipped(_prior) => Ok(None),
+            crate::persistence::InsertOrSkip::Inserted(run_id) => {
+                Self::execute_after_insert(def, options, data_dir, &store, run_id).map(Some)
+            }
+        }
+    }
+
+    /// Internal shared body for `run_persistent` and
+    /// `run_persistent_or_skip`. Validates, opens the store, and
+    /// inserts a new run row via `insert_run_with_derived_id`.
+    /// Returns the opened store + the new run_id.
+    #[cfg(feature = "persist-sqlite")]
+    fn prepare_persistent_run(
+        def: &WorkflowDef,
+        options: &RunOptions,
+        data_dir: &Path,
+    ) -> Result<(RunCheckpointStore, String), WorkflowRunError> {
+        WorkflowValidator::validate(def).map_err(|errors| {
+            WorkflowRunError::Validation(
+                errors
+                    .iter()
+                    .map(|e| e.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        WorkflowValidator::topological_order(def).map_err(WorkflowRunError::Validation)?;
+
+        let store = open_store(data_dir)?;
         let workflow_hash = Self::workflow_hash_from_def(def);
         let inputs_hash = Self::ephemeral_inputs_hash();
         let policy_json = serde_json::to_string(&options.policy)
@@ -279,6 +357,22 @@ impl WorkflowRunner {
                 now_unix_ms(),
             )
             .map_err(WorkflowRunError::from)?;
+        Ok((store, run_id))
+    }
+
+    /// Internal shared body — execute steps + persist terminal status —
+    /// after a fresh run row has been inserted by either the
+    /// non-atomic or the atomic check+insert path.
+    #[cfg(feature = "persist-sqlite")]
+    fn execute_after_insert(
+        def: &WorkflowDef,
+        options: &RunOptions,
+        data_dir: &Path,
+        store: &RunCheckpointStore,
+        run_id: String,
+    ) -> Result<WorkflowRunResult, WorkflowRunError> {
+        let order =
+            WorkflowValidator::topological_order(def).map_err(WorkflowRunError::Validation)?;
 
         // Persistent runs use a stable per-run subdir, not a tempdir, so
         // the data store survives a crash. Caller controls the parent;
@@ -300,7 +394,7 @@ impl WorkflowRunner {
                 &mut data_store,
                 BTreeSet::new(),
                 &BTreeMap::new(),
-                &store,
+                store,
             )
         } else {
             Self::execute_steps(
@@ -311,7 +405,7 @@ impl WorkflowRunner {
                 &mut data_store,
                 BTreeSet::new(),
                 &BTreeMap::new(),
-                Some(&store),
+                Some(store),
             )
         };
 
