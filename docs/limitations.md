@@ -18,7 +18,7 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 **Step limit is a blunt instrument.** The `--step-limit` flag prevents runaway execution but does not provide fine-grained CPU time control. A step that does 10M arithmetic operations may run longer than expected before hitting the limit.
 
-**No parallel step execution within a workflow run.** The current workflow runner executes steps sequentially in topological order. Fan-out parallelism in the DAG definition is supported in the schema but not yet implemented in the runner.
+**Wave-based concurrent execution, not full DAG parallelism.** The runner processes steps in topological waves with `--concurrency <N>` workers per wave (sprint `0.3-S4`). A slow step at level N blocks fast steps at level N+1 even if they don't actually depend on the slow one. A full DAG-based scheduler (no wave boundaries) is not yet implemented.
 
 **Actor system is single-process.** Actors run in the same OS process with round-robin scheduling. There is no distributed actor execution.
 
@@ -28,7 +28,7 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 **The HTTP handler requires a feature flag.** Real HTTP calls require building with `--features boruna-cli/http`. This is a build-time decision, not a runtime one.
 
-**LLM calls are not natively integrated.** The `llm.call` capability is declared and enforced by the VM, but the live handler for LLM calls is not yet shipped. In `--live` mode, you need to provide a handler implementation. See [boruna-effect](../crates/llm-effect/) for the integration layer.
+**LLM calls use Bring Your Own Handler (BYOH).** The `llm.call` capability is declared and enforced by the VM, and `boruna-effect` provides prompt / cache / context primitives — but no default network-calling handler ships in core. Wire your provider (OpenAI, Anthropic, vLLM, Ollama, custom router) by implementing `CapabilityHandler` and passing it to `CapabilityGateway::with_handler`. See [LLM Integration Guide](./guides/llm-integration.md) for the contract, examples, and rationale. A reference OpenAI handler lives at `examples/llm_handlers/openai/`.
 
 **No streaming.** Capability calls are synchronous and blocking. LLM responses must complete before the step continues. This is unsuitable for streaming chat interfaces.
 
@@ -36,13 +36,9 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 ## Workflow limitations
 
-**No persistent state across restarts.** If the `boruna workflow run` process exits (crash, kill, timeout), the workflow run cannot be resumed. Checkpoint-and-resume is on the roadmap for 0.3.0.
+**No async steps.** Steps run synchronously. A step that needs to wait for an external event (webhook callback, human approval via an external system) cannot be expressed natively. Approval gates pause the workflow synchronously and require an operator (`boruna workflow approve`) to advance — this is intentional, but does not generalize to webhook-triggered resumption. On the 0.3.0 roadmap.
 
-**No async steps.** Steps run synchronously. A step that needs to wait for an external event (webhook callback, human approval via an external system) cannot be expressed natively. Approval gates in the current implementation pause the workflow synchronously.
-
-**No step retry.** There is no built-in retry policy. If a step fails, the workflow fails. Retry-on-failure is on the roadmap for 0.3.0.
-
-**Workflow outputs are single values.** Each step produces one output value. Complex multi-output steps must serialize their output to a string (e.g., JSON). The type-safe step output piping planned for 0.2.0 will address this.
+**`.ax` step-input access not yet wired through.** Workflow steps can declare `inputs: { document: "ingest.result" }` and the runner validates references at compile time, but `.ax` step bodies cannot yet *read* those resolved input values at runtime — steps remain self-contained today. The persisted output flows correctly between waves (downstream steps see upstream outputs in the data store), but the language-level access requires compiler work (`Op::CapCall` emission for capability-annotated functions). On the 0.3.0 roadmap.
 
 ## Evidence and audit limitations
 
