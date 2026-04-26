@@ -1,12 +1,22 @@
 use boruna_bytecode::Value;
 use boruna_vm::capability_gateway::{CapabilityGateway, Policy};
 use boruna_vm::error::VmError;
-use boruna_vm::vm::Vm;
+use boruna_vm::vm::{StepResult, Vm};
 use serde_json::Value as JsonValue;
 
 use super::TOOL_RESPONSE_PROTOCOL_VERSION;
 
 const TRACE_LIMIT: usize = 500;
+
+/// VM step budget per [`Vm::execute_bounded`] slice when streaming progress
+/// notifications (sprint `0.4-S6`). Issue #4's "Notes for implementers"
+/// recommends ~100k opcodes — coarse enough to be cheap (notification overhead
+/// stays under a fraction of a percent of execution time) and fine enough that
+/// long-running scripts emit several progress events per second on typical
+/// hardware. Tunable via the `progress` callback path; the non-streaming
+/// `run_source` entry continues to call `vm.run()` directly, so this constant
+/// has no effect when no progress token is supplied.
+const PROGRESS_STEP_SLICE: u64 = 100_000;
 
 /// Cap on the per-call output_schema size (bytes of compact JSON).
 /// Schemas larger than this are rejected with `invalid_output_schema` before
@@ -70,6 +80,48 @@ pub fn run_source(
     limits: Option<&RunLimits>,
     output_schema: Option<&JsonValue>,
 ) -> String {
+    run_source_with_progress(
+        source,
+        policy,
+        max_steps,
+        trace,
+        limits,
+        output_schema,
+        None::<fn(u64)>,
+    )
+}
+
+/// Streaming variant of [`run_source`] that emits progress callbacks during
+/// VM execution (sprint `0.4-S6`, closes #4).
+///
+/// When `progress_callback` is `Some`, the VM is driven via
+/// [`Vm::execute_bounded`] in [`PROGRESS_STEP_SLICE`]-sized slices instead of
+/// a single [`Vm::run`] call. Between slices, the callback is invoked with
+/// the cumulative step count, giving the caller a hook to surface live
+/// progress (e.g. an MCP `progress` notification).
+///
+/// When `progress_callback` is `None`, this delegates to the same VM driver
+/// loop with a no-op callback — so the streaming and non-streaming paths
+/// share their semantics for `start_time`, `max_wall_ms`, error handling,
+/// and final output. The legacy [`run_source`] entry passes `None`.
+///
+/// **The callback runs on the VM's thread** (typically the
+/// `tokio::task::spawn_blocking` worker the MCP layer wraps this call in).
+/// Keep callback work cheap — a heavy callback adds latency to every slice.
+/// The MCP wiring forwards through a non-blocking `mpsc::unbounded_channel`
+/// so notification dispatch happens on a separate task.
+pub fn run_source_with_progress<F>(
+    source: &str,
+    policy: Option<&JsonValue>,
+    max_steps: u64,
+    trace: bool,
+    limits: Option<&RunLimits>,
+    output_schema: Option<&JsonValue>,
+    progress_callback: Option<F>,
+) -> String
+where
+    F: FnMut(u64),
+{
     // Reject unsupported limits BEFORE compiling, so an integrator who
     // misconfigures (e.g. sets max_memory_mb expecting it to bound memory)
     // sees a typed error immediately rather than a silently-ignored setting
@@ -119,7 +171,7 @@ pub fn run_source(
     vm.set_max_wall_ms(limits.and_then(|l| l.max_wall_ms));
     vm.trace_enabled = trace;
 
-    match vm.run() {
+    match drive_vm(&mut vm, progress_callback) {
         Ok(value) => {
             // Serialize result and ui_output under the optional output-size cap.
             let max_output_bytes = limits.and_then(|l| l.max_output_bytes);
@@ -196,6 +248,68 @@ pub fn run_source(
             "steps": vm.step_count(),
         })
         .to_string(),
+    }
+}
+
+/// Drive the VM to completion, optionally emitting progress callbacks
+/// between fixed-size execution slices (sprint `0.4-S6`).
+///
+/// When `progress_callback` is `None`, delegates directly to [`Vm::run`]
+/// — the fast path stays bit-identical to the pre-sprint behavior.
+///
+/// When `progress_callback` is `Some`, drives
+/// `vm.execute_bounded(PROGRESS_STEP_SLICE)` in a loop and invokes the
+/// callback with the cumulative step count after each yield. Three
+/// invariants are preserved relative to `vm.run()`:
+///
+/// 1. **Entry-setup wall-time accounting** — calls `vm.start_timer()`
+///    BEFORE `set_entry_function`, mirroring `vm.run`'s contract that
+///    `max_wall_ms` covers the entry-call frame allocation.
+/// 2. **Standalone `Op::ReceiveMsg` semantics** — `boruna_run` runs the
+///    VM outside any [`ActorSystem`] (`in_actor_context = false`), so
+///    `Op::ReceiveMsg` on an empty mailbox falls through with
+///    `Value::Unit` (the same legacy behavior). `StepResult::Blocked`
+///    therefore cannot arise from script-level `receive` and is
+///    treated as an internal-state error.
+/// 3. **`start_time` lifecycle across yields** —
+///    `Vm::execute_bounded` preserves `start_time` across slices, so
+///    the wall-time budget spans the full bounded execution rather
+///    than resetting per slice.
+fn drive_vm<F>(vm: &mut Vm, mut progress_callback: Option<F>) -> Result<Value, VmError>
+where
+    F: FnMut(u64),
+{
+    if progress_callback.is_none() {
+        // Fast path: no progress callback. Use the existing `vm.run()`
+        // entry to keep the non-streaming path bit-identical to its
+        // pre-sprint behavior. Avoids any subtle timing or
+        // start_time/budget differences from the bounded loop.
+        return vm.run();
+    }
+    // Streaming path. Start the wall-clock timer before set_entry_function
+    // so the entry-call setup time is counted toward `max_wall_ms` —
+    // matches `vm.run()`'s ordering. See `Vm::start_timer`.
+    vm.start_timer();
+    let entry = vm.module().entry;
+    vm.set_entry_function(entry)?;
+    loop {
+        match vm.execute_bounded(PROGRESS_STEP_SLICE) {
+            StepResult::Completed(val) => return Ok(val),
+            StepResult::Yielded { .. } => {
+                if let Some(cb) = progress_callback.as_mut() {
+                    cb(vm.step_count());
+                }
+            }
+            // `Blocked` cannot arise from `Op::ReceiveMsg` here:
+            // `boruna_run` runs the VM standalone, so the receive
+            // op falls through with `Value::Unit` per its
+            // `in_actor_context = false` branch. If a future
+            // capability adds another blocking primitive that bypasses
+            // the actor-context check, surface as a typed error
+            // rather than spinning.
+            StepResult::Blocked => return Err(VmError::Deadlock),
+            StepResult::Error(e) => return Err(e),
+        }
     }
 }
 
@@ -747,5 +861,184 @@ mod tests {
             serde_json::from_str::<Policy>(src)
                 .unwrap_or_else(|e| panic!("example {} failed to parse: {e}", i + 1));
         }
+    }
+
+    // ── 0.4-S6: streaming progress callback (closes #4) ──
+
+    /// A while-loop program that runs ~3 × PROGRESS_STEP_SLICE opcodes —
+    /// guaranteed to yield more than one progress sample with the
+    /// default 100k slice. Returns the final counter value so the test
+    /// can confirm the program actually ran to completion.
+    const STREAMING_PROGRAM: &str = r#"
+fn main() -> Int {
+    let mut i = 0
+    while i < 80000 {
+        i = i + 1
+    }
+    i
+}
+"#;
+
+    #[test]
+    fn run_source_with_progress_emits_callback_samples() {
+        use std::sync::{Arc, Mutex};
+        let samples: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let samples_clone = Arc::clone(&samples);
+        let out = run_source_with_progress(
+            STREAMING_PROGRAM,
+            None,
+            10_000_000,
+            false,
+            None,
+            None,
+            Some(move |steps: u64| {
+                samples_clone.lock().unwrap().push(steps);
+            }),
+        );
+        // Run completed successfully.
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true));
+        assert_eq!(parsed["result"], json!(80000));
+
+        // At least one progress sample fired (the loop runs ~5 ops per
+        // iteration × 80k ≈ 400k opcodes ≫ 100k slice). Samples are
+        // monotonically increasing and within the max_steps bound.
+        let s = samples.lock().unwrap();
+        assert!(
+            !s.is_empty(),
+            "streaming path must emit at least one progress sample"
+        );
+        for window in s.windows(2) {
+            assert!(
+                window[1] >= window[0],
+                "progress samples must be non-decreasing: {:?}",
+                *s
+            );
+        }
+        let final_steps = parsed["steps"].as_u64().unwrap();
+        assert!(
+            *s.last().unwrap() <= final_steps,
+            "last sample {} must be ≤ final step count {}",
+            s.last().unwrap(),
+            final_steps
+        );
+    }
+
+    #[test]
+    fn run_source_with_no_progress_callback_matches_legacy_run_source() {
+        // The non-streaming path must produce a bit-identical response
+        // to the legacy run_source — verifies that the fast path
+        // (drive_vm's `progress_callback.is_none()` short-circuit)
+        // doesn't drift in semantics.
+        let legacy = run_source(PURE_SOURCE, None, 1_000_000, false, None, None);
+        let streamed = run_source_with_progress(
+            PURE_SOURCE,
+            None,
+            1_000_000,
+            false,
+            None,
+            None,
+            None::<fn(u64)>,
+        );
+        assert_eq!(
+            legacy, streamed,
+            "no-callback streaming path must be identical to legacy run_source"
+        );
+    }
+
+    #[test]
+    fn run_source_with_progress_completes_zero_step_program_without_callback() {
+        // Pure programs may complete in fewer steps than a single
+        // PROGRESS_STEP_SLICE. The bounded loop must still terminate
+        // with the correct result and not call the progress callback
+        // (no yield happens — execute_bounded returns Completed
+        // immediately).
+        use std::sync::{Arc, Mutex};
+        let samples: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let samples_clone = Arc::clone(&samples);
+        let out = run_source_with_progress(
+            PURE_SOURCE,
+            None,
+            1_000_000,
+            false,
+            None,
+            None,
+            Some(move |steps: u64| {
+                samples_clone.lock().unwrap().push(steps);
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true));
+        assert_eq!(parsed["result"], json!(3));
+        // Pure 1+2 program completes in ~12 opcodes — well under the
+        // 100k slice — so the callback is never invoked.
+        assert!(
+            samples.lock().unwrap().is_empty(),
+            "callback must not fire for sub-slice programs"
+        );
+    }
+
+    #[test]
+    fn run_source_with_progress_callback_matches_legacy_for_receive_op() {
+        // Reviewed 0.4-S6 — earlier draft signaled "actor context" via
+        // `Vm::budget.is_some()`, conflating "in actor scheduler" with
+        // "in slice-bounded streaming progress loop." A non-actor
+        // script that compiles to `Op::ReceiveMsg` would then return
+        // success=true via legacy `vm.run()` but
+        // success=false/error_kind=runtime_error via the streaming
+        // path. Fixed by adding `Vm::in_actor_context` (default false).
+        // This test locks the contract that the streaming and
+        // non-streaming paths produce equivalent terminal status for
+        // any source.
+        const RECEIVE_PROGRAM: &str = r#"
+fn main() -> Int {
+    let _msg: Unit = receive
+    42
+}
+"#;
+        let legacy = run_source(RECEIVE_PROGRAM, None, 1_000_000, false, None, None);
+        let streamed = run_source_with_progress(
+            RECEIVE_PROGRAM,
+            None,
+            1_000_000,
+            false,
+            None,
+            None,
+            Some(|_steps: u64| {}),
+        );
+        // Both paths must succeed with the same result. The exact step
+        // count may differ trivially (start_timer placement); compare
+        // the success/result envelope rather than the full string.
+        let legacy_parsed: serde_json::Value = serde_json::from_str(&legacy).unwrap();
+        let streamed_parsed: serde_json::Value = serde_json::from_str(&streamed).unwrap();
+        assert_eq!(legacy_parsed["success"], json!(true));
+        assert_eq!(streamed_parsed["success"], json!(true));
+        assert_eq!(legacy_parsed["result"], streamed_parsed["result"]);
+    }
+
+    #[test]
+    fn run_source_with_progress_callback_propagates_runtime_errors() {
+        // A program that hits a runtime error mid-execution must still
+        // surface the error envelope, even when the streaming path is
+        // active. The callback may or may not have fired — what
+        // matters is the final response is well-formed.
+        const ERR_PROGRAM: &str = r#"
+fn main() -> Int {
+    let xs: List<Int> = [1, 2, 3]
+    list_get(xs, 99)
+}
+"#;
+        let out = run_source_with_progress(
+            ERR_PROGRAM,
+            None,
+            1_000_000,
+            false,
+            None,
+            None,
+            Some(|_steps: u64| {}),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(false));
+        assert_eq!(parsed["error_kind"], json!("runtime_error"));
     }
 }

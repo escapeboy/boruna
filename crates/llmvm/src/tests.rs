@@ -1117,10 +1117,14 @@ mod tests {
 
     #[test]
     fn test_receive_msg_blocks_when_empty() {
-        // ReceiveMsg with empty mailbox in bounded mode returns Blocked
+        // ReceiveMsg in actor context with empty mailbox returns Blocked.
+        // Sprint 0.4-S6: blocking-on-receive is now keyed off
+        // `in_actor_context` (set by ActorSystem) instead of
+        // `budget.is_some()`, so this test must opt in explicitly.
         let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
+        vm.set_in_actor_context(true);
         vm.set_entry_function(0).unwrap();
         match vm.execute_bounded(100) {
             crate::vm::StepResult::Blocked => {} // expected
@@ -1151,6 +1155,26 @@ mod tests {
         // In legacy unbounded mode (run()), ReceiveMsg pushes Unit
         let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
         assert_eq!(run_module(module).unwrap(), Value::Unit);
+    }
+
+    #[test]
+    fn test_receive_msg_bounded_standalone_falls_through_with_unit() {
+        // Sprint 0.4-S6 contract: a VM driven by `execute_bounded`
+        // OUTSIDE an actor system (in_actor_context = false, the
+        // default) must mirror legacy `vm.run()` — ReceiveMsg with
+        // empty mailbox pushes Unit and execution continues. Without
+        // this contract, the streaming-progress path of `boruna_run`
+        // would diverge from the non-streaming path for any program
+        // that compiles to Op::ReceiveMsg.
+        let module = simple_module(vec![Op::ReceiveMsg, Op::Ret], vec![]);
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        // No set_in_actor_context call — default is false.
+        vm.set_entry_function(0).unwrap();
+        match vm.execute_bounded(100) {
+            crate::vm::StepResult::Completed(val) => assert_eq!(val, Value::Unit),
+            other => panic!("expected Completed(Unit), got {:?}", other),
+        }
     }
 
     #[test]
@@ -1316,7 +1340,8 @@ mod tests {
 
     #[test]
     fn test_receive_blocks_then_resumes() {
-        // Actor blocks on receive, then resumes after message delivery
+        // Actor blocks on receive, then resumes after message delivery.
+        // Sprint 0.4-S6: requires explicit actor-context flag.
         use crate::actor::Message;
         let module = simple_module(
             vec![
@@ -1327,6 +1352,7 @@ mod tests {
         );
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
+        vm.set_in_actor_context(true);
         vm.set_entry_function(0).unwrap();
 
         // First attempt: blocks

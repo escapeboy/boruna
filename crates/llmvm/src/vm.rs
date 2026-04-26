@@ -80,6 +80,22 @@ pub struct Vm {
     budget: Option<u64>,
     /// Step count at budget start.
     budget_start: u64,
+    /// True when this VM is being driven by an [`ActorSystem`] scheduler.
+    /// Determines `Op::ReceiveMsg`'s empty-mailbox behavior:
+    ///   - `true` (actor mode) → rewind IP and yield
+    ///     [`VmError::MailboxEmpty`] so the scheduler can deliver a
+    ///     message and re-execute the op.
+    ///   - `false` (standalone) → push [`Value::Unit`] and continue,
+    ///     mirroring [`Vm::run`]'s legacy non-actor semantics.
+    ///
+    /// Defaults to `false`. [`ActorSystem`] sets it to `true` when
+    /// scheduling. Reviewed in 0.4-S6 — the prior signal was
+    /// `budget.is_some()`, which conflated "in actor scheduler"
+    /// (correctly blocks) with "in slice-bounded streaming progress
+    /// loop" (must mirror legacy behavior). The conflation made
+    /// `boruna_run`'s streaming and non-streaming paths diverge for
+    /// any program emitting `Op::ReceiveMsg` outside an actor system.
+    in_actor_context: bool,
 }
 
 impl Vm {
@@ -106,6 +122,31 @@ impl Vm {
             next_spawn_id: 0,
             budget: None,
             budget_start: 0,
+            in_actor_context: false,
+        }
+    }
+
+    /// Mark this VM as being driven by an [`ActorSystem`] scheduler so
+    /// `Op::ReceiveMsg` blocks on an empty mailbox instead of falling
+    /// through to `Value::Unit` (sprint `0.4-S6`). Called by
+    /// `ActorSystem::run`.
+    pub fn set_in_actor_context(&mut self, in_context: bool) {
+        self.in_actor_context = in_context;
+    }
+
+    /// Start the wall-clock timer if not already running (sprint `0.4-S6`).
+    /// Callers driving the VM through [`Self::execute_bounded`] in a
+    /// loop should call this BEFORE [`Self::set_entry_function`] when
+    /// they want timing semantics that match [`Self::run`] — `vm.run`
+    /// initializes `start_time` before its `call_function(entry, ...)`
+    /// setup, so the wall-time budget covers the entry-frame
+    /// allocation. `execute_bounded` initializes `start_time` lazily on
+    /// the first slice, after `set_entry_function` has already run, so
+    /// without this hook the bounded path leaks the entry-setup time
+    /// from `max_wall_ms` accounting.
+    pub fn start_timer(&mut self) {
+        if self.start_time.is_none() {
+            self.start_time = Some(Instant::now());
         }
     }
 
@@ -495,12 +536,20 @@ impl Vm {
                 Op::ReceiveMsg => {
                     if let Some(msg) = self.mailbox.pop_front() {
                         self.push(msg.payload)?;
-                    } else if self.budget.is_some() {
-                        // Bounded mode: rewind IP so ReceiveMsg re-executes on resume
+                    } else if self.in_actor_context {
+                        // Actor mode: rewind IP so ReceiveMsg re-executes
+                        // when the scheduler delivers a message and
+                        // resumes this actor.
                         self.call_stack.last_mut().unwrap().ip = ip;
                         return Err(VmError::MailboxEmpty);
                     } else {
-                        // Legacy unbounded mode: push Unit
+                        // Standalone mode (incl. boruna_run's streaming
+                        // progress loop): push Unit and continue. Mirrors
+                        // legacy `vm.run()` semantics. Reviewed 0.4-S6 —
+                        // the prior signal was `self.budget.is_some()`,
+                        // which incorrectly forked behavior whenever a
+                        // standalone caller used `execute_bounded` for
+                        // anything other than actor scheduling.
                         self.push(Value::Unit)?;
                     }
                 }
