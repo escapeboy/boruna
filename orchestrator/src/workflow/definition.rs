@@ -80,6 +80,18 @@ pub struct StepResult {
     pub capabilities_used: Vec<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Number of attempts the step took to reach its terminal state.
+    /// `1` = first-try success or single-attempt failure; `>1` = retry
+    /// policy fired. Operational only — depends on whether transient
+    /// failures happened. Defaults to `1` when deserialized from
+    /// pre-`0.3-S11` JSON for back-compat. Mirror of
+    /// `step_checkpoints.attempt_count` in the persistent store.
+    #[serde(default = "default_attempt_count")]
+    pub attempt_count: u32,
+}
+
+fn default_attempt_count() -> u32 {
+    1
 }
 
 /// Status of a workflow step.

@@ -556,6 +556,7 @@ impl WorkflowRunner {
                             duration_ms: 0,
                             capabilities_used: vec![],
                             error: None,
+                            attempt_count: 1,
                         },
                     );
                 }
@@ -579,6 +580,7 @@ impl WorkflowRunner {
                             duration_ms: 0,
                             capabilities_used: vec![],
                             error: cp.error_msg.clone(),
+                            attempt_count: 1,
                         },
                     );
                     halt_with_failed_step = Some(cp.step_id.clone());
@@ -687,6 +689,7 @@ impl WorkflowRunner {
                             started_at_ms: None, // COALESCE preserves
                             ended_at_ms: Some(now_unix_ms()),
                             error_msg: None,
+                            attempt_count: 1,
                         })
                         .map_err(WorkflowRunError::from)?;
                     data_store
@@ -702,6 +705,7 @@ impl WorkflowRunner {
                             duration_ms: 0,
                             capabilities_used: vec![],
                             error: None,
+                            attempt_count: 1,
                         },
                     );
                 }
@@ -720,6 +724,7 @@ impl WorkflowRunner {
                             started_at_ms: None,
                             ended_at_ms: Some(now_unix_ms()),
                             error_msg: Some(err_msg.clone()),
+                            attempt_count: 1,
                         })
                         .map_err(WorkflowRunError::from)?;
                     prior_results.insert(
@@ -731,6 +736,7 @@ impl WorkflowRunner {
                             duration_ms: 0,
                             capabilities_used: vec![],
                             error: Some(err_msg),
+                            attempt_count: 1,
                         },
                     );
                     // get_or_insert: preserve the FIRST failure as the
@@ -894,6 +900,7 @@ impl WorkflowRunner {
                     duration_ms: 0,
                     capabilities_used: vec![],
                     error: cp.error_msg,
+                    attempt_count: 1,
                 },
             );
         }
@@ -1006,6 +1013,7 @@ impl WorkflowRunner {
                         started_at_ms: Some(now),
                         ended_at_ms: None,
                         error_msg: None,
+                        attempt_count: 1,
                     })
                     .map_err(WorkflowRunError::from)?;
                 step_results.insert(
@@ -1017,6 +1025,7 @@ impl WorkflowRunner {
                         duration_ms: 0,
                         capabilities_used: vec![],
                         error: None,
+                        attempt_count: 1,
                     },
                 );
                 workflow_status = WorkflowStatus::Paused;
@@ -1073,6 +1082,7 @@ impl WorkflowRunner {
                                 started_at_ms: None,
                                 ended_at_ms: Some(now_unix_ms()),
                                 error_msg: Some(err_msg.clone()),
+                                attempt_count: 1,
                             })
                             .map_err(WorkflowRunError::from)?;
                         step_results.insert(
@@ -1084,6 +1094,7 @@ impl WorkflowRunner {
                                 duration_ms: 0,
                                 capabilities_used: vec![],
                                 error: Some(err_msg.clone()),
+                                attempt_count: 1,
                             },
                         );
                     }
@@ -1151,11 +1162,19 @@ impl WorkflowRunner {
                 // detached on early-exit paths and that the
                 // coordinator never returns to its caller while
                 // workers are still touching the workflow_dir.
+                // 0.3-S11: worker now returns (Result<(Value, u32),
+                // (WorkflowRunError, u32)>, duration_ms). The inner
+                // Result carries the attempt count alongside the
+                // value (success) or error (failure) so we can
+                // persist it in the step's checkpoint row.
                 #[allow(clippy::type_complexity)]
                 let joined: Vec<(
                     String,
                     StepDef,
-                    std::thread::Result<(Result<boruna_bytecode::Value, WorkflowRunError>, u64)>,
+                    std::thread::Result<(
+                        Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)>,
+                        u64,
+                    )>,
                 )> = handles
                     .into_iter()
                     .map(|(step_id, step_def, h)| (step_id, step_def, h.join()))
@@ -1173,7 +1192,7 @@ impl WorkflowRunner {
                 let mut chunk_failed = false;
                 for (step_id, step_def, join_res) in joined {
                     match join_res {
-                        Ok((Ok(value), duration_ms)) => {
+                        Ok((Ok((value, attempt_count)), duration_ms)) => {
                             let output_hash = DataStore::hash_value(&value);
                             data_store
                                 .store_output(&step_id, "result", &value)
@@ -1193,6 +1212,7 @@ impl WorkflowRunner {
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: None,
+                                    attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             step_results.insert(
@@ -1204,10 +1224,11 @@ impl WorkflowRunner {
                                     duration_ms,
                                     capabilities_used: step_def.capabilities.clone(),
                                     error: None,
+                                    attempt_count,
                                 },
                             );
                         }
-                        Ok((Err(e), duration_ms)) => {
+                        Ok((Err((e, attempt_count)), duration_ms)) => {
                             let err_msg = e.to_string();
                             store
                                 .upsert_step_checkpoint(&StepCheckpoint {
@@ -1219,6 +1240,7 @@ impl WorkflowRunner {
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg.clone()),
+                                    attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             step_results.insert(
@@ -1230,6 +1252,7 @@ impl WorkflowRunner {
                                     duration_ms,
                                     capabilities_used: vec![],
                                     error: Some(err_msg),
+                                    attempt_count,
                                 },
                             );
                             chunk_failed = true;
@@ -1260,6 +1283,7 @@ impl WorkflowRunner {
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg.clone()),
+                                    attempt_count: 1,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             step_results.insert(
@@ -1271,6 +1295,7 @@ impl WorkflowRunner {
                                     duration_ms: 0,
                                     capabilities_used: vec![],
                                     error: Some(err_msg),
+                                    attempt_count: 1,
                                 },
                             );
                             chunk_failed = true;
@@ -1348,6 +1373,7 @@ impl WorkflowRunner {
                         duration_ms: 0,
                         capabilities_used: vec![],
                         error: None,
+                        attempt_count: 1,
                     };
                     step_results.insert(step_id.clone(), cp);
                     workflow_status = WorkflowStatus::Paused;
@@ -1368,6 +1394,7 @@ impl WorkflowRunner {
                             started_at_ms: Some(step_started_at_ms),
                             ended_at_ms: None,
                             error_msg: None,
+                            attempt_count: 1,
                         })
                         .map_err(WorkflowRunError::from)?;
                     }
@@ -1411,6 +1438,10 @@ impl WorkflowRunner {
                                     started_at_ms: None, // COALESCE preserves
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: None,
+                                    // 0.3-S11: persist the actual
+                                    // attempt count from the StepResult
+                                    // (set by compile_and_run_step_with_retry).
+                                    attempt_count: sr.attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             }
@@ -1427,6 +1458,7 @@ impl WorkflowRunner {
                                     duration_ms,
                                     capabilities_used: vec![],
                                     error: Some(err_msg.clone()),
+                                    attempt_count: 1,
                                 },
                             );
                             workflow_status = WorkflowStatus::Failed;
@@ -1442,6 +1474,7 @@ impl WorkflowRunner {
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg),
+                                    attempt_count: 1,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             }
@@ -1504,14 +1537,17 @@ impl WorkflowRunner {
         // Compute path is wrapped in retry. On retry success, the
         // returned Value is stored once (idempotent for the on-disk
         // file, since `store_output` overwrites atomically per 0.3-S3).
-        let value = Self::compile_and_run_step_with_retry(
+        // 0.3-S11: helper now returns the actual attempt count
+        // alongside the Value so the caller can persist it.
+        let (value, attempt_count) = Self::compile_and_run_step_with_retry(
             step_id,
             source,
             step_def,
             workflow_dir,
             policy,
             live,
-        )?;
+        )
+        .map_err(|(err, _attempts)| err)?;
 
         let output_hash = DataStore::hash_value(&value);
         data_store
@@ -1525,6 +1561,7 @@ impl WorkflowRunner {
             duration_ms: 0, // filled in by caller
             capabilities_used: step_def.capabilities.clone(),
             error: None,
+            attempt_count,
         })
     }
 
@@ -1551,7 +1588,7 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         live: bool,
-    ) -> Result<boruna_bytecode::Value, WorkflowRunError> {
+    ) -> Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)> {
         retry_with_backoff(step_def.retry.as_ref(), step_id, |_attempt| {
             Self::compile_and_run_step(step_id, source, step_def, workflow_dir, policy, live)
         })
@@ -1683,7 +1720,7 @@ pub(crate) fn retry_with_backoff<T, F>(
     policy: Option<&RetryPolicy>,
     step_id: &str,
     mut attempt_fn: F,
-) -> Result<T, WorkflowRunError>
+) -> Result<(T, u32), (WorkflowRunError, u32)>
 where
     F: FnMut(u32) -> Result<T, WorkflowRunError>,
 {
@@ -1721,24 +1758,33 @@ where
             let _ = (step_id, attempt, max_attempts);
         }
         match attempt_fn(attempt) {
-            Ok(value) => return Ok(value),
+            // Sprint 0.3-S11: surface the actual attempt count
+            // alongside the value so the caller can persist it in
+            // the step's checkpoint row. `attempt` is 1-indexed
+            // (1 = first try succeeded; >1 = retry succeeded).
+            Ok(value) => return Ok((value, attempt)),
             Err(e) => {
                 last_err = Some(e);
             }
         }
     }
-    // Exhausted. Wrap the last error to include the attempt count.
+    // Exhausted. Wrap the last error to include the attempt count
+    // (in the message AND as a separate field for the caller to
+    // persist in the checkpoint row).
     let final_err = last_err.expect("loop runs at least once");
     if max_attempts > 1 {
-        Err(WorkflowRunError::StepFailed(
-            step_id.to_string(),
-            format!("failed after {max_attempts} attempts: {final_err}"),
+        Err((
+            WorkflowRunError::StepFailed(
+                step_id.to_string(),
+                format!("failed after {max_attempts} attempts: {final_err}"),
+            ),
+            max_attempts,
         ))
     } else {
         // Single-attempt path: preserve the exact error shape so
         // existing test fixtures and operator scripts that match on
         // error strings don't break.
-        Err(final_err)
+        Err((final_err, 1))
     }
 }
 
@@ -2481,13 +2527,16 @@ mod tests {
         #[test]
         fn retry_succeeds_on_first_attempt_no_loop() {
             let calls = RefCell::new(0);
-            let result: Result<i32, _> =
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
                 retry_with_backoff(Some(&policy(5, true)), "step", |attempt| {
                     *calls.borrow_mut() += 1;
                     assert_eq!(attempt, 1, "first attempt is 1-indexed");
                     Ok(42)
                 });
-            assert_eq!(result.unwrap(), 42);
+            // 0.3-S11: helper now returns (value, attempt_count).
+            let (value, attempts) = result.unwrap();
+            assert_eq!(value, 42);
+            assert_eq!(attempts, 1, "first-try success → attempt_count = 1");
             assert_eq!(*calls.borrow(), 1, "no retries on success");
         }
 
@@ -2495,7 +2544,7 @@ mod tests {
         fn retry_succeeds_after_two_failures() {
             // Closure fails on attempts 1 and 2, succeeds on 3.
             let calls = RefCell::new(0);
-            let result: Result<i32, _> =
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
                 retry_with_backoff(Some(&policy(3, true)), "step", |attempt| {
                     *calls.borrow_mut() += 1;
                     if attempt < 3 {
@@ -2507,14 +2556,16 @@ mod tests {
                         Ok(99)
                     }
                 });
-            assert_eq!(result.unwrap(), 99);
+            let (value, attempts) = result.unwrap();
+            assert_eq!(value, 99);
+            assert_eq!(attempts, 3, "succeeded on attempt 3");
             assert_eq!(*calls.borrow(), 3);
         }
 
         #[test]
         fn retry_exhausts_attempts_and_wraps_error() {
             let calls = RefCell::new(0);
-            let result: Result<i32, _> =
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
                 retry_with_backoff(Some(&policy(3, true)), "step", |_attempt| {
                     *calls.borrow_mut() += 1;
                     Err(WorkflowRunError::StepFailed(
@@ -2522,8 +2573,9 @@ mod tests {
                         "permanent failure".to_string(),
                     ))
                 });
-            let err = result.unwrap_err();
-            assert_eq!(*calls.borrow(), 3, "all 3 attempts exhausted");
+            let (err, attempts) = result.unwrap_err();
+            assert_eq!(attempts, 3, "all 3 attempts exhausted");
+            assert_eq!(*calls.borrow(), 3);
             // Wrapped error includes attempt count.
             let msg = err.to_string();
             assert!(
@@ -2539,7 +2591,7 @@ mod tests {
         #[test]
         fn no_retry_when_on_transient_false() {
             let calls = RefCell::new(0);
-            let result: Result<i32, _> = retry_with_backoff(
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
                 Some(&policy(5, false)), // on_transient = false
                 "step",
                 |_attempt| {
@@ -2554,13 +2606,15 @@ mod tests {
             assert_eq!(*calls.borrow(), 1, "on_transient=false disables retry");
             // Single-attempt error preserves exact original shape (no
             // "failed after N attempts" wrapper).
-            assert!(!result.unwrap_err().to_string().contains("attempts"));
+            let (err, attempts) = result.unwrap_err();
+            assert_eq!(attempts, 1);
+            assert!(!err.to_string().contains("attempts"));
         }
 
         #[test]
         fn no_retry_when_max_attempts_le_1() {
             let calls = RefCell::new(0);
-            let result: Result<i32, _> = retry_with_backoff(
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> = retry_with_backoff(
                 Some(&policy(1, true)), // max_attempts = 1
                 "step",
                 |_attempt| {
@@ -2578,13 +2632,14 @@ mod tests {
         #[test]
         fn no_retry_when_no_policy() {
             let calls = RefCell::new(0);
-            let result: Result<i32, _> = retry_with_backoff(None, "step", |_attempt| {
-                *calls.borrow_mut() += 1;
-                Err(WorkflowRunError::StepFailed(
-                    "step".into(),
-                    "boom".to_string(),
-                ))
-            });
+            let result: Result<(i32, u32), (WorkflowRunError, u32)> =
+                retry_with_backoff(None, "step", |_attempt| {
+                    *calls.borrow_mut() += 1;
+                    Err(WorkflowRunError::StepFailed(
+                        "step".into(),
+                        "boom".to_string(),
+                    ))
+                });
             assert!(result.is_err());
             assert_eq!(*calls.borrow(), 1);
         }
@@ -2894,6 +2949,7 @@ mod tests {
                     started_at_ms: Some(1),
                     ended_at_ms: Some(2),
                     error_msg: None,
+                    attempt_count: 1,
                 })
                 .unwrap();
 
@@ -2978,6 +3034,7 @@ mod tests {
                     started_at_ms: Some(1),
                     ended_at_ms: None,
                     error_msg: None,
+                    attempt_count: 1,
                 })
                 .unwrap();
 
@@ -3060,6 +3117,7 @@ mod tests {
                     started_at_ms: Some(1),
                     ended_at_ms: Some(2),
                     error_msg: Some("simulated step1 failure".into()),
+                    attempt_count: 1,
                 })
                 .unwrap();
 
@@ -4171,6 +4229,7 @@ mod tests {
                     started_at_ms: Some(1),
                     ended_at_ms: Some(2),
                     error_msg: Some("analyze died".into()),
+                    attempt_count: 1,
                 })
                 .unwrap();
             // gate is awaiting approval (sentinel will rejection-halt).
@@ -4184,6 +4243,7 @@ mod tests {
                     started_at_ms: Some(3),
                     ended_at_ms: None,
                     error_msg: None,
+                    attempt_count: 1,
                 })
                 .unwrap();
 
