@@ -8,6 +8,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`boruna evidence create <run-id>`** (sprint `0.4-S10`). Builds an
+  evidence bundle from a persisted run by reading the run's metadata,
+  step checkpoints, and hash-chained audit log. Closes the
+  audit-evidence loop end-to-end:
+  ```
+  $ boruna workflow run wf --data-dir .data --policy allow-all
+  $ boruna workflow approve <run-id> <step-id> --data-dir .data
+  $ boruna workflow resume <run-id> --data-dir .data
+  $ boruna evidence create <run-id> --output-dir bundles --data-dir .data
+  $ boruna evidence verify bundles/<run-id>      # VALID
+  ```
+- New `boruna_orchestrator::workflow::create_bundle(data_dir, run_id,
+  output_dir)` public entry. Reads workflow.json from the run's
+  recorded `workflow_dir`, policy from the persisted `policy_json`
+  column, per-step outputs from `step_checkpoints.output_json`, and
+  the full audit chain from `metadata.audit_log` (sprint 0.4-S9).
+  Builds an `EvidenceBundleBuilder`, finalizes, returns the
+  `BundleManifest`.
+- 6 new tests in `tests::evidence_bundle`: complete artifact for a
+  completed run, audit chain round-trip via JSON, end-to-end
+  `verify_bundle()` passes on the produced bundle, trigger payload
+  hash matches the synthesized step output_hash, unknown run id
+  returns typed `RunNotFound`, runs without decisions produce an
+  empty chain whose `audit_log_hash` is the all-zeros sentinel.
+
+#### Post-hoc bundle creation
+
+The runner does NOT auto-create bundles during execution — the hot
+path stays free of bundle I/O. Operators trigger bundle creation
+explicitly when needed (e.g., a compliance request months after the
+run completed). Same model as the rest of the audit subsystem:
+operator-driven, not runner-driven.
+
 - **Audit-log integration of approval / trigger decisions** (sprint
   `0.4-S9`). Closes a 0.3.0 carried-forward debt. Operator actions
   (approval grants/denials, external trigger events) now produce

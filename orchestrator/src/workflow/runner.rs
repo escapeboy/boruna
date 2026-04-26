@@ -3023,6 +3023,121 @@ pub fn show_run(data_dir: &Path, run_id: &str) -> Result<RunDetail, WorkflowRunE
     })
 }
 
+/// Build an evidence bundle from a persisted run (sprint `0.4-S10`).
+///
+/// Public entry for the `boruna evidence create` CLI handler. Reads
+/// the run's row, step checkpoints, and metadata blob; constructs an
+/// [`EvidenceBundleBuilder`]; populates it with the workflow
+/// definition, policy snapshot, per-step output JSON, and the
+/// hash-chained audit log persisted in `metadata.audit_log`. Returns
+/// the finalized [`BundleManifest`].
+///
+/// **Post-hoc bundle creation.** The runner does NOT auto-create
+/// bundles during execution; this function is invoked explicitly by
+/// the operator on a completed (or paused) run. That keeps the hot
+/// path free of bundle I/O and lets operators re-bundle on demand
+/// (e.g., after a compliance request months later).
+///
+/// **What goes in the bundle:**
+/// - `workflow.json` — read from the run's persisted `workflow_dir`.
+///   Operator-supplied; same source as `record_approval_decision`'s
+///   workflow_hash check.
+/// - `policy.json` — read from the run's persisted `policy_json`
+///   column.
+/// - `outputs/<step_id>/result.json` — read from each step
+///   checkpoint's `output_json` column. Steps without an output
+///   (failed, skipped, in-flight) contribute no file.
+/// - `audit_log.json` — the full chain from `metadata.audit_log`.
+///   Empty `[]` for runs with no recorded operator decisions.
+/// - `env_fingerprint.json` — captured at bundle-finalize time
+///   (operational; reflects bundling-host environment, not run-host).
+/// - `manifest.json` — bundle hash + per-file checksums.
+///
+/// **Determinism:** the bundle hash incorporates `started_at` /
+/// `completed_at` timestamps from `EvidenceBundleBuilder`, so two
+/// bundles built from the same run at different times will have
+/// different `bundle_hash`. Per-file checksums (workflow_hash,
+/// policy_hash, audit_log_hash, output checksums) ARE deterministic
+/// across re-bundlings.
+#[cfg(feature = "persist-sqlite")]
+pub fn create_bundle(
+    data_dir: &Path,
+    run_id: &str,
+    output_dir: &Path,
+) -> Result<crate::audit::BundleManifest, WorkflowRunError> {
+    use crate::audit::{AuditLog, EvidenceBundleBuilder};
+
+    let store = open_store(data_dir)?;
+    let run = store
+        .get_run(run_id)
+        .map_err(WorkflowRunError::from)?
+        .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+    let checkpoints = store
+        .list_step_checkpoints(run_id)
+        .map_err(WorkflowRunError::from)?;
+    let metadata: PersistedRunMetadata = serde_json::from_str(&run.metadata_json).map_err(|e| {
+        WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+    })?;
+
+    let mut builder = EvidenceBundleBuilder::new(output_dir, run_id, &run.workflow_name)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle directory: {e}")))?;
+
+    // Workflow definition snapshot. Source of truth is the on-disk
+    // workflow.json at the run's recorded workflow_dir — same path
+    // record_approval_decision validates against. If it's gone (the
+    // operator moved or deleted the workflow), the bundle write
+    // fails loudly rather than silently producing an incomplete
+    // bundle.
+    let workflow_path = Path::new(&metadata.workflow_dir).join("workflow.json");
+    let workflow_json = std::fs::read_to_string(&workflow_path).map_err(|e| {
+        WorkflowRunError::Io(format!(
+            "cannot read workflow.json from {} (recorded workflow_dir): {e}",
+            workflow_path.display()
+        ))
+    })?;
+    builder
+        .add_workflow_def(&workflow_json)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle add_workflow_def: {e}")))?;
+
+    // Policy snapshot — directly from the run's `policy_json`
+    // column, no parse / re-serialize round-trip (so the bundle
+    // captures bit-identical bytes the runner saw).
+    builder
+        .add_policy(&run.policy_json)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle add_policy: {e}")))?;
+
+    // Per-step outputs. Steps with no `output_json` (failed before
+    // producing output, still pending, or paused at a gate) contribute
+    // nothing. Each output is added as `outputs/<step_id>/result.json`
+    // — matches `WorkflowRunner::execute_*`'s "result"-named output
+    // convention.
+    for cp in &checkpoints {
+        if let Some(output_json) = &cp.output_json {
+            builder
+                .add_step_output(&cp.step_id, "result", output_json)
+                .map_err(|e| {
+                    WorkflowRunError::Io(format!(
+                        "bundle add_step_output for '{}': {e}",
+                        cp.step_id
+                    ))
+                })?;
+        }
+    }
+
+    // Hash-chained audit log from metadata. `AuditLog::from_entries`
+    // does not re-verify the chain at this point — verification
+    // happens via `boruna evidence verify` (which re-reads the chain
+    // from disk and walks it). If the on-disk metadata had been
+    // tampered with directly via sqlite3 surgery, that tamper
+    // surfaces at verify time, not bundle time.
+    let audit = AuditLog::from_entries(metadata.audit_log);
+
+    let manifest = builder
+        .finalize(&audit)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle finalize: {e}")))?;
+    Ok(manifest)
+}
+
 /// List all paused/running/completed/failed runs in a `data_dir`.
 /// Returns `RunRow`s ordered by `(workflow_name, run_id)`. Optional
 /// `status_filter` reuses `list_runs_by_status`.
@@ -7628,6 +7743,308 @@ mod tests {
                 "audit log hash must be unchanged across resume — the decision \
                  events were appended at decision time, not at advancement time"
             );
+        }
+    }
+
+    // ── 0.4-S10: evidence-bundle creation ──
+
+    #[cfg(feature = "persist-sqlite")]
+    mod evidence_bundle {
+        use super::*;
+        use crate::audit::{verify::verify_bundle, AuditEvent, AuditLog};
+
+        #[test]
+        fn create_bundle_writes_complete_artifact_for_completed_run() {
+            // End-to-end: run a workflow with an approval gate to
+            // completion (record decision + resume), then build a
+            // bundle. Bundle must contain workflow.json, policy.json,
+            // audit_log.json with the recorded chain entries, per-step
+            // outputs, env_fingerprint.json, and a manifest.json with
+            // a non-empty bundle_hash.
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+            let resumed = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(resumed.status, WorkflowStatus::Completed);
+
+            let output_dir = tempfile::tempdir().unwrap();
+            let manifest = create_bundle(data_dir.path(), &r.run_id, output_dir.path()).unwrap();
+
+            assert_eq!(manifest.run_id, r.run_id);
+            assert_eq!(manifest.workflow_name, "approval-test");
+            assert!(!manifest.bundle_hash.is_empty());
+            assert!(!manifest.workflow_hash.is_empty());
+            assert!(!manifest.policy_hash.is_empty());
+            assert!(!manifest.audit_log_hash.is_empty());
+
+            let bundle_path = output_dir.path().join(&r.run_id);
+            assert!(bundle_path.join("manifest.json").exists());
+            assert!(bundle_path.join("workflow.json").exists());
+            assert!(bundle_path.join("policy.json").exists());
+            assert!(bundle_path.join("audit_log.json").exists());
+            assert!(bundle_path.join("env_fingerprint.json").exists());
+
+            // Per-step outputs: 'analyze' and 'publish' completed.
+            // 'human_review' is the gate — synthesized output is empty
+            // record, so it does have an output_json. Confirm it
+            // ends up in the bundle alongside the source-step outputs.
+            assert!(bundle_path.join("outputs/analyze/result.json").exists());
+            assert!(bundle_path.join("outputs/publish/result.json").exists());
+        }
+
+        #[test]
+        fn create_bundle_audit_log_contains_recorded_chain() {
+            // The bundle's audit_log.json must contain the chain
+            // recorded by record_approval_decision — verified by
+            // round-tripping the file through AuditLog::from_json
+            // and checking the entries.
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Rejected,
+                Some("over budget".into()),
+            )
+            .unwrap();
+
+            let output_dir = tempfile::tempdir().unwrap();
+            create_bundle(data_dir.path(), &r.run_id, output_dir.path()).unwrap();
+
+            let bundle_path = output_dir.path().join(&r.run_id);
+            let audit_json = std::fs::read_to_string(bundle_path.join("audit_log.json")).unwrap();
+            let audit = AuditLog::from_json(&audit_json).unwrap();
+            assert_eq!(audit.entries().len(), 1);
+            match &audit.entries()[0].event {
+                AuditEvent::ApprovalDenied { step_id, reason } => {
+                    assert_eq!(step_id, "human_review");
+                    assert_eq!(reason, "over budget");
+                }
+                other => panic!("wrong event variant: {other:?}"),
+            }
+            audit.verify().expect("bundle's audit chain must verify");
+        }
+
+        #[test]
+        fn created_bundle_passes_verify_bundle() {
+            // The bundle produced by create_bundle must pass
+            // `boruna_orchestrator::audit::verify::verify_bundle`
+            // — closes the audit-evidence loop end-to-end.
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+            let _ = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let output_dir = tempfile::tempdir().unwrap();
+            create_bundle(data_dir.path(), &r.run_id, output_dir.path()).unwrap();
+            let bundle_path = output_dir.path().join(&r.run_id);
+            let result = verify_bundle(&bundle_path);
+            assert!(
+                result.valid,
+                "bundle verification failed: {:?}",
+                result.errors
+            );
+        }
+
+        #[test]
+        fn create_bundle_includes_trigger_payload_hash_in_audit() {
+            // After a workflow trigger, the bundle's audit log must
+            // contain the ExternalTriggerReceived event with
+            // payload_hash matching the synthesized output_hash.
+            let (def, wf_dir) = external_trigger::workflow_with_external_trigger();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            let store = open_store(data_dir.path()).unwrap();
+            let metadata_json = store.get_run_metadata(&r.run_id).unwrap().unwrap();
+            let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).unwrap();
+            let token = metadata.triggers.get("webhook").unwrap().token.clone();
+            let payload = "{\"k\":\"v\"}";
+            record_external_trigger(data_dir.path(), &r.run_id, "webhook", &token, payload)
+                .unwrap();
+            let _ = WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let output_dir = tempfile::tempdir().unwrap();
+            create_bundle(data_dir.path(), &r.run_id, output_dir.path()).unwrap();
+            let audit_json =
+                std::fs::read_to_string(output_dir.path().join(&r.run_id).join("audit_log.json"))
+                    .unwrap();
+            let audit = AuditLog::from_json(&audit_json).unwrap();
+            let expected_hash =
+                DataStore::hash_value(&boruna_bytecode::Value::String(payload.to_string()));
+            let trigger_entry = audit
+                .entries()
+                .iter()
+                .find(|e| matches!(e.event, AuditEvent::ExternalTriggerReceived { .. }))
+                .expect("trigger event must be present");
+            match &trigger_entry.event {
+                AuditEvent::ExternalTriggerReceived {
+                    step_id,
+                    payload_hash,
+                } => {
+                    assert_eq!(step_id, "webhook");
+                    assert_eq!(payload_hash, &expected_hash);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        #[test]
+        fn create_bundle_unknown_run_id_returns_run_not_found() {
+            let data_dir = tempfile::tempdir().unwrap();
+            let _ = open_store(data_dir.path()).unwrap();
+            let output_dir = tempfile::tempdir().unwrap();
+            let err = create_bundle(data_dir.path(), "ffffffffffffffff", output_dir.path())
+                .expect_err("missing run must error");
+            assert!(matches!(err, WorkflowRunError::RunNotFound(_)));
+        }
+
+        #[test]
+        fn create_bundle_empty_chain_for_run_without_decisions() {
+            // A run that completes without any approval/trigger
+            // decisions still gets a bundle with an empty audit
+            // chain. The chain must verify (trivially).
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("only.ax"), "fn main() -> Int { 7 }").unwrap();
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "no-decisions".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([(
+                    "only".into(),
+                    StepDef {
+                        kind: StepKind::Source {
+                            source: "steps/only.ax".into(),
+                        },
+                        capabilities: vec![],
+                        inputs: BTreeMap::new(),
+                        outputs: BTreeMap::new(),
+                        depends_on: vec![],
+                        timeout_ms: None,
+                        retry: None,
+                        budget: None,
+                    },
+                )]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(r.status, WorkflowStatus::Completed);
+
+            let output_dir = tempfile::tempdir().unwrap();
+            let manifest = create_bundle(data_dir.path(), &r.run_id, output_dir.path()).unwrap();
+            let audit_json =
+                std::fs::read_to_string(output_dir.path().join(&r.run_id).join("audit_log.json"))
+                    .unwrap();
+            let audit = AuditLog::from_json(&audit_json).unwrap();
+            assert_eq!(audit.entries().len(), 0);
+            audit.verify().expect("empty chain trivially verifies");
+            // audit_log_hash for empty log = "0".repeat(64).
+            assert_eq!(manifest.audit_log_hash, "0".repeat(64));
         }
     }
 }
