@@ -6,6 +6,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`--expect-workflow-hash <HEX>`** on `boruna workflow run` and
+  `boruna workflow resume` (sprint `0.3-S9`). CI/CD safety primitive
+  that refuses to start (or resume) if the on-disk workflow def's
+  `workflow_hash` doesn't match the operator-supplied expected
+  value. Catches accidental edits, malicious mutation, and stale-
+  checkout-vs-config drift before any side effect.
+- **`--print-hash`** on `boruna workflow validate`. After validation
+  succeeds, emits `workflow_hash=<64-char hex>` on its own stdout
+  line — cut-friendly for shell pipelines:
+  ```
+  HASH=$(boruna workflow validate ./wf --print-hash | grep ^workflow_hash | cut -d= -f2)
+  boruna workflow run ./wf --expect-workflow-hash $HASH ...
+  ```
+  Hash comparison is case-insensitive + whitespace-trim-tolerant so
+  operators can paste from any source.
+- **Note:** the hash covers the `workflow.json` structure only —
+  `.ax` step source changes do NOT affect the hash. For full-source
+  coverage operators should hash the workflow_dir tree at the
+  filesystem layer.
+
 ### Decided
 
 - **LLM live handler model: Bring Your Own Handler (BYOH)** (sprint
