@@ -8,6 +8,38 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Multi-environment support** (sprint `0.4-S14`). New global
+  `--env <name>` flag (also from `BORUNA_ENV` env var). When set:
+  - `--data-dir` is namespaced to `<data-dir>/<env>/` so each
+    environment has its own runs.db, audit chains, and evidence
+    bundles.
+  - Every Prometheus metric gains an `env="<env>"` label so dashboards
+    can filter / group by environment.
+  ```sh
+  boruna --env staging workflow run wf --data-dir /var/lib/boruna ...
+  boruna --env prod workflow run wf --data-dir /var/lib/boruna ...
+  # → /var/lib/boruna/staging/ and /var/lib/boruna/prod/ stay separate
+  ```
+  Operators get dev/staging/prod separation without external
+  orchestration. Per-env policy is supplied via `--policy` per call.
+- New `boruna_orchestrator::metrics::format_prometheus_with_env`
+  variant. Backward compatible: `format_prometheus(snap)` continues
+  to produce env-less output (calls `format_prometheus_with_env(snap,
+  None)` internally).
+- New CLI helper `validate_env_name` rejects names with characters
+  outside `[a-zA-Z0-9_-]` (length 1-64). Protects against path
+  traversal (`--env ../../etc/passwd` is rejected at the boundary)
+  and broken Prometheus labels.
+- 4 new tests in `metrics`: env label added to every series, env-less
+  output is byte-identical to legacy, env label escapes, end-to-end
+  `BORUNA_ENV` round-trip via the `export` entry.
+
+#### Backward compatibility
+
+When `--env` and `BORUNA_ENV` are both unset, behavior is exactly
+as before: data goes to `<data-dir>/`, metrics carry no `env` label.
+Operators upgrading from 0.4-S13 see no change unless they opt in.
+
 - **`LlmRouterHandler` — multi-provider LLM dispatch helper** (sprint
   `0.4-S13`). Direct extension of the BYOH decision in `0.3-S8`.
   Integrators with multiple LLM providers (OpenAI + Anthropic +
