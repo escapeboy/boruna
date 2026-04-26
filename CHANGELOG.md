@@ -6,6 +6,71 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-26
+
+**Theme: Real-use durability.** 0.3.0 makes Boruna usable for
+long-running, durable, production workflows. Persistent state survives
+process restarts; concurrent steps fan out within waves; transient
+failures retry with backoff; webhook-driven steps wait for external
+events. The full sprint stack (`0.3-S2a` through `0.3-S16`) closes
+every big-rock theme on the original 0.3.0 plan and adds review-
+driven safety work.
+
+### Added
+
+- **Persistent workflow state** (sprints `0.3-S2a`/`S2b`/`S3`/`S6`).
+  Crash-resumable runs via SQLite-backed checkpoint store with
+  `BEGIN IMMEDIATE` atomicity, `f_FULLFSYNC` on macOS for durability,
+  and a `--data-dir` flag on `boruna workflow run` / `resume`.
+- **Approval-gate operator UX** (sprint `0.3-S2c`). New
+  `kind: "approval_gate"` step type pauses the run; operators advance
+  via `boruna workflow approve <run-id> <step-id>` /
+  `boruna workflow reject` with optional reason. Decisions persisted
+  in run metadata.
+- **Concurrent step execution within waves** (sprint `0.3-S4`).
+  `--concurrency N` on `run` / `resume` parallelizes steps at the
+  same DAG topological level. Determinism preserved: same
+  `output_hash` regardless of concurrency.
+- **Step retry policies** (sprint `0.3-S5`). Configurable per-step
+  retry with exponential backoff (100ms × 2^N capped at 5s) for
+  transient failures.
+- **Idempotent invocation** (sprints `0.3-S7` + `0.3-S10`).
+  `--skip-if-running` flag for cron-driven scheduling. Atomic
+  skip-if-in-flight check + insert in a single transaction closes
+  the prior race window.
+- **LLM handler decision: Bring Your Own Handler** (sprint `0.3-S8`).
+  No default LLM handler ships in core; integrators wire their
+  provider via the `CapabilityHandler` trait. Reference OpenAI
+  handler + integration contract in `docs/guides/llm-integration.md`.
+- **Workflow versioning for CI/CD safety** (sprint `0.3-S9`).
+  `--expect-workflow-hash` flag refuses runs / resumes when the
+  on-disk definition's hash doesn't match.
+- **Per-step `attempt_count` column** (sprints `0.3-S11`/`S12`/`S13`)
+  with the project's first schema migration (v1→v2) via
+  `column_exists` + `if v < N` pattern. `boruna workflow show`
+  surfaces the column. Sequential failure path persists actual count.
+- **Workflow step output piping via `step_input` builtin** (sprint
+  `0.3-S14`). `let received: String = step_input("name")` returns the
+  JSON-encoded upstream output. New `Capability::StepInput` (id=10).
+  Both sequential and concurrent paths resolve inputs coordinator-
+  side. Unknown input names error with the declared list (review-
+  driven).
+- **Async step execution via external trigger CLI** (sprint
+  `0.3-S15`). New `external_trigger` step kind for webhook-driven
+  workflows. `boruna workflow trigger <run-id> <step-id> --token <X>
+  --payload <json>` records the payload as the step's output value.
+  32-hex-char tokens from `/dev/urandom` (no fallback) prevent
+  accidental cross-step triggers. Constant-time validation; webhook-
+  replay rejected by `StepAlreadyTriggered`. Boruna stays a CLI tool
+  — no in-binary HTTP server.
+- **Real HTTP handler with SSRF protection** (added Feb 2026).
+  Feature-gated `http` builds enable real network calls via `--live`.
+  `NetPolicy` allowed_domains / methods / byte limits / timeout.
+  Rejects private IPs, localhost, non-http schemes.
+- 23 new typed errors covering approval-gate, trigger-gate, run-not-
+  resumable, step-not-found, hash-mismatch, and CAS-budget-exhausted
+  states.
+
 ### Fixed
 
 - **Trigger-flow TOCTOU race** (sprint `0.3-S16`). The 0.3-S15 trigger
