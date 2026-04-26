@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`boruna workflow run --skip-if-running`** (sprint `0.3-S7`).
+  Idempotent invocation primitive for cron-driven scheduled
+  workflows. Before launching a new run, queries the persistent
+  store for any in-flight (`Running` or `Paused`) run of the same
+  workflow. If found, exits 0 cleanly with a stderr message
+  identifying the prior run. Designed for the cron pattern:
+  ```
+  0 2 * * * boruna workflow run /path/to/wf \
+            --skip-if-running --data-dir /var/lib/boruna
+  ```
+  Without this flag, overlapping invocations could race on the
+  same `outputs/` directory and double-bill external API calls.
+  Persistent path only; rejected at parse with `--ephemeral`.
+- New library API: `boruna_orchestrator::workflow::find_in_flight_runs(data_dir, def)`,
+  `boruna_orchestrator::persistence::RunCheckpointStore::list_in_flight_runs_for_workflow`.
+
 ### Fixed
 
 - **Power-loss durability for `DataStore::store_output`** (sprint
