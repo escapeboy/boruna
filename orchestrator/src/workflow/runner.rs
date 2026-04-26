@@ -1412,15 +1412,18 @@ impl WorkflowRunner {
                     );
                     let duration_ms = step_start.elapsed().as_millis() as u64;
 
-                    // Retry semantics now live inside
-                    // `execute_source_step` → `compile_and_run_step_with_retry`.
-                    // 0.3-S5 replaced the prior chunk-level "retry once
-                    // regardless of max_attempts" primitive with the
-                    // shared `retry_with_backoff` helper. So here we
-                    // surface the result as-is.
-                    let outcome: Result<StepResult, WorkflowRunError> = match result {
+                    // Retry semantics live inside `execute_source_step`
+                    // → `compile_and_run_step_with_retry`. As of
+                    // sprint 0.3-S13, the failure path also carries
+                    // the actual attempt count so the persisted
+                    // checkpoint reflects retry exhaustion accurately
+                    // (was: defaulted to 1 in the failure path).
+                    let outcome: Result<StepResult, (WorkflowRunError, u32)> = match result {
                         Ok(sr) => Ok(StepResult { duration_ms, ..sr }),
-                        Err(e) => Err(WorkflowRunError::StepFailed(step_id.clone(), e.to_string())),
+                        Err((e, attempts)) => Err((
+                            WorkflowRunError::StepFailed(step_id.clone(), e.to_string()),
+                            attempts,
+                        )),
                     };
 
                     match outcome {
@@ -1447,7 +1450,7 @@ impl WorkflowRunner {
                             }
                             step_results.insert(step_id.clone(), sr);
                         }
-                        Err(e) => {
+                        Err((e, attempt_count)) => {
                             let err_msg = e.to_string();
                             step_results.insert(
                                 step_id.clone(),
@@ -1458,7 +1461,7 @@ impl WorkflowRunner {
                                     duration_ms,
                                     capabilities_used: vec![],
                                     error: Some(err_msg.clone()),
-                                    attempt_count: 1,
+                                    attempt_count,
                                 },
                             );
                             workflow_status = WorkflowStatus::Failed;
@@ -1474,7 +1477,7 @@ impl WorkflowRunner {
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg),
-                                    attempt_count: 1,
+                                    attempt_count,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             }
@@ -1525,20 +1528,24 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         data_store: &mut DataStore,
         live: bool,
-    ) -> Result<StepResult, WorkflowRunError> {
+    ) -> Result<StepResult, (WorkflowRunError, u32)> {
         // Resolve inputs (validated; the .ax step is self-contained
         // today, but we still verify upstream outputs exist so a
         // misconfigured workflow surfaces a useful error here rather
         // than a downstream NPE).
+        // Input-resolution failures count as a single attempt.
         let _resolved_inputs = data_store
             .resolve_step_inputs(&step_def.inputs)
-            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e))?;
+            .map_err(|e| (WorkflowRunError::StepFailed(step_id.to_string(), e), 1))?;
 
         // Compute path is wrapped in retry. On retry success, the
         // returned Value is stored once (idempotent for the on-disk
         // file, since `store_output` overwrites atomically per 0.3-S3).
-        // 0.3-S11: helper now returns the actual attempt count
-        // alongside the Value so the caller can persist it.
+        // 0.3-S11: helper returns (Value, attempts) on success and
+        // (err, attempts) on failure.
+        // 0.3-S13: surface the attempt count on the failure path too
+        // so the sequential terminal-failure upsert can persist the
+        // accurate count instead of defaulting to 1.
         let (value, attempt_count) = Self::compile_and_run_step_with_retry(
             step_id,
             source,
@@ -1546,13 +1553,17 @@ impl WorkflowRunner {
             workflow_dir,
             policy,
             live,
-        )
-        .map_err(|(err, _attempts)| err)?;
+        )?;
 
         let output_hash = DataStore::hash_value(&value);
         data_store
             .store_output(step_id, "result", &value)
-            .map_err(|e| WorkflowRunError::StepFailed(step_id.to_string(), e.to_string()))?;
+            .map_err(|e| {
+                (
+                    WorkflowRunError::StepFailed(step_id.to_string(), e.to_string()),
+                    attempt_count,
+                )
+            })?;
 
         Ok(StepResult {
             step_id: step_id.to_string(),
@@ -2692,6 +2703,13 @@ mod tests {
                 err.contains("failed after 3 attempts"),
                 "expected attempt-count in error message; got: {err}"
             );
+            // 0.3-S13: sequential failure path now persists the
+            // accurate attempt count (was: defaulted to 1 in the
+            // failure path).
+            assert_eq!(
+                result.step_results["bad"].attempt_count, 3,
+                "sequential failure must surface actual attempt count, not default 1"
+            );
         }
     }
 
@@ -3647,6 +3665,67 @@ mod tests {
                 .find(|c| c.step_id == "bad_input")
                 .expect("bad_input checkpoint recorded");
             assert_eq!(bad_cp.status, PersistStepStatus::Failed);
+        }
+
+        #[test]
+        fn sequential_failure_persists_actual_attempt_count() {
+            // 0.3-S13 regression: a step with retry=3 that exhausts
+            // all 3 attempts now persists attempt_count=3 in the
+            // step_checkpoints row (was: defaulted to 1 in the
+            // sequential failure path before 0.3-S13).
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(steps_dir.join("bad.ax"), "fn main( { }").unwrap();
+            let bad = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/bad.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: Some(RetryPolicy {
+                    max_attempts: 3,
+                    on_transient: true,
+                }),
+                budget: None,
+            };
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "retry-fail-persist".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([("bad".into(), bad)]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let data_dir = tempfile::tempdir().unwrap();
+            let result = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            assert_eq!(result.status, WorkflowStatus::Failed);
+            assert_eq!(result.step_results["bad"].attempt_count, 3);
+            // Verify the count is in the persisted SQL row, not just
+            // the in-memory StepResult.
+            let store = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+            let bad_cp = cps.iter().find(|c| c.step_id == "bad").unwrap();
+            assert_eq!(
+                bad_cp.attempt_count, 3,
+                "persisted attempt_count must reflect retries"
+            );
         }
     }
 
