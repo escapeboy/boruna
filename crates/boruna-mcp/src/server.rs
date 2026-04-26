@@ -42,7 +42,12 @@ struct RunParams {
     ///   - String shorthand "allow-all" or "deny-all" (default: "allow-all")
     ///   - A Policy object — see docs/reference/policy-schema.md for the schema and examples
     ///
-    /// Unknown strings or unparseable objects return success=false, error_kind="invalid_policy".
+    /// Unknown strings or non-object/non-string values return success=false,
+    /// error_kind="invalid_policy". Object-form policies are strict-validated
+    /// (sprint 0.4-S15) and may instead return specific kinds:
+    /// policy.unknown_field, policy.invalid_capability,
+    /// policy.unknown_schema_version, policy.invalid_net_policy,
+    /// policy.parse_error.
     #[serde(default)]
     policy: Option<serde_json::Value>,
     /// Maximum execution steps (default: 10000000). Deterministic ceiling.
@@ -132,6 +137,13 @@ struct TemplateApplyParams {
     validate: Option<bool>,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct PolicyValidateParams {
+    /// Policy file body as a JSON string. Same shape as `--policy`
+    /// files on disk — see docs/reference/policy-schema.md.
+    policy_json: String,
+}
+
 // ── Server ──
 
 #[derive(Clone)]
@@ -189,7 +201,7 @@ impl BorunaMcpServer {
     // ── Run Tool ──
 
     #[tool(
-        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. The optional `limits` object enforces structured resource limits (max_wall_ms, max_output_bytes; max_memory_mb is reserved for a future release) — overruns return success=false, error_kind='limit_exceeded' with a `limit_kind` discriminator. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy, limit_exceeded) are returned as JSON with success=false."
+        description = "Compile and execute .ax source code under a capability policy. The `policy` parameter accepts either the string shorthand 'allow-all' / 'deny-all' OR a structured Policy object (per-capability allow/budget rules, allowlist vs. denylist mode, and a NetPolicy with allowed_domains / methods / byte limits / timeout) — see docs/reference/policy-schema.md for the full schema and examples. The optional `limits` object enforces structured resource limits (max_wall_ms, max_output_bytes; max_memory_mb is reserved for a future release) — overruns return success=false, error_kind='limit_exceeded' with a `limit_kind` discriminator. Returns the result value, UI output, step count, and optionally an execution trace. Domain errors (compile failures, runtime errors, step limit exceeded, invalid_policy, limit_exceeded) are returned as JSON with success=false. Object-form policies that fail strict validation surface specific kinds: policy.unknown_field, policy.invalid_capability, policy.unknown_schema_version, policy.invalid_net_policy, policy.parse_error (sprint 0.4-S15)."
     )]
     async fn boruna_run(
         &self,
@@ -432,6 +444,22 @@ impl BorunaMcpServer {
     )]
     async fn boruna_capability_list(&self) -> Result<CallToolResult, McpError> {
         let result = tokio::task::spawn_blocking(tools::capability::list_capabilities)
+            .await
+            .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    // ── Policy Tool (sprint 0.4-S15) ──
+
+    #[tool(
+        description = "Strict-validate a policy JSON body. Returns ok or a list of typed errors with stable error_kind strings (policy.unknown_field, policy.invalid_capability, policy.unknown_schema_version, policy.invalid_net_policy, policy.parse_error). Use as a CI gate or pre-flight check before passing the same body to boruna_run. See docs/design-policy-as-code.md and docs/reference/policy-schema.md."
+    )]
+    async fn boruna_policy_validate(
+        &self,
+        Parameters(params): Parameters<PolicyValidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = params.policy_json;
+        let result = tokio::task::spawn_blocking(move || tools::policy::validate_policy(&body))
             .await
             .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
         Ok(CallToolResult::success(vec![Content::text(result)]))

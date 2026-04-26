@@ -67,7 +67,7 @@ impl Default for NetPolicy {
 }
 
 /// Policy configuration for the capability gateway.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
@@ -81,6 +81,22 @@ pub struct Policy {
 
 fn default_schema_version() -> u32 {
     1
+}
+
+/// Manual `Default` impl so `Policy::default()` matches what the
+/// lenient deserializer produces for an empty input
+/// (`schema_version: 1`, not `0`). The derived default ignored the
+/// serde attribute, leaking `schema_version: 0` into round-trips
+/// — a footgun the strict validator catches now (sprint 0.4-S15).
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            rules: BTreeMap::new(),
+            default_allow: false,
+            net_policy: None,
+        }
+    }
 }
 
 impl Policy {

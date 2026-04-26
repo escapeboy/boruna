@@ -126,6 +126,33 @@ enum Command {
     /// pattern (cron + node_exporter's textfile collector).
     #[command(subcommand)]
     Metrics(MetricsCommand),
+    /// Policy file validation and inspection (sprint 0.4-S15).
+    /// See `docs/design-policy-as-code.md` and
+    /// `docs/reference/policy-schema.md` for the schema and the
+    /// stable `error_kind` taxonomy.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Strict-validate a policy file. Exits 0 on ok, 2 on
+    /// validation error, 1 on file IO error. Designed as a CI gate.
+    Validate {
+        /// Policy file path (.json).
+        file: PathBuf,
+        /// Emit machine-parseable JSON to stdout instead of the
+        /// human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate then print the effective policy in human-readable
+    /// form: default behavior, denormalized rule list, net policy
+    /// bounds.
+    Show {
+        /// Policy file path (.json).
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -796,8 +823,129 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Evidence(ev) => run_evidence(ev)?,
         Command::Capability(cap) => run_capability(cap)?,
         Command::Metrics(m) => run_metrics(m)?,
+        Command::Policy(p) => {
+            let code = run_policy(p);
+            if code != 0 {
+                process::exit(code);
+            }
+        }
     }
     Ok(())
+}
+
+fn run_policy(cmd: PolicyCommand) -> i32 {
+    use boruna_vm::policy_validate;
+    match cmd {
+        PolicyCommand::Validate { file, json } => match policy_validate::parse_file(&file) {
+            Ok(_p) => {
+                if json {
+                    println!(r#"{{"ok":true}}"#);
+                } else {
+                    println!("OK: {}", file.display());
+                }
+                0
+            }
+            Err(e) => {
+                if json {
+                    let payload = serde_json::json!({
+                        "ok": false,
+                        "errors": [policy_error_to_json(&e)],
+                    });
+                    println!("{payload}");
+                } else {
+                    eprintln!("error: {e}");
+                }
+                if matches!(e, policy_validate::PolicyParseError::Io { .. }) {
+                    1
+                } else {
+                    2
+                }
+            }
+        },
+        PolicyCommand::Show { file } => match policy_validate::parse_file(&file) {
+            Ok(p) => {
+                print_policy_show(&p);
+                0
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                if matches!(e, policy_validate::PolicyParseError::Io { .. }) {
+                    1
+                } else {
+                    2
+                }
+            }
+        },
+    }
+}
+
+fn policy_error_to_json(e: &boruna_vm::policy_validate::PolicyParseError) -> serde_json::Value {
+    use boruna_vm::policy_validate::PolicyParseError as E;
+    let mut obj = serde_json::Map::new();
+    obj.insert("error_kind".into(), e.error_kind().into());
+    obj.insert("message".into(), e.to_string().into());
+    match e {
+        E::UnknownField { path, .. } => {
+            obj.insert("path".into(), path.clone().into());
+        }
+        E::InvalidCapability { found, hint } => {
+            obj.insert("found".into(), found.clone().into());
+            if let Some(h) = hint {
+                obj.insert("hint".into(), h.clone().into());
+            }
+        }
+        E::InvalidNetPolicy { field, .. } => {
+            obj.insert("field".into(), (*field).into());
+        }
+        E::UnknownSchemaVersion(v) => {
+            obj.insert("found".into(), serde_json::Value::Number((*v).into()));
+        }
+        _ => {}
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn print_policy_show(p: &boruna_vm::Policy) {
+    println!("Schema version: {}", p.schema_version);
+    println!(
+        "Default behavior: {}",
+        if p.default_allow { "allow" } else { "deny" }
+    );
+    if p.rules.is_empty() {
+        println!("Rules: (none)");
+    } else {
+        println!("Rules:");
+        for (cap, rule) in &p.rules {
+            let action = if rule.allow { "allow" } else { "deny" };
+            let budget = if rule.budget == 0 {
+                "unlimited".to_string()
+            } else {
+                rule.budget.to_string()
+            };
+            println!("  {cap:<14} {action:<5}  budget={budget}");
+        }
+    }
+    match &p.net_policy {
+        Some(np) => {
+            println!("Net policy:");
+            let domains = if np.allowed_domains.is_empty() {
+                "(any)".to_string()
+            } else {
+                np.allowed_domains.join(", ")
+            };
+            let methods = if np.allowed_methods.is_empty() {
+                "(any)".to_string()
+            } else {
+                np.allowed_methods.join(", ")
+            };
+            println!("  allowed_domains:    {domains}");
+            println!("  allowed_methods:    {methods}");
+            println!("  max_response_bytes: {}", np.max_response_bytes);
+            println!("  timeout_ms:         {}", np.timeout_ms);
+            println!("  allow_redirects:    {}", np.allow_redirects);
+        }
+        None => println!("Net policy: (default)"),
+    }
 }
 
 fn run_metrics(cmd: MetricsCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -1535,8 +1683,12 @@ fn make_gateway(
         "allow-all" => Policy::allow_all(),
         "deny-all" => Policy::deny_all(),
         path => {
-            let json = fs::read_to_string(path)?;
-            serde_json::from_str(&json)?
+            // Strict validation: schema_version, deny-extra,
+            // capability catalog, net_policy bounds. Failures
+            // surface a stable `error_kind` string in the message
+            // (`policy.unknown_field`, `policy.invalid_capability`,
+            // etc.) — see `docs/design-policy-as-code.md`.
+            boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?
         }
     };
 
@@ -1703,8 +1855,10 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 "allow-all" => Policy::allow_all(),
                 "deny-all" => Policy::deny_all(),
                 path => {
-                    let pjson = fs::read_to_string(path)?;
-                    serde_json::from_str(&pjson)?
+                    // Sprint 0.4-S15: route through the strict
+                    // validator so `workflow run` shares one parser
+                    // with `boruna policy validate` and `boruna run`.
+                    boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?
                 }
             };
 
@@ -1903,8 +2057,12 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                     Some("allow-all") => Some(Policy::allow_all()),
                     Some("deny-all") => Some(Policy::deny_all()),
                     Some(path) => {
-                        let pjson = fs::read_to_string(path)?;
-                        Some(serde_json::from_str(&pjson)?)
+                        // Sprint 0.4-S15: route through the strict
+                        // validator so `workflow resume` shares one
+                        // parser with the other CLI policy paths.
+                        Some(boruna_vm::policy_validate::parse_file(
+                            std::path::Path::new(path),
+                        )?)
                     }
                 };
 
