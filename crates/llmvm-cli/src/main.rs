@@ -407,6 +407,29 @@ enum WorkflowCommand {
 
 #[derive(Subcommand)]
 enum EvidenceCommand {
+    /// Build an evidence bundle from a persisted run (sprint 0.4-S10).
+    /// Reads the run's metadata, step checkpoints, and hash-chained
+    /// audit log; writes a bundle directory containing workflow.json,
+    /// policy.json, per-step outputs, audit_log.json, env_fingerprint.json,
+    /// and a manifest.json with bundle hash + per-file checksums.
+    ///
+    /// The bundle is created post-hoc — the runner does NOT auto-create
+    /// bundles during execution. Operators trigger bundle creation
+    /// explicitly when needed (e.g., a compliance request months after
+    /// the run completed).
+    Create {
+        /// Run id (16-hex deterministic id from `boruna workflow run`).
+        run_id: String,
+        /// Output directory. The bundle is written to
+        /// `<output_dir>/<run_id>/` — the run_id subdirectory is
+        /// created if it doesn't exist.
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// Persistent data directory holding `runs.db`. Same fallback
+        /// chain as `boruna workflow run` / `resume`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Verify an evidence bundle for integrity.
     Verify {
         /// Evidence bundle directory.
@@ -2224,6 +2247,32 @@ fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> 
     use boruna_orchestrator::audit::{evidence::BundleManifest, verify::verify_bundle};
 
     match cmd {
+        EvidenceCommand::Create {
+            run_id,
+            output_dir,
+            data_dir,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved_data = resolve_data_dir(data_dir.as_ref());
+                let manifest = boruna_orchestrator::workflow::create_bundle(
+                    &resolved_data,
+                    &run_id,
+                    &output_dir,
+                )
+                .map_err(|e| format!("{e}"))?;
+                let bundle_path = output_dir.join(&run_id);
+                println!("evidence bundle created at {}", bundle_path.display());
+                println!("  bundle_hash: {}", manifest.bundle_hash);
+                println!("  audit_hash:  {}", manifest.audit_log_hash);
+                println!("  files:       {}", manifest.file_checksums.len());
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, output_dir, data_dir);
+                return Err("`evidence create` requires the `persist-sqlite` feature".into());
+            }
+        }
         EvidenceCommand::Verify { dir } => {
             let result = verify_bundle(&dir);
             if result.valid {
