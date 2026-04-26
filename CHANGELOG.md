@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Decided
+
+- **LLM live handler model: Bring Your Own Handler (BYOH)** (sprint
+  `0.3-S8`). Boruna does NOT ship a default LLM handler in core.
+  Integrators implement the `CapabilityHandler` trait against their
+  provider of choice (OpenAI, Anthropic, vLLM, Ollama, custom
+  routers) and pass it to `CapabilityGateway::with_handler` at
+  workflow run time. Rationale: provider churn shouldn't destabilize
+  Boruna releases; API-key management belongs in the integrator's
+  application; production integrators (FleetQ et al.) already have
+  their own LLM clients. New guide:
+  [`docs/guides/llm-integration.md`](docs/guides/llm-integration.md)
+  covers the contract, provider variants, determinism notes, and
+  testing patterns. Reference handler at
+  [`examples/llm_handlers/openai/`](examples/llm_handlers/openai/).
+  Closes the open question carried since the original 0.3.0 plan;
+  `docs/roadmap.md` and `docs/limitations.md` updated accordingly.
+
 ### Added
 
 - **`boruna workflow run --skip-if-running`** (sprint `0.3-S7`).

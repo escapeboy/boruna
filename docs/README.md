@@ -18,6 +18,7 @@ Core ideas that make Boruna work:
 Task-oriented walkthroughs:
 
 - [Your First Workflow](./guides/first-workflow.md) — build a two-step workflow from scratch
+- [LLM Integration](./guides/llm-integration.md) — Bring Your Own Handler model: how to wire OpenAI / Anthropic / vLLM / custom routers via the `CapabilityHandler` trait
 
 ## Reference
 

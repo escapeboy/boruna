@@ -53,7 +53,7 @@ Focus: workflows that survive process restarts, handle long-running steps, and u
 - [ ] **Workflow step output piping** — pass step outputs as typed inputs to downstream steps (deferred from 0.2.0)
 - [ ] **Structured resource limits with typed errors** ([#5](https://github.com/escapeboy/boruna/issues/5)) — `max_memory_mb`, `max_wall_ms`, `max_output_bytes`, returning `error_kind: "limit_exceeded"`. P1 from FleetQ.
 - [ ] **Versioned capability identity** ([#3](https://github.com/escapeboy/boruna/issues/3)) — `boruna_capability_list` returns `capability_set_hash` so integrators can safely cache results across binary upgrades. P1 from FleetQ. Pairs with the `Policy.schema_version` already in 0.2.0.
-- [ ] **LLM live handler decision** — `crates/llm-effect` still does not ship a default `--live` LLM handler (see [limitations.md](./limitations.md)). 0.3.0 must either ship one or explicitly document "bring your own" as the supported model.
+- [x] **LLM live handler decision** — **DECIDED (sprint `0.3-S8`):** Bring Your Own Handler (BYOH) is the supported model. No default LLM handler ships in core; integrators wire their provider via the `CapabilityHandler` trait. Rationale + integration contract + reference OpenAI handler in [`docs/guides/llm-integration.md`](./guides/llm-integration.md).
 
 ## 0.4.0 — Operations
 
@@ -103,8 +103,8 @@ Milestone: the stable API surface is locked. 0.5+ programs compile and run uncha
 These decisions block downstream planning. None of them are urgent today, but each one becomes urgent within 1–2 quarters.
 
 1. **Security audit booking** — pick auditor, scope, budget by Q4 2026. A real audit costs $30–100k and books months in advance. If this slips past Q4 2026, v1.0.0 slips with it.
-2. **LLM live handler shipping plan** — ship in 0.3.0, or formally document "bring your own" as the supported integration model? Affects what `--live` means for production users.
-3. **Persistence storage backend** — sqlite (simple, embedded) vs. postgres (operational fit) vs. pluggable. 0.3.0 cannot ship persistence without picking one.
+2. ~~**LLM live handler shipping plan**~~ — **decided** (`0.3-S8`): Bring Your Own Handler. See [`docs/guides/llm-integration.md`](./guides/llm-integration.md).
+3. ~~**Persistence storage backend**~~ — **decided** ([ADR 001](./adr/001-persistence-backend.md)): sqlite, no abstraction trait. Shipped via 0.3-S2a/S2b/S3/S6.
 4. **Dashboard scope and tech** — full SSR Rust stack (Axum + askama, fits the project) vs. SPA (more work, more polish). 0.4.0 dashboard depends on this answer.
 
 ## Future / under consideration
