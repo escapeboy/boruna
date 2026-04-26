@@ -16,6 +16,8 @@ use boruna_vm::replay::EventLog;
 use boruna_vm::vm::Vm;
 
 #[cfg(feature = "serve")]
+mod dashboard;
+#[cfg(feature = "serve")]
 mod serve;
 
 #[derive(Parser)]
@@ -132,6 +134,39 @@ enum Command {
     /// stable `error_kind` taxonomy.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Workflow dashboard — read-only HTTP view over `runs.db`
+    /// (sprint 0.4-S16). Requires `--features serve`. See
+    /// `docs/design-workflow-dashboard.md` for the security
+    /// posture (loopback by default, no auth).
+    #[cfg(feature = "serve")]
+    #[command(subcommand)]
+    Dashboard(DashboardCommand),
+}
+
+#[cfg(feature = "serve")]
+#[derive(Subcommand)]
+enum DashboardCommand {
+    /// Serve a read-only dashboard over HTTP.
+    ///
+    /// Loopback (127.0.0.1) by default. Pass `--bind 0.0.0.0` to
+    /// expose on the LAN; the dashboard ships no auth, so any
+    /// public bind MUST be fronted by an auth-enforcing reverse
+    /// proxy.
+    Serve {
+        /// Persistent data directory holding `runs.db`. Same
+        /// fallback chain as `boruna workflow run` /
+        /// `metrics export`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Listen port (default 8080).
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Bind address. Defaults to `127.0.0.1`. Pass `0.0.0.0`
+        /// to expose on all interfaces (you accept the
+        /// no-auth-on-LAN consequences).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -827,6 +862,34 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let code = run_policy(p);
             if code != 0 {
                 process::exit(code);
+            }
+        }
+        #[cfg(feature = "serve")]
+        Command::Dashboard(d) => run_dashboard(d)?,
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serve")]
+fn run_dashboard(cmd: DashboardCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        DashboardCommand::Serve {
+            data_dir,
+            port,
+            bind,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let bind_addr: std::net::IpAddr = bind
+                    .parse()
+                    .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
+                dashboard::run_serve(resolved, port, bind_addr)?;
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (data_dir, port, bind);
+                return Err("`dashboard serve` requires the `persist-sqlite` feature".into());
             }
         }
     }

@@ -8,6 +8,47 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Workflow dashboard** (sprint `0.4-S16`). New `boruna dashboard
+  serve` subcommand exposes a read-only HTTP view of `runs.db` so
+  operators can triage at a glance without dropping into `sqlite3`.
+  Loopback (`127.0.0.1`) by default; `--bind 0.0.0.0` is allowed
+  but shouts a loud warning on stderr AND renders a red banner in
+  the HTML, because the dashboard ships with **no authentication.**
+
+  ```sh
+  cargo build --release -p boruna-cli --features serve
+  boruna dashboard serve --data-dir /var/lib/boruna
+  ```
+
+  Routes: `GET /` (HTML index), `GET /runs/:id` (HTML detail),
+  `GET /api/runs` (JSON list), `GET /api/runs/:id` (JSON detail).
+  Zero mutation routes — `POST`/`PUT`/`DELETE`/`PATCH` to any path
+  return 405. Multi-env aware: when `--env` is set, the dashboard
+  reads `<data-dir>/<env>/runs.db` per the 0.4-S14 contract.
+
+  Builds behind the existing `serve` feature flag (already used by
+  `boruna serve` for framework apps). Reuses the workspace
+  `axum 0.8` + `tokio` deps.
+
+- `boruna_orchestrator::persistence::{RunRow, RunRecord,
+  RunOperational, StepCheckpoint}` now derive `Serialize` so
+  read-only consumers can render rows directly. (Not
+  `Deserialize` — there's no scenario where a dashboard consumer
+  should be reconstructing a row.)
+
+- 18 new unit tests in `dashboard::tests` covering every handler,
+  HTML escaping (XSS regression), bind-warning banner, 404, and
+  the date-format helper. 8 new CLI integration tests in
+  `crates/llmvm-cli/tests/cli_dashboard.rs` covering end-to-end
+  HTTP behavior, the read-only contract (POST → 405), and CLI
+  error paths (missing data-dir, invalid bind address).
+
+- New CI steps to build and test the `serve` feature
+  (`cargo build/test/clippy -p boruna-cli --features serve`).
+
+- New reference doc `docs/reference/dashboard.md` covering build,
+  run, security posture, routes, stability tier.
+
 - **Policy management as code** (sprint `0.4-S15`). Operators now
   treat `--policy` files as versioned, validated, code-reviewable
   artifacts. Two new CLI subcommands:
