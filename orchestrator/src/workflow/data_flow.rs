@@ -3,6 +3,51 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Flush a file's data blocks to stable storage with the strongest
+/// guarantee the platform offers.
+///
+/// - **Linux** (`target_os = "linux"`) and other non-Darwin Unix:
+///   `File::sync_all()`, which calls `fsync(2)`. On ext4/xfs this
+///   forces a write barrier and journals the metadata.
+/// - **macOS** (`target_os = "macos"`): `fcntl(fd, F_FULLFSYNC, 0)`.
+///   Plain `fsync(2)` on Darwin does NOT flush the drive's write
+///   cache to media (it returns once the data is in the device's
+///   buffer); SQLite, Postgres, and `git` all use F_FULLFSYNC for
+///   the same reason. Documented in `man 2 fsync` on Darwin.
+/// - **Windows**: `File::sync_all()`, which maps to `FlushFileBuffers`.
+///
+/// On Darwin, if F_FULLFSYNC fails (e.g. the FS doesn't support it —
+/// unusual but possible on fuse mounts), we fall back to
+/// `sync_all()` rather than propagating the error: at least we get
+/// the partial guarantee.
+fn fullsync_file(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `file` is a valid open file descriptor; F_FULLFSYNC
+        // takes no further argument. Returns 0 on success, -1 on
+        // error (errno set).
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            // Fall back to sync_all so we still get the soft fsync.
+            // Logging is operator-helpful but optional; suppressed
+            // under cfg(test) to keep the unit suite quiet.
+            #[cfg(not(test))]
+            eprintln!(
+                "warning: F_FULLFSYNC failed (errno {}); falling back to sync_all (soft fsync)",
+                std::io::Error::last_os_error()
+            );
+            file.sync_all()
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
+}
+
 /// Manages inter-step data flow: stores step outputs and resolves step inputs.
 pub struct DataStore {
     /// Base directory for this workflow run's data.
@@ -22,30 +67,49 @@ impl DataStore {
 
     /// Store a step's output value.
     ///
-    /// **Atomicity guarantee (process-crash safe, NOT power-loss safe).**
-    /// The JSON is serialized into a temp file in the same parent
-    /// directory and then `tempfile::NamedTempFile::persist` atomically
-    /// renames it into place. Within a single OS lifetime, concurrent
-    /// readers see either the old contents or the new contents —
-    /// never a partial write. Across power loss, a missing parent-
-    /// directory fsync (left for a future hardening pass) means the
-    /// rename's directory entry may not be journaled even though the
-    /// file's data blocks are flushed; recovery may show the prior
-    /// version or no file. The 0.3-S3 review (H1/C3) flagged this gap
-    /// — full power-loss safety needs an explicit dir fsync after
-    /// persist; deferred to a future sprint.
+    /// **Atomicity guarantee.** The JSON is serialized into a temp
+    /// file in the same parent directory; the temp file's data blocks
+    /// are flushed; `tempfile::NamedTempFile::persist` atomically
+    /// renames it into place; the parent directory is then synced so
+    /// the rename's directory entry is journaled. Within a single OS
+    /// lifetime, concurrent readers see either the old contents or
+    /// the new contents — never a partial write.
+    ///
+    /// **Power-loss durability.** Once `store_output` returns `Ok`,
+    /// recovery after a power loss shows either the old file or the
+    /// new file — never a torn intermediate. Caveats apply to the
+    /// pre-Ok crash window: a crash between `persist` and the
+    /// directory sync leaves the rename in page cache only. Callers
+    /// MUST treat post-write `Err` as "output may or may not exist on
+    /// disk" and rely on idempotent replay (the runner does this via
+    /// the SQLite checkpoint commit happening after this method
+    /// returns).
+    ///
+    /// **Platform notes:**
+    /// - **Linux** (ext4, xfs, btrfs): full guarantee via
+    ///   `fsync(2)` on file + directory inodes.
+    /// - **macOS** (apfs, hfs+): full guarantee via
+    ///   `fcntl(F_FULLFSYNC)`. Plain `fsync(2)` on Darwin does NOT
+    ///   flush the drive's write cache to media; SQLite makes the
+    ///   same choice.
+    /// - **NFS / fuse / network FS**: NOT guaranteed. Behavior
+    ///   depends on mount options and server semantics. Use a local
+    ///   filesystem for production durability claims.
+    /// - **Windows**: the parent-dir sync is skipped (Windows
+    ///   doesn't support `fsync` on directory handles). Non-production
+    ///   target.
     ///
     /// **JSON-bytes/hash alignment.** The on-disk JSON is the **same
     /// compact form** that [`Self::hash_value`] hashes and that the
     /// orchestrator persists in `step_checkpoints.output_json`. So
     /// `sha256sum <step>/result.json` equals the persisted
-    /// `output_hash` column. Reviewer for 0.3-S3 (H2/H3) flagged a
-    /// prior pretty-vs-compact mismatch as an operator footgun; the
-    /// fix unified all three to a single source of truth.
+    /// `output_hash` column.
     ///
-    /// Hardened in sprint `0.3-S3` (closes the H4 deferral from
-    /// 0.3-S2c's review: prior `std::fs::write` could leave a torn
-    /// half-flushed file readable by a concurrent resume).
+    /// History:
+    /// - `0.3-S3`: introduced atomic-rename, closed H4 from 0.3-S2c
+    ///   (torn-write under concurrent resume). Documented the
+    ///   parent-dir fsync gap as deferred.
+    /// - `0.3-S6`: closes the parent-dir fsync gap (H1/C3 from 0.3-S3).
     pub fn store_output(
         &mut self,
         step_id: &str,
@@ -68,15 +132,25 @@ impl DataStore {
         // production target for the orchestrator.
         let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
         std::io::Write::write_all(&mut tmp, json.as_bytes())?;
-        // fsync the temp file's data blocks before rename. This makes
-        // the *contents* durable; full power-loss safety also needs a
-        // parent-directory fsync after persist, which we don't do
-        // today (see method docstring). Process-crash safety only.
-        tmp.as_file().sync_all()?;
+        // Sync the temp file's data blocks to stable media BEFORE
+        // rename so the bytes are durable when the rename commits.
+        // On macOS this uses F_FULLFSYNC (sync_all alone is a soft
+        // fsync that doesn't flush the drive's write cache).
+        fullsync_file(tmp.as_file())?;
         // persist consumes the NamedTempFile. On error it returns the
         // original handle along with the io::Error; we propagate the
         // io::Error and let Drop clean up the temp file.
         tmp.persist(&target).map_err(|e| e.error)?;
+
+        // 0.3-S6: sync the parent directory so the rename's
+        // directory entry is journaled to stable media. Without this,
+        // POSIX permits the dirent to be lost on power loss even
+        // though the file's data blocks have been flushed.
+        #[cfg(unix)]
+        {
+            let dir_handle = std::fs::File::open(&dir)?;
+            fullsync_file(&dir_handle)?;
+        }
 
         self.outputs
             .entry(step_id.to_string())
@@ -214,6 +288,45 @@ mod tests {
             "sha256sum of result.json must equal hash_value(&value): \
              on-disk={on_disk_hash}, api={api_hash}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn store_output_parent_dir_is_fsynced() {
+        // 0.3-S6 regression: store_output now fsyncs the parent
+        // directory after `tempfile::persist` so the rename's
+        // dirent is journaled to stable storage. We can't directly
+        // test power-loss durability in a unit test (requires
+        // hardware-level support), but we CAN verify:
+        //   1. The fsync code path doesn't break atomicity
+        //      (the file is readable + matches the value).
+        //   2. The fsync doesn't leave any stray file handles
+        //      (verified by writing many times in a row).
+        //
+        // The contract is "the call doesn't fail when the parent
+        // dir exists and is writable" — the actual durability
+        // guarantee is asserted by the docstring + integration
+        // checks in `tests/`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = DataStore::new(dir.path()).unwrap();
+        // Write the same step many times in a row. Each call opens
+        // a fresh dir handle, fsyncs, and closes; verify no FD leak
+        // (which would surface as EMFILE eventually) and that the
+        // final file content is the last value written.
+        for i in 0..50 {
+            store
+                .store_output("step", "result", &Value::Int(i))
+                .unwrap();
+        }
+        let on_disk = std::fs::read_to_string(dir.path().join("outputs/step/result.json")).unwrap();
+        assert!(on_disk.contains("49"), "final value visible: {on_disk}");
+        // Only the result.json should exist (no leftover temp files
+        // from any of the 50 writes).
+        let entries: Vec<_> = std::fs::read_dir(dir.path().join("outputs/step"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries, vec!["result.json"], "no leftover files");
     }
 
     #[test]

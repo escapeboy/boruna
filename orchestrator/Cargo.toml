@@ -36,5 +36,12 @@ boruna-bytecode = { path = "../crates/llmbc" }
 # requirement). Confirmed by the probe in the ADR sprint.
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
+# macOS-only: libc for fcntl(F_FULLFSYNC). Plain `fsync(2)` on Darwin
+# does NOT flush the drive's write cache to media — only F_FULLFSYNC
+# gives true power-loss durability. SQLite makes the same choice. See
+# the `fullsync_*` helpers in `data_flow.rs`.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

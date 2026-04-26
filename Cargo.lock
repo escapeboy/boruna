@@ -313,6 +313,7 @@ dependencies = [
  "boruna-vm",
  "chrono",
  "clap",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
