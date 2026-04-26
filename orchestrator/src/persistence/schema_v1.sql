@@ -35,14 +35,22 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS step_checkpoints (
-    run_id      TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    step_id     TEXT NOT NULL,
-    status      TEXT NOT NULL,                    -- terminal values feed replay
-    output_json TEXT,                             -- REPLAY-VERIFIED
-    output_hash TEXT,                             -- REPLAY-VERIFIED
-    started_at  INTEGER,                          -- OPERATIONAL ONLY
-    ended_at    INTEGER,                          -- OPERATIONAL ONLY
-    error_msg   TEXT,                             -- OPERATIONAL ONLY
+    run_id        TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    step_id       TEXT NOT NULL,
+    status        TEXT NOT NULL,                  -- terminal values feed replay
+    output_json   TEXT,                           -- REPLAY-VERIFIED
+    output_hash   TEXT,                           -- REPLAY-VERIFIED
+    started_at    INTEGER,                        -- OPERATIONAL ONLY
+    ended_at      INTEGER,                        -- OPERATIONAL ONLY
+    error_msg     TEXT,                           -- OPERATIONAL ONLY
+    -- 0.3-S11 (schema v2 column, included here for fresh databases;
+    -- existing v1 databases get this column via the v1->v2 migration
+    -- in init()). Number of attempts the step took to reach its
+    -- terminal state. 1 = first-try success or single-attempt
+    -- failure; >1 = retry policy fired. OPERATIONAL ONLY — wall-
+    -- clock-keyed (depends on whether transient failures happened),
+    -- never feeds an audit hash.
+    attempt_count INTEGER NOT NULL DEFAULT 1,     -- OPERATIONAL ONLY
     PRIMARY KEY (run_id, step_id)
 );
 

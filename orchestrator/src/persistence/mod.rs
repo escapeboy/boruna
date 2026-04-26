@@ -35,17 +35,35 @@ use std::time::Duration;
 use rusqlite::{params, Connection, Error as SqlError};
 use serde::{Deserialize, Serialize};
 
-/// Wire-format version of the on-disk schema. Bumped on **breaking** schema
-/// changes (column rename, removal, type change). Additive changes (new
-/// column with default, new optional table) keep the same version. A
-/// future migration sprint will add an upgrade path; v1 just refuses to
-/// open mismatched databases.
-pub const SCHEMA_VERSION: i64 = 1;
+/// Wire-format version of the on-disk schema.
+///
+/// History:
+/// - **v1** (sprint `0.3-S2a`): initial schema — `runs`,
+///   `step_checkpoints`, `schema_version`.
+/// - **v2** (sprint `0.3-S11`): adds `step_checkpoints.attempt_count`
+///   column to record retry attempts per step. Migrated additively
+///   via `schema_v1_to_v2.sql` (`ALTER TABLE ADD COLUMN`); existing
+///   rows default to 1.
+///
+/// Bumped on EITHER additive or breaking changes when there's a
+/// migration to run on existing databases (the bump signals "v_n
+/// builds need v_n schema; older builds refuse to open"). For
+/// fresh databases, [`SCHEMA_V1_SQL`] is the canonical creation
+/// script and reflects the latest schema; older versions matter
+/// only for the migration chain.
+pub const SCHEMA_VERSION: i64 = 2;
 
-/// Embedded schema migration. Applied on first open via `IF NOT EXISTS`,
-/// so re-opens are idempotent. When v2 lands, this becomes a chain of
-/// `ALTER TABLE` statements gated by the existing `schema_version` row.
+/// Canonical creation script for fresh databases. Reflects the
+/// LATEST schema (currently v2 — includes `attempt_count`). Applied
+/// via `IF NOT EXISTS`, so re-opens are idempotent and existing
+/// databases see no DDL from this script. Migrations from older
+/// versions (v1 → v2 etc.) run separately via the
+/// `SCHEMA_V*_TO_V*_SQL` chain in `init()`.
 const SCHEMA_V1_SQL: &str = include_str!("schema_v1.sql");
+
+/// v1 → v2 migration: adds `step_checkpoints.attempt_count`. Applied
+/// in [`RunCheckpointStore::init`] when opening a v1 database.
+const SCHEMA_V1_TO_V2_SQL: &str = include_str!("schema_v1_to_v2.sql");
 
 /// Errors surfaced by the persistence layer. Distinct kinds so callers can
 /// react differently (retry on `Busy`, abort on `SchemaVersionMismatch`,
@@ -264,6 +282,14 @@ pub struct StepCheckpoint {
     /// Human-readable error message for `Failed` steps. Not parsed by
     /// the store; propagated for logging / dashboard display.
     pub error_msg: Option<String>,
+    /// Number of attempts the step took to reach its terminal state.
+    /// `1` = first-try success or single-attempt failure; `>1` = retry
+    /// policy fired (sprint `0.3-S5`). **OPERATIONAL ONLY** —
+    /// wall-clock-keyed (depends on whether transient failures
+    /// happened); never feeds an audit hash. Added in schema v2
+    /// (sprint `0.3-S11`). For pre-v2 rows, the migration defaults
+    /// to `1`.
+    pub attempt_count: u32,
 }
 
 /// SQLite-backed checkpoint store.
@@ -309,33 +335,51 @@ impl RunCheckpointStore {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 5000_i64)?;
 
-        // Apply schema. Uses CREATE TABLE IF NOT EXISTS so re-open is
-        // idempotent. The schema_version row is INSERT OR IGNORE so
-        // re-opening doesn't double-insert.
-        //
-        // **v2+ migration pattern (when it lands):**
-        // ```ignore
-        // // 1. Read current version
-        // let v: i64 = conn.query_row(
-        //     "SELECT version FROM schema_version WHERE id = 1",
-        //     [], |r| r.get(0))?;
-        // // 2. Apply chained migrations under a single transaction so
-        // //    a partial migration rolls back cleanly.
-        // let tx = conn.unchecked_transaction()?;
-        // if v < 2 { tx.execute_batch(SCHEMA_V1_TO_V2_SQL)?; }
-        // if v < 3 { tx.execute_batch(SCHEMA_V2_TO_V3_SQL)?; }
-        // // 3. Update the version row INSIDE the same transaction.
-        // tx.execute(
-        //     "UPDATE schema_version SET version = ?1 WHERE id = 1",
-        //     params![SCHEMA_VERSION])?;
-        // tx.commit()?;
-        // ```
-        // The CHECK (id = 1) constraint pins the table to a single row,
-        // so `UPDATE ... WHERE id = 1` is the canonical way to bump.
+        // Apply the canonical schema with `IF NOT EXISTS` — fresh
+        // databases get the latest shape directly; existing databases
+        // see no DDL from this script (every CREATE is guarded). The
+        // INSERT OR IGNORE on `schema_version` lays down v1's row on
+        // a fresh DB and is a no-op on existing ones.
         conn.execute_batch(SCHEMA_V1_SQL)?;
 
-        // Verify version compatibility. The schema enforces a single row
-        // (id = 1 CHECK constraint), so this query has at most one result.
+        // Read the on-disk version. On a fresh DB this is 1 (laid
+        // down by the INSERT OR IGNORE in SCHEMA_V1_SQL). On an
+        // existing DB, this is whatever the last build wrote.
+        let on_disk: i64 = conn.query_row(
+            "SELECT version FROM schema_version WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // Migration chain. Apply each `if v < N` block in order under
+        // a single transaction so a partial migration rolls back
+        // cleanly. The version row is bumped INSIDE the same
+        // transaction so partial state isn't visible to a concurrent
+        // reader.
+        //
+        // Special case: a FRESH database just laid down by
+        // SCHEMA_V1_SQL already has the latest schema (v2 columns are
+        // included in that script for fresh-DB convenience). The
+        // migration ALTER TABLE would fail on "duplicate column".
+        // To detect fresh-vs-existing, we check whether the
+        // `attempt_count` column already exists; if so, skip the
+        // v1→v2 ALTER and just bump the version row.
+        if on_disk < 2 {
+            let has_attempt_count = column_exists(&conn, "step_checkpoints", "attempt_count")?;
+            let tx = conn.unchecked_transaction()?;
+            if !has_attempt_count {
+                tx.execute_batch(SCHEMA_V1_TO_V2_SQL)?;
+            }
+            tx.execute(
+                "UPDATE schema_version SET version = ?1 WHERE id = 1",
+                params![2_i64],
+            )?;
+            tx.commit()?;
+        }
+
+        // Final version check — refuses to open a database that
+        // somehow ended up at a version we don't recognize (future
+        // build wrote v3 to disk, current build only knows v2).
         let actual: i64 = conn.query_row(
             "SELECT version FROM schema_version WHERE id = 1",
             [],
@@ -614,15 +658,16 @@ impl RunCheckpointStore {
             let tx = self.conn.unchecked_transaction()?;
             tx.execute(
                 "INSERT INTO step_checkpoints \
-                 (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT(run_id, step_id) DO UPDATE SET \
-                   status      = excluded.status, \
-                   output_json = COALESCE(excluded.output_json, step_checkpoints.output_json), \
-                   output_hash = COALESCE(excluded.output_hash, step_checkpoints.output_hash), \
-                   started_at  = COALESCE(excluded.started_at,  step_checkpoints.started_at), \
-                   ended_at    = excluded.ended_at, \
-                   error_msg   = excluded.error_msg",
+                   status        = excluded.status, \
+                   output_json   = COALESCE(excluded.output_json, step_checkpoints.output_json), \
+                   output_hash   = COALESCE(excluded.output_hash, step_checkpoints.output_hash), \
+                   started_at    = COALESCE(excluded.started_at,  step_checkpoints.started_at), \
+                   ended_at      = excluded.ended_at, \
+                   error_msg     = excluded.error_msg, \
+                   attempt_count = excluded.attempt_count",
                 params![
                     cp.run_id,
                     cp.step_id,
@@ -632,6 +677,7 @@ impl RunCheckpointStore {
                     cp.started_at_ms,
                     cp.ended_at_ms,
                     cp.error_msg,
+                    cp.attempt_count,
                 ],
             )?;
             tx.commit()?;
@@ -876,10 +922,16 @@ impl RunCheckpointStore {
         with_busy_retry(|| {
             self.conn.execute_batch("BEGIN IMMEDIATE")?;
             let body = || -> Result<(), PersistenceError> {
+                // attempt_count: leave UNCHANGED on conflict (the
+                // running checkpoint is mid-attempt; the terminal
+                // upsert later carries the final attempt count).
+                // For a fresh insert, default to 1 — this is a NEW
+                // attempt; the post-execution upsert overwrites with
+                // the actual count if retries fired.
                 self.conn.execute(
                     "INSERT INTO step_checkpoints \
-                     (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg) \
-                     VALUES (?1, ?2, 'running', NULL, NULL, ?3, NULL, NULL) \
+                     (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count) \
+                     VALUES (?1, ?2, 'running', NULL, NULL, ?3, NULL, NULL, 1) \
                      ON CONFLICT(run_id, step_id) DO UPDATE SET \
                        status      = 'running', \
                        output_json = NULL, \
@@ -912,7 +964,7 @@ impl RunCheckpointStore {
         run_id: &str,
     ) -> Result<Vec<StepCheckpoint>, PersistenceError> {
         let mut stmt = self.conn.prepare(
-            "SELECT run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg \
+            "SELECT run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count \
              FROM step_checkpoints WHERE run_id = ?1 ORDER BY step_id",
         )?;
         let rows = stmt
@@ -938,6 +990,22 @@ impl RunCheckpointStore {
 /// removing the PRAGMA breaks read paths under contention; removing the
 /// retry loop breaks immediate-acquire writes that fail before the
 /// PRAGMA's timeout would help.
+/// Return true if the named column exists on the given table.
+/// Uses `PRAGMA table_info(<table>)` and checks for the column name.
+/// Used by the v1→v2 migration to distinguish a fresh database
+/// (where the canonical creation script already includes the v2
+/// columns) from an actual v1 database that needs the ALTER TABLE.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, PersistenceError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for r in rows {
+        if r? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn with_busy_retry<F, T>(mut op: F) -> Result<T, PersistenceError>
 where
     F: FnMut() -> Result<T, PersistenceError>,
@@ -1088,6 +1156,10 @@ fn parse_step_checkpoint(row: &rusqlite::Row<'_>) -> Result<StepCheckpoint, SqlE
         started_at_ms: row.get(5)?,
         ended_at_ms: row.get(6)?,
         error_msg: row.get(7)?,
+        // Read as i64 then narrow — SQLite has no u32 affinity.
+        // The default-1 in the schema and the migration ensures
+        // every row has a value.
+        attempt_count: row.get::<_, i64>(8)? as u32,
     })
 }
 
@@ -1122,6 +1194,7 @@ mod tests {
             started_at_ms: Some(1_700_000_001_000),
             ended_at_ms: None,
             error_msg: None,
+            attempt_count: 1,
         }
     }
 
@@ -1746,6 +1819,83 @@ mod tests {
         // Sorted by (workflow_name, run_id) — a-early before z-late.
         assert_eq!(runs[0].run_id, "R-2");
         assert_eq!(runs[1].run_id, "R-1");
+    }
+
+    // ── 0.3-S11: attempt_count column + schema v1→v2 migration ──
+
+    #[test]
+    fn attempt_count_column_exists_after_init() {
+        // Locks the schema v2 contract: every freshly-opened DB has
+        // the attempt_count column on step_checkpoints. Catches an
+        // accidental removal of the column from schema_v1.sql or
+        // a botched migration that fails to add it.
+        let store = fresh_store();
+        let exists =
+            super::column_exists(&store.conn, "step_checkpoints", "attempt_count").unwrap();
+        assert!(
+            exists,
+            "attempt_count column must exist on step_checkpoints"
+        );
+    }
+
+    #[test]
+    fn schema_version_is_2_after_init() {
+        let store = fresh_store();
+        let version: i64 = store
+            .conn
+            .query_row("SELECT version FROM schema_version WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn upsert_preserves_attempt_count_round_trip() {
+        // Insert a checkpoint with attempt_count=3, list_step_checkpoints
+        // must return the same value (parser correctly reads it).
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        let mut cp = sample_checkpoint("R-1", "S-1", StepStatus::Completed);
+        cp.attempt_count = 3;
+        store.upsert_step_checkpoint(&cp).unwrap();
+        let listed = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].attempt_count, 3);
+    }
+
+    #[test]
+    fn upsert_terminal_overwrites_attempt_count_from_running_default() {
+        // Realistic flow: mark_step_running_clearing_output sets
+        // attempt_count=1 on insert. Then the terminal upsert
+        // overwrites with the actual final attempt count (e.g. 3
+        // after retries).
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .mark_step_running_clearing_output("R-1", "S-1", 1_700_000_000_000)
+            .unwrap();
+        // Verify Running checkpoint has attempt_count=1 (the default).
+        let listed = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(listed[0].attempt_count, 1);
+        // Terminal upsert with actual count. Pass started_at_ms=None
+        // so COALESCE preserves the original (running) timestamp;
+        // this matches the runner's actual call pattern.
+        let mut completed = sample_checkpoint("R-1", "S-1", StepStatus::Completed);
+        completed.attempt_count = 4;
+        completed.output_json = Some(r#"{"ok":true}"#.into());
+        completed.output_hash = Some("sha256:beef".into());
+        completed.started_at_ms = None;
+        completed.ended_at_ms = Some(1_700_000_002_000);
+        store.upsert_step_checkpoint(&completed).unwrap();
+        let listed = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(
+            listed[0].attempt_count, 4,
+            "terminal upsert overwrites attempt_count from Running default"
+        );
+        // started_at preserved via COALESCE (terminal upsert passed None).
+        assert_eq!(listed[0].started_at_ms, Some(1_700_000_000_000));
     }
 
     // ── 0.3-S10: atomic skip-if-in-flight ──

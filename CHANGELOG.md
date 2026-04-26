@@ -6,6 +6,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`step_checkpoints.attempt_count` column** (sprint `0.3-S11`).
+  Tracks the number of attempts each step took to reach its terminal
+  state — `1` for first-try success or single-attempt failure;
+  `>1` when the retry policy fired (sprint `0.3-S5`). Operational
+  only — wall-clock-keyed (depends on whether transient failures
+  happened); never feeds an audit hash. Surfaced on `StepResult`,
+  `StepCheckpoint`, and persisted in the SQL store. **First real
+  schema migration**: bumps `SCHEMA_VERSION` to `2`; existing v1
+  databases are migrated additively via `ALTER TABLE ADD COLUMN`
+  with `DEFAULT 1` (no rewrite, instant). The migration runner is
+  idempotent — fresh databases (where the canonical creation script
+  already includes the column) skip the ALTER.
+- New library API:
+  - `RetryPolicy`-aware `retry_with_backoff` now returns
+    `Result<(T, u32), (E, u32)>` so callers can persist the actual
+    attempt count alongside success or failure.
+  - `compile_and_run_step_with_retry` returns `(Value, u32)` /
+    `(WorkflowRunError, u32)` — same change in the runner-level
+    wrapper.
+  - `StepResult.attempt_count: u32` (defaults to 1 for back-compat
+    on older serialized JSON).
+  - `StepCheckpoint.attempt_count: u32` matches the SQL column.
+  - `persistence::SCHEMA_V1_TO_V2_SQL` and
+    `persistence::column_exists` helpers exposed within the crate.
+
 ### Fixed
 
 - **`--skip-if-running` race window closed** (sprint `0.3-S10`,
