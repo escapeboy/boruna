@@ -8,6 +8,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Prometheus metrics export CLI** (sprint `0.4-S12`). New
+  `boruna metrics export --data-dir <DIR>` command reads the
+  persistent run store and writes Prometheus text format to stdout.
+  Operators integrate via cron + `node_exporter`'s textfile
+  collector — the canonical Prometheus pattern for batch tools:
+  ```
+  */30 * * * * boruna metrics export --data-dir /var/lib/boruna \
+                  > /var/lib/node_exporter/textfile_collector/boruna.prom
+  ```
+  Architectural decision documented in
+  `docs/design-prometheus-metrics.md`: CLI-pulled (not embedded HTTP)
+  to align with Boruna's CLI-only philosophy locked in `0.3-S15`
+  (BYOH webhook pattern). No new long-running daemon process.
+- Three metric families:
+  - `boruna_workflow_runs_total{workflow,status}` — counter of runs
+    by terminal/transient status.
+  - `boruna_workflow_runs_in_flight{workflow}` — gauge of `running`
+    or `paused` runs.
+  - `boruna_workflow_step_completions_total{workflow,step,status}` —
+    counter of step terminal transitions (`completed` / `failed`).
+- New `boruna_orchestrator::metrics` module with `compute_snapshot`,
+  `format_prometheus`, and `export` public entries. The snapshot is
+  pure data so future exporters (JSON dashboard endpoint, etc.) can
+  reuse it without re-querying the store.
+- 8 unit tests covering: empty store emits HELP+TYPE only,
+  aggregation by workflow/status, in-flight counting, terminal
+  step transitions only (no Pending/Running noise), output is
+  valid Prometheus textfile format with HELP/TYPE preceding data,
+  determinism (BTreeMap iteration locked), label escaping
+  (backslashes, quotes, newlines per the exposition spec),
+  end-to-end realistic run set.
+
+#### Counter semantics caveat
+
+Counters are computed from current store state at sample time, not
+maintained as deltas. If old runs are pruned from the DB, the
+`_total` will decrease — Prometheus normally treats this as a
+counter reset and handles it gracefully via `rate()`. Operators
+running frequent pruning should be aware of this contract.
+
 - **Full lifecycle audit events** (sprint `0.4-S11`). Closes the
   audit theme for 0.4.0. The audit chain now captures the complete
   run lifecycle, not just operator decisions:
