@@ -116,6 +116,40 @@ The same pattern works for any HTTP-API LLM provider:
 
 For multi-provider routing, your handler can switch on a `model` argument (passed as `args[1]`) or on a thread-local context.
 
+### `LlmRouterHandler` — built-in multi-provider dispatch (sprint `0.4-S13`)
+
+If you have multiple providers wired in (OpenAI + Anthropic + a local Ollama, say) and don't want to write your own dispatch logic, Boruna ships a `LlmRouterHandler` in `boruna-vm::capability_gateway`. It takes a registry of provider handlers keyed by name and dispatches each `Capability::LlmCall` based on a `provider/model` prefix in `args[1]`:
+
+```rust
+use std::collections::BTreeMap;
+use boruna_vm::capability_gateway::{
+    CapabilityHandler, LlmRouterHandler, MockHandler,
+};
+
+let mut providers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
+providers.insert("openai".into(), Box::new(my_openai_handler));
+providers.insert("anthropic".into(), Box::new(my_anthropic_handler));
+providers.insert("ollama".into(), Box::new(my_ollama_handler));
+
+// Non-LLM calls pass through to the fallback (typically MockHandler
+// in tests; in production you'd plug a HttpHandler etc).
+let router = LlmRouterHandler::new(providers, Box::new(MockHandler));
+
+// Pass `router` into `CapabilityGateway::with_handler` like any
+// other CapabilityHandler.
+```
+
+`.ax` callers then write:
+
+```
+let response = llm_call("Summarize:", "openai/gpt-4")
+let response2 = llm_call("Translate:", "anthropic/claude-3-5-sonnet-20241022")
+```
+
+The full model string (including the `provider/` prefix) is forwarded to the provider's handler unchanged, so providers can use the prefix internally (e.g. for billing tags).
+
+The router does not impose provider compatibility commitments on core — it's pure routing logic. You still bring your own per-provider handler implementation. `boruna-vm` ships zero provider HTTP code.
+
 ## Determinism considerations
 
 LLM calls are inherently non-deterministic at the model layer (sampling temperature, randomness, model version drift). Three things keep Boruna's determinism contract intact even with non-deterministic handlers:
