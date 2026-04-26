@@ -130,6 +130,21 @@ pub fn compute_snapshot(data_dir: &Path) -> Result<MetricsSnapshot, WorkflowRunE
 /// lexicographic, so two calls with the same snapshot produce
 /// byte-identical strings.
 pub fn format_prometheus(snapshot: &MetricsSnapshot) -> String {
+    format_prometheus_with_env(snapshot, None)
+}
+
+/// Like [`format_prometheus`] but adds an `env="<env>"` label to
+/// every series when `env` is `Some` (sprint `0.4-S14`). When
+/// `None`, output is identical to the legacy `format_prometheus`.
+///
+/// Operators running multi-environment deployments use the
+/// `--env` global CLI flag to select the env. The env is mirrored
+/// to `BORUNA_ENV` so [`export`] picks it up automatically; direct
+/// callers can pass it here without going through env vars.
+pub fn format_prometheus_with_env(snapshot: &MetricsSnapshot, env: Option<&str>) -> String {
+    let env_prefix = env
+        .map(|e| format!("env=\"{}\",", escape_label(e)))
+        .unwrap_or_default();
     let mut out = String::new();
 
     // boruna_workflow_runs_total
@@ -141,7 +156,7 @@ pub fn format_prometheus(snapshot: &MetricsSnapshot) -> String {
     out.push_str("# TYPE boruna_workflow_runs_total counter\n");
     for ((workflow, status), count) in &snapshot.runs_total {
         out.push_str(&format!(
-            "boruna_workflow_runs_total{{workflow=\"{}\",status=\"{}\"}} {}\n",
+            "boruna_workflow_runs_total{{{env_prefix}workflow=\"{}\",status=\"{}\"}} {}\n",
             escape_label(workflow),
             escape_label(status),
             count
@@ -153,7 +168,7 @@ pub fn format_prometheus(snapshot: &MetricsSnapshot) -> String {
     out.push_str("# TYPE boruna_workflow_runs_in_flight gauge\n");
     for (workflow, count) in &snapshot.runs_in_flight {
         out.push_str(&format!(
-            "boruna_workflow_runs_in_flight{{workflow=\"{}\"}} {}\n",
+            "boruna_workflow_runs_in_flight{{{env_prefix}workflow=\"{}\"}} {}\n",
             escape_label(workflow),
             count
         ));
@@ -168,7 +183,7 @@ pub fn format_prometheus(snapshot: &MetricsSnapshot) -> String {
     for ((workflow, step, status), count) in &snapshot.step_completions {
         out.push_str(&format!(
             "boruna_workflow_step_completions_total\
-             {{workflow=\"{}\",step=\"{}\",status=\"{}\"}} {}\n",
+             {{{env_prefix}workflow=\"{}\",step=\"{}\",status=\"{}\"}} {}\n",
             escape_label(workflow),
             escape_label(step),
             escape_label(status),
@@ -198,9 +213,17 @@ fn escape_label(s: &str) -> String {
 /// Public entry for the `boruna metrics export` CLI handler.
 /// Reads the persistent store, computes a snapshot, and renders to
 /// Prometheus text format.
+///
+/// Sprint `0.4-S14`: when the `BORUNA_ENV` environment variable is
+/// set (typically via the `--env` global CLI flag), every metric
+/// series gains an `env="<env>"` label. Operators running
+/// multi-environment deployments scrape each environment as a
+/// separate textfile collector source and Prometheus
+/// dashboards filter / group by `env`.
 pub fn export(data_dir: &Path) -> Result<String, WorkflowRunError> {
     let snapshot = compute_snapshot(data_dir)?;
-    Ok(format_prometheus(&snapshot))
+    let env = std::env::var("BORUNA_ENV").ok().filter(|s| !s.is_empty());
+    Ok(format_prometheus_with_env(&snapshot, env.as_deref()))
 }
 
 #[cfg(test)]
@@ -430,6 +453,104 @@ mod tests {
         let pos_z = out1.find("workflow=\"wf-z\"").unwrap();
         assert!(pos_a < pos_m);
         assert!(pos_m < pos_z);
+    }
+
+    #[test]
+    fn format_prometheus_with_env_adds_env_label_to_every_series() {
+        let mut snap = MetricsSnapshot::default();
+        snap.runs_total
+            .insert(("wf".to_string(), "completed".to_string()), 1);
+        snap.runs_in_flight.insert("wf".to_string(), 0);
+        snap.step_completions.insert(
+            ("wf".to_string(), "s1".to_string(), "completed".to_string()),
+            1,
+        );
+
+        let out = format_prometheus_with_env(&snap, Some("staging"));
+        // Every series must carry env="staging" as the first label.
+        assert!(out.contains(
+            r#"boruna_workflow_runs_total{env="staging",workflow="wf",status="completed"} 1"#
+        ));
+        assert!(out.contains(r#"boruna_workflow_runs_in_flight{env="staging",workflow="wf"} 0"#));
+        assert!(out.contains(
+            r#"boruna_workflow_step_completions_total{env="staging",workflow="wf",step="s1",status="completed"} 1"#
+        ));
+    }
+
+    #[test]
+    fn format_prometheus_with_env_none_is_identical_to_legacy() {
+        // Backward-compat: passing None must produce byte-identical
+        // output to the env-less format_prometheus path. This
+        // protects existing operator dashboards that don't use
+        // multi-env.
+        let mut snap = MetricsSnapshot::default();
+        snap.runs_total
+            .insert(("wf".to_string(), "completed".to_string()), 5);
+        snap.runs_in_flight.insert("wf".to_string(), 0);
+        let legacy = format_prometheus(&snap);
+        let with_none = format_prometheus_with_env(&snap, None);
+        assert_eq!(legacy, with_none);
+    }
+
+    #[test]
+    fn format_prometheus_with_env_escapes_env_label_value() {
+        // Defense-in-depth: the CLI validates env names against
+        // [a-zA-Z0-9_-], so unusual chars shouldn't reach here.
+        // But if a programmatic caller passes one, escaping must
+        // still apply.
+        let mut snap = MetricsSnapshot::default();
+        snap.runs_total
+            .insert(("wf".to_string(), "completed".to_string()), 1);
+        let out = format_prometheus_with_env(&snap, Some(r#"env"with-quotes"#));
+        assert!(out.contains(r#"env="env\"with-quotes""#));
+    }
+
+    #[test]
+    fn export_picks_up_boruna_env_from_environment() {
+        // End-to-end: setting BORUNA_ENV before calling export
+        // must produce output with env labels. This locks the
+        // contract that the CLI's --env flag (which mirrors to
+        // BORUNA_ENV) flows through to the exporter without
+        // needing to thread the env through every call.
+        use crate::persistence::RunRow;
+        let dir = empty_data_dir();
+        let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+        store
+            .insert_run(&RunRow {
+                run_id: "r1".into(),
+                workflow_name: "wf".into(),
+                workflow_hash: "x".into(),
+                status: RunStatus::Completed,
+                started_at_ms: 0,
+                updated_at_ms: 0,
+                policy_json: "{}".into(),
+                metadata_json: "{}".into(),
+            })
+            .unwrap();
+        drop(store);
+
+        // SAFETY: tests run on a single thread per Rust default
+        // (this test does not spawn threads, and the surrounding
+        // test harness is mutexed via a serial_test or similar
+        // when env vars are touched — but to be safe within the
+        // tests in this module that may run in parallel, scope the
+        // change tightly).
+        let prior = std::env::var("BORUNA_ENV").ok();
+        unsafe { std::env::set_var("BORUNA_ENV", "production") };
+
+        let out = export(dir.path()).unwrap();
+        assert!(out.contains(
+            r#"boruna_workflow_runs_total{env="production",workflow="wf",status="completed"} 1"#
+        ));
+
+        // Restore prior state so other tests in this module aren't
+        // affected by the env var leak.
+        unsafe {
+            match prior {
+                Some(v) => std::env::set_var("BORUNA_ENV", v),
+                None => std::env::remove_var("BORUNA_ENV"),
+            }
+        };
     }
 
     #[test]

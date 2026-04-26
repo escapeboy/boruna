@@ -24,6 +24,18 @@ mod serve;
     about = "Boruna — deterministic, capability-safe language"
 )]
 struct Cli {
+    /// Environment namespace (sprint 0.4-S14). When set, the
+    /// persistent `--data-dir` is namespaced to `<data-dir>/<env>/`,
+    /// and Prometheus metrics carry an `env="<env>"` label. Use for
+    /// dev/staging/prod separation. Falls back to `BORUNA_ENV` env
+    /// var. When unset, the data dir and metrics are unscoped (the
+    /// pre-0.4-S14 behavior).
+    ///
+    /// Names are restricted to `[a-zA-Z0-9_-]+` (1-64 chars) to
+    /// keep them filesystem-safe and Prometheus-label-safe.
+    #[arg(long, global = true, value_name = "NAME")]
+    env: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -613,6 +625,29 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // 0.4-S14: install the env namespace once at the top of run() so
+    // every downstream call to `resolve_data_dir` and metrics export
+    // sees the same value. The env flag wins over BORUNA_ENV; both
+    // are validated against `[a-zA-Z0-9_-]+` (1–64 chars) to keep
+    // names filesystem-safe and Prometheus-label-safe. An invalid
+    // name produces a typed error rather than silently namespacing
+    // to a name that the persistence layer would later reject.
+    let env_name = match cli.env.as_deref() {
+        Some(s) => Some(s.to_string()),
+        None => std::env::var("BORUNA_ENV").ok().filter(|s| !s.is_empty()),
+    };
+    if let Some(name) = &env_name {
+        validate_env_name(name)?;
+        // Mirror to BORUNA_ENV so downstream code (like the metrics
+        // exporter) can read it via env var. Cleaner than threading
+        // it through every call site.
+        // SAFETY: single-threaded at this point — Cli::parse has
+        // returned and no async tasks are spawned yet (the
+        // telemetry runtime is still in main). Other threads cannot
+        // observe a torn read.
+        unsafe { std::env::set_var("BORUNA_ENV", name) };
+    }
+
     match cli.command {
         Command::Compile { file, output } => {
             let source = fs::read_to_string(&file)?;
@@ -2279,17 +2314,61 @@ fn check_workflow_hash_expectation(
 /// Resolve the persistent `--data-dir` argument with the documented
 /// fallback chain: explicit flag → `BORUNA_DATA_DIR` env var → `./.boruna/data`
 /// in the current working directory.
+///
+/// Sprint 0.4-S14: when `BORUNA_ENV` is set (via the `--env` global
+/// flag or directly in the environment), the resolved path is
+/// further namespaced as `<base>/<env>/`. This lets operators run
+/// the same workflow against different environments without manual
+/// data-dir bookkeeping.
 #[cfg(feature = "persist-sqlite")]
 fn resolve_data_dir(flag: Option<&PathBuf>) -> PathBuf {
-    if let Some(p) = flag {
-        return p.clone();
-    }
-    if let Ok(env) = std::env::var("BORUNA_DATA_DIR") {
+    let base = if let Some(p) = flag {
+        p.clone()
+    } else if let Ok(env) = std::env::var("BORUNA_DATA_DIR") {
         if !env.is_empty() {
-            return PathBuf::from(env);
+            PathBuf::from(env)
+        } else {
+            PathBuf::from("./.boruna/data")
+        }
+    } else {
+        PathBuf::from("./.boruna/data")
+    };
+    if let Ok(env_name) = std::env::var("BORUNA_ENV") {
+        if !env_name.is_empty() {
+            return base.join(env_name);
         }
     }
-    PathBuf::from("./.boruna/data")
+    base
+}
+
+/// Validate an env name is filesystem-safe and Prometheus-label-safe
+/// (sprint 0.4-S14). Allowed: ASCII alphanumerics, `_`, `-`. Length
+/// 1-64. Rejecting unusual characters at the CLI boundary protects
+/// downstream code (no path-traversal via `--env ../../etc/passwd`,
+/// no broken Prom labels via `--env "with spaces"`).
+fn validate_env_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if name.is_empty() {
+        return Err("--env name must not be empty".into());
+    }
+    if name.len() > 64 {
+        return Err(format!(
+            "--env name '{}' exceeds 64-character limit",
+            &name[..64.min(name.len())]
+        )
+        .into());
+    }
+    let invalid: Vec<char> = name
+        .chars()
+        .filter(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-')
+        .collect();
+    if !invalid.is_empty() {
+        return Err(format!(
+            "--env name '{name}' contains invalid characters {invalid:?}; \
+             allowed: ASCII alphanumerics, '_', '-'"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> {
