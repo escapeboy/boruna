@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Power-loss durability for `DataStore::store_output`** (sprint
+  `0.3-S6`, closes H1/C3 deferral from 0.3-S3). After
+  `tempfile::persist`, the parent directory is now opened and
+  fsynced so the rename's directory entry is journaled to stable
+  storage. Without this, POSIX permits the dirent to be lost on
+  power loss even though the file's data blocks were flushed. On
+  macOS uses `fcntl(F_FULLFSYNC)` for both file and directory syncs
+  (review-driven 0.3-S6 finding) — plain `fsync(2)` on Darwin does
+  NOT flush the drive's write cache to media, which would have
+  silently undermined the durability claim on macOS deployments.
+  SQLite, Postgres, and `git` all use F_FULLFSYNC for the same
+  reason. Skipped on Windows (non-production target). NFS / fuse /
+  network FS no longer claimed as covered — docstring downgraded
+  to "use local FS for production durability claims" (review-driven
+  finding: prior NFSv4 claim overstated; mount options + server
+  semantics make the guarantee non-portable).
+
 ### Added
 
 - **Retry policies with exponential backoff** (sprint `0.3-S5`).
