@@ -149,6 +149,10 @@ pub enum StepStatus {
     Completed,
     Failed,
     AwaitingApproval,
+    /// Step is paused waiting for an external event (sprint 0.3-S15).
+    /// Resume after `boruna workflow trigger` to advance with the
+    /// trigger payload as the step's output.
+    AwaitingExternalEvent,
 }
 
 impl StepStatus {
@@ -159,6 +163,7 @@ impl StepStatus {
             StepStatus::Completed => "completed",
             StepStatus::Failed => "failed",
             StepStatus::AwaitingApproval => "awaiting_approval",
+            StepStatus::AwaitingExternalEvent => "awaiting_external_event",
         }
     }
 
@@ -171,6 +176,7 @@ impl StepStatus {
             "completed" => Some(StepStatus::Completed),
             "failed" => Some(StepStatus::Failed),
             "awaiting_approval" => Some(StepStatus::AwaitingApproval),
+            "awaiting_external_event" => Some(StepStatus::AwaitingExternalEvent),
             _ => None,
         }
     }
