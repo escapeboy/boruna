@@ -34,6 +34,12 @@ impl TypeChecker {
         functions.insert("try_parse_int".to_string(), 1);
         functions.insert("str_contains".to_string(), 2);
         functions.insert("str_starts_with".to_string(), 2);
+        // 0.3-S14: read a workflow step's resolved input value at
+        // runtime. Compiles to `Op::CapCall(StepInput, 1)` which
+        // dispatches through the gateway's StepInputHandler. Returns
+        // the JSON-encoded upstream output as a String. Steps that
+        // need typed access parse the JSON.
+        functions.insert("step_input".to_string(), 1);
 
         TypeChecker { types, functions }
     }

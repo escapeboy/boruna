@@ -1107,7 +1107,22 @@ impl WorkflowRunner {
                 // Running state on disk; the post-join loop is
                 // responsible for transitioning EACH ONE to a terminal
                 // state.
-                let mut dispatches: Vec<(String, StepDef, String)> = Vec::new();
+                //
+                // 0.3-S14: also resolve each step's inputs from the
+                // coordinator-side data store and pass into the
+                // worker. The worker holds no DataStore; inputs are
+                // a value-typed snapshot taken at dispatch time.
+                // Pass 1 already proved each step's inputs resolve,
+                // so re-resolving here is guaranteed to succeed
+                // (same coordinator, no concurrent mutation between
+                // passes).
+                #[allow(clippy::type_complexity)]
+                let mut dispatches: Vec<(
+                    String,
+                    StepDef,
+                    String,
+                    BTreeMap<String, boruna_bytecode::Value>,
+                )> = Vec::new();
                 for &step_id in chunk {
                     let step_def = def.steps[step_id].clone();
                     let started_at_ms = now_unix_ms();
@@ -1118,7 +1133,15 @@ impl WorkflowRunner {
                         StepKind::Source { source } => source.clone(),
                         _ => unreachable!(),
                     };
-                    dispatches.push((step_id.to_string(), step_def, source_path));
+                    let resolved_inputs = data_store
+                        .resolve_step_inputs(&step_def.inputs)
+                        .map_err(|e| {
+                            WorkflowRunError::Internal(format!(
+                                "input resolution drift between pass 1 and pass 2 \
+                                 for step '{step_id}': {e}"
+                            ))
+                        })?;
+                    dispatches.push((step_id.to_string(), step_def, source_path, resolved_inputs));
                 }
 
                 // Spawn workers, tracking step_id alongside each
@@ -1129,7 +1152,7 @@ impl WorkflowRunner {
                 let live = options.live;
                 let handles: Vec<(String, StepDef, std::thread::JoinHandle<_>)> = dispatches
                     .into_iter()
-                    .map(|(step_id, step_def, source)| {
+                    .map(|(step_id, step_def, source, resolved_inputs)| {
                         let workflow_dir = workflow_dir.clone();
                         let policy = policy.clone();
                         let id_for_thread = step_id.clone();
@@ -1150,6 +1173,7 @@ impl WorkflowRunner {
                                 &workflow_dir,
                                 &policy,
                                 live,
+                                resolved_inputs,
                             );
                             (result, start.elapsed().as_millis() as u64)
                         });
@@ -1529,12 +1553,13 @@ impl WorkflowRunner {
         data_store: &mut DataStore,
         live: bool,
     ) -> Result<StepResult, (WorkflowRunError, u32)> {
-        // Resolve inputs (validated; the .ax step is self-contained
-        // today, but we still verify upstream outputs exist so a
-        // misconfigured workflow surfaces a useful error here rather
-        // than a downstream NPE).
-        // Input-resolution failures count as a single attempt.
-        let _resolved_inputs = data_store
+        // 0.3-S14: resolve inputs ONCE up front, then pass the
+        // resolved map to the compute path. The .ax step's
+        // `step_input("name")` calls dispatch through the gateway's
+        // StepInputHandler which serves from this map. Input-
+        // resolution failures count as a single attempt (we can't
+        // retry a missing upstream output).
+        let resolved_inputs = data_store
             .resolve_step_inputs(&step_def.inputs)
             .map_err(|e| (WorkflowRunError::StepFailed(step_id.to_string(), e), 1))?;
 
@@ -1553,6 +1578,7 @@ impl WorkflowRunner {
             workflow_dir,
             policy,
             live,
+            resolved_inputs,
         )?;
 
         let output_hash = DataStore::hash_value(&value);
@@ -1599,9 +1625,22 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         live: bool,
+        resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
     ) -> Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)> {
         retry_with_backoff(step_def.retry.as_ref(), step_id, |_attempt| {
-            Self::compile_and_run_step(step_id, source, step_def, workflow_dir, policy, live)
+            // Each retry attempt gets its own clone of the inputs
+            // (the underlying compile+run path takes ownership).
+            // Inputs are bounded — typically a handful of small
+            // strings — so the clone cost is negligible.
+            Self::compile_and_run_step(
+                step_id,
+                source,
+                step_def,
+                workflow_dir,
+                policy,
+                live,
+                resolved_inputs.clone(),
+            )
         })
     }
 
@@ -1620,6 +1659,7 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         live: bool,
+        resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
     ) -> Result<boruna_bytecode::Value, WorkflowRunError> {
         let source_path = Path::new(workflow_dir).join(source);
         let source_code = std::fs::read_to_string(&source_path).map_err(|e| {
@@ -1638,25 +1678,34 @@ impl WorkflowRunner {
         // Each call builds its own gateway. In the concurrent path,
         // workers each construct their own gateway/VM — no shared
         // gateway state.
-        let gateway = if live {
+        //
+        // 0.3-S14: wrap the chosen handler in `StepInputHandler` so
+        // `step_input("name")` calls in the .ax source dispatch to
+        // the runner-resolved upstream outputs. The wrapper
+        // delegates non-StepInput calls to the inner handler, so
+        // this composes with both the mock handler and (under
+        // `--live`) the real HTTP handler.
+        let inner_handler: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> = if live {
             #[cfg(feature = "http")]
             {
                 let net_policy = step_policy.net_policy.clone().unwrap_or_default();
-                CapabilityGateway::with_handler(
-                    step_policy,
-                    Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy)),
-                )
+                Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy))
             }
             #[cfg(not(feature = "http"))]
             {
                 eprintln!(
                     "warning: --live requires the `http` feature; falling back to mock handler"
                 );
-                CapabilityGateway::new(step_policy)
+                Box::new(boruna_vm::capability_gateway::MockHandler)
             }
         } else {
-            CapabilityGateway::new(step_policy)
+            Box::new(boruna_vm::capability_gateway::MockHandler)
         };
+        let handler = Box::new(boruna_vm::capability_gateway::StepInputHandler::new(
+            resolved_inputs,
+            inner_handler,
+        ));
+        let gateway = CapabilityGateway::with_handler(step_policy, handler);
         let mut vm = Vm::new(module, gateway);
         vm.run().map_err(|e| {
             WorkflowRunError::StepFailed(step_id.to_string(), format!("runtime error: {e}"))
@@ -1677,6 +1726,28 @@ impl WorkflowRunner {
                         }
                     }
                 }
+                // 0.3-S14: `step.input` is structurally a
+                // workflow-internal capability — it reads data the
+                // workflow itself produced, not an external side
+                // effect. Auto-allow when the operator hasn't
+                // expressed a contrary policy, so steps don't need
+                // to redundantly declare it in
+                // `workflow.json::capabilities`.
+                //
+                // `entry().or_insert()` PRESERVES an operator's
+                // explicit `step.input` rule (allow=false to deny,
+                // budget=N to cap). The auto-allow only fires when
+                // the policy is silent on `step.input`. Operators
+                // who want to deny step.input on a hardened
+                // workflow (e.g. an air-gapped batch) can do so via
+                // the policy file. Reviewed 0.3-S14.
+                policy
+                    .rules
+                    .entry("step.input".to_string())
+                    .or_insert(PolicyRule {
+                        allow: true,
+                        budget: u64::MAX,
+                    });
                 policy
             }
             None => Policy::deny_all(),
@@ -4663,6 +4734,316 @@ mod tests {
                 detail.metadata_parse_error.is_none(),
                 "non-corrupt metadata must yield None"
             );
+        }
+    }
+
+    // ── 0.3-S14: step_input builtin (output piping) ──
+
+    mod step_input {
+        use super::*;
+
+        fn upstream_downstream_workflow() -> (WorkflowDef, tempfile::TempDir) {
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            // Upstream produces a string. Downstream calls
+            // step_input("msg") and returns whatever it received.
+            std::fs::write(
+                steps_dir.join("upstream.ax"),
+                "fn main() -> String { \"hello-from-upstream\" }",
+            )
+            .unwrap();
+            std::fs::write(
+                steps_dir.join("downstream.ax"),
+                "fn main() -> String {\n    let received: String = step_input(\"msg\")\n    received\n}",
+            )
+            .unwrap();
+            let upstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/upstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            let mut downstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/downstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec!["upstream".into()],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            downstream
+                .inputs
+                .insert("msg".into(), "upstream.result".into());
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "step-input-pipe".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("upstream".into(), upstream),
+                    ("downstream".into(), downstream),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            (def, dir)
+        }
+
+        #[test]
+        fn step_input_pipes_upstream_output_to_downstream() {
+            // Headline test: a downstream step's `step_input("msg")`
+            // call returns the JSON-encoded upstream output. The
+            // downstream's final Value carries that JSON string.
+            let (def, wf_dir) = upstream_downstream_workflow();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let result = WorkflowRunner::run(&def, &options).unwrap();
+            assert_eq!(result.status, WorkflowStatus::Completed);
+            assert_eq!(
+                result.step_results["upstream"].status,
+                StepStatus::Completed
+            );
+            assert_eq!(
+                result.step_results["downstream"].status,
+                StepStatus::Completed
+            );
+            // Downstream's output_hash is bit-stable — it's
+            // hash_value(Value::String("{\"String\":\"hello-from-upstream\"}"))
+            // (the JSON-encoded upstream value).
+            let upstream_hash = result.step_results["upstream"]
+                .output_hash
+                .as_deref()
+                .unwrap();
+            let downstream_hash = result.step_results["downstream"]
+                .output_hash
+                .as_deref()
+                .unwrap();
+            // The two hashes differ because downstream wraps the
+            // upstream JSON in another String. Both must be present
+            // and non-empty.
+            assert!(!upstream_hash.is_empty());
+            assert!(!downstream_hash.is_empty());
+            assert_ne!(upstream_hash, downstream_hash);
+        }
+
+        #[test]
+        fn step_input_unknown_name_returns_typed_error() {
+            // 0.3-S14 review-driven regression: a .ax step that
+            // calls `step_input("undeclared_name")` (no matching
+            // entry in workflow.json::inputs) MUST surface a typed
+            // runtime error, not silently return empty data and
+            // corrupt the downstream output. The runner's
+            // pre-validation only covers DECLARED names; the
+            // gateway's StepInputHandler is the catch-all.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(
+                steps_dir.join("upstream.ax"),
+                "fn main() -> String { \"hi\" }",
+            )
+            .unwrap();
+            // Downstream calls step_input with an UNDECLARED name.
+            std::fs::write(
+                steps_dir.join("downstream.ax"),
+                "fn main() -> String {\n    let x: String = step_input(\"missing\")\n    x\n}",
+            )
+            .unwrap();
+            let upstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/upstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            let mut downstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/downstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec!["upstream".into()],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            // Declare "msg" but the .ax step asks for "missing" —
+            // pre-validation passes, gateway catches the mismatch.
+            downstream
+                .inputs
+                .insert("msg".into(), "upstream.result".into());
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "step-input-undeclared".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("upstream".into(), upstream),
+                    ("downstream".into(), downstream),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let result = WorkflowRunner::run(&def, &options).unwrap();
+            assert_eq!(result.status, WorkflowStatus::Failed);
+            // Downstream failed; error message points at the
+            // unknown name with the declared list for triage.
+            let err = result.step_results["downstream"].error.as_deref().unwrap();
+            assert!(
+                err.contains("step.input: unknown name 'missing'"),
+                "expected unknown-name error; got: {err}"
+            );
+            assert!(
+                err.contains("declared inputs:"),
+                "error should hint at the declared list; got: {err}"
+            );
+        }
+
+        #[test]
+        fn operator_can_deny_step_input_via_policy() {
+            // 0.3-S14 review-driven regression: build_step_policy's
+            // auto-allow uses .entry().or_insert() so an operator's
+            // explicit deny rule is preserved. Verify that a workflow
+            // with an explicit step.input deny in its policy fails
+            // any step that calls step_input.
+            let dir = tempfile::tempdir().unwrap();
+            let steps_dir = dir.path().join("steps");
+            std::fs::create_dir_all(&steps_dir).unwrap();
+            std::fs::write(
+                steps_dir.join("upstream.ax"),
+                "fn main() -> String { \"hi\" }",
+            )
+            .unwrap();
+            std::fs::write(
+                steps_dir.join("downstream.ax"),
+                "fn main() -> String {\n    let x: String = step_input(\"msg\")\n    x\n}",
+            )
+            .unwrap();
+            let upstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/upstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            let mut downstream = StepDef {
+                kind: StepKind::Source {
+                    source: "steps/downstream.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec!["upstream".into()],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            };
+            downstream
+                .inputs
+                .insert("msg".into(), "upstream.result".into());
+            let def = WorkflowDef {
+                schema_version: 1,
+                name: "step-input-denied".into(),
+                version: "1.0.0".into(),
+                description: String::new(),
+                steps: BTreeMap::from([
+                    ("upstream".into(), upstream),
+                    ("downstream".into(), downstream),
+                ]),
+                edges: vec![],
+            };
+            let json = serde_json::to_string_pretty(&def).unwrap();
+            std::fs::write(dir.path().join("workflow.json"), &json).unwrap();
+
+            // Build a policy that explicitly DENIES step.input.
+            // entry().or_insert() in build_step_policy must preserve
+            // this — the auto-allow only fires for absent rules.
+            let mut policy = Policy::allow_all();
+            policy.rules.insert(
+                "step.input".to_string(),
+                PolicyRule {
+                    allow: false,
+                    budget: 0,
+                },
+            );
+            let options = RunOptions {
+                policy: Some(policy),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+            };
+            let result = WorkflowRunner::run(&def, &options).unwrap();
+            assert_eq!(
+                result.status,
+                WorkflowStatus::Failed,
+                "explicit step.input deny must be preserved"
+            );
+            assert_eq!(result.step_results["downstream"].status, StepStatus::Failed);
+        }
+
+        #[test]
+        #[cfg(feature = "persist-sqlite")]
+        fn step_input_works_under_concurrent_execution() {
+            // Same pipe, but at concurrency=4. Determinism contract:
+            // the per-step output_hash is bit-identical to the
+            // sequential run.
+            let (def, wf_dir) = upstream_downstream_workflow();
+            let make_options = |c| RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: c,
+            };
+            let dir1 = tempfile::tempdir().unwrap();
+            let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
+            let dir4 = tempfile::tempdir().unwrap();
+            let r4 = WorkflowRunner::run_persistent(&def, &make_options(4), dir4.path()).unwrap();
+            assert_eq!(r1.status, WorkflowStatus::Completed);
+            assert_eq!(r4.status, WorkflowStatus::Completed);
+            for step_id in ["upstream", "downstream"] {
+                assert_eq!(
+                    r1.step_results[step_id].output_hash, r4.step_results[step_id].output_hash,
+                    "step '{step_id}' hash differs across concurrency levels"
+                );
+            }
         }
     }
 }
