@@ -108,6 +108,28 @@ enum Command {
     /// Capability surface inspection (versioned identity for caching).
     #[command(subcommand)]
     Capability(CapabilityCommand),
+    /// Prometheus metrics export from the persistent run store
+    /// (sprint 0.4-S12). See `docs/design-prometheus-metrics.md`
+    /// for the architectural decision and operator integration
+    /// pattern (cron + node_exporter's textfile collector).
+    #[command(subcommand)]
+    Metrics(MetricsCommand),
+}
+
+#[derive(Subcommand)]
+enum MetricsCommand {
+    /// Export current metrics in Prometheus text format to stdout.
+    /// Pipe to a `.prom` file under `node_exporter`'s textfile
+    /// collector directory:
+    ///
+    ///   `boruna metrics export --data-dir /var/lib/boruna \
+    ///     > /var/lib/node_exporter/textfile_collector/boruna.prom`
+    Export {
+        /// Persistent data directory holding `runs.db`. Same fallback
+        /// chain as `boruna workflow run` / `resume`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -738,6 +760,33 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Workflow(wf) => run_workflow(wf)?,
         Command::Evidence(ev) => run_evidence(ev)?,
         Command::Capability(cap) => run_capability(cap)?,
+        Command::Metrics(m) => run_metrics(m)?,
+    }
+    Ok(())
+}
+
+fn run_metrics(cmd: MetricsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        MetricsCommand::Export { data_dir } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let text =
+                    boruna_orchestrator::metrics::export(&resolved).map_err(|e| format!("{e}"))?;
+                // Write directly to stdout — no trailing newline
+                // adjustment; format_prometheus already terminates
+                // each line with \n. Operators redirect this to a
+                // .prom file in node_exporter's textfile collector
+                // directory.
+                use std::io::Write;
+                std::io::stdout().write_all(text.as_bytes())?;
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = data_dir;
+                return Err("`metrics export` requires the `persist-sqlite` feature".into());
+            }
+        }
     }
     Ok(())
 }

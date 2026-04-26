@@ -3,6 +3,8 @@ pub mod audit;
 pub mod cli;
 pub mod conflict;
 pub mod engine;
+#[cfg(feature = "persist-sqlite")]
+pub mod metrics;
 pub mod patch;
 #[cfg(feature = "persist-sqlite")]
 pub mod persistence;
