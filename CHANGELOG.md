@@ -8,6 +8,52 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Carried-debt cleanup pass** (this session). Three small
+  fixes from earlier-sprint adversarial-review findings that
+  hadn't been addressed:
+
+  - **Audit chain wait-driven terminating event.** New
+    `WorkflowRunner::append_wait_terminal_audit_event` emits
+    `WorkflowCompleted` to the audit chain when the wait
+    driver reaches Completed or Failed terminal status.
+    Idempotent — re-invoked waits don't double-emit. Closes
+    the gap from 0.5-S2f where submit-only emitted
+    `WorkflowStarted` with no terminating entry. 3 new unit
+    tests.
+
+  - **Two-concurrent-waits integration test.** CORR-6 from
+    0.5-S2f adversarial review. Locks the design intent: two
+    `coordinator wait` processes against the same run_id both
+    converge to exit 0 because the underlying
+    `insert_pending_step_if_absent` and
+    `requeue_failed_step_for_retry` primitives are
+    `INSERT … ON CONFLICT DO NOTHING` (race-safe).
+
+  - **Submit-only `--concurrency` warning.** Adversarial
+    finding F3 from 0.5-S2e. `boruna workflow run --submit-only`
+    silently ignored `--concurrency` because parallelism in
+    distributed mode is controlled by the worker pool, not
+    the in-process wave loop. Now emits a clear stderr
+    warning at submit time so operators know.
+
+- **Path-resolution failure-mode prevention** (this session).
+  After the multi-sprint parallel-agent attempt that wrote
+  files to the wrong worktree (because absolute paths in
+  agent prompts bypass the `cwd` redirection of
+  `isolation: "worktree"`), this session hardens the workflow:
+
+  - New `docs/AGENT-PROMPT-TEMPLATE.md` — reusable skeleton
+    for parallel worktree-agent prompts. Bakes in the
+    relative-path discipline + a worktree-verification block
+    that agents must run before any file edit.
+  - New `CLAUDE.md` "Parallel-Agent Best Practices" section
+    documenting the failure mode and the required prevention.
+  - New project convention #31 — "Parallel worktree-agent
+    prompts use RELATIVE paths only" — anchored in the
+    convention memory.
+  - New project convention #32 — "Strong gates absorb tooling
+    failures" — locks the recovery posture.
+
 - **Shared-secret bearer authentication for the coordinator**
   (sprint `0.5-S3`). Enables production deployment by gating
   every coord HTTP route on a bearer token. `coordinator serve

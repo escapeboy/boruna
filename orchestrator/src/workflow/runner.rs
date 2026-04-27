@@ -418,11 +418,22 @@ impl WorkflowRunner {
             // workers) picks up the Pending steps via existing
             // mechanisms.
             //
-            // Wave advancement (mark next wave's steps Pending
-            // when this wave completes) is NOT done by this
-            // path — operators must monitor the run via the
-            // dashboard or `workflow show`. Multi-wave automatic
-            // advancement is a future sprint.
+            // Adversarial-review F3 from 0.5-S2e: warn explicitly
+            // when `--concurrency` is set on submit-only runs.
+            // Concurrency is enforced inside the in-process wave
+            // loop (`execute_steps_concurrent`), which submit-only
+            // never invokes — the coordinator's worker pool
+            // controls parallelism in distributed mode. Silent
+            // ignore was the original posture; this surfaces it.
+            if options.concurrency > 1 {
+                eprintln!(
+                    "[WARNING] submit-only mode ignores --concurrency={} — \
+                     parallelism in distributed mode is controlled by the \
+                     number of workers connected to the coordinator, not by \
+                     this flag.",
+                    options.concurrency
+                );
+            }
             Self::insert_initial_wave_pending_checkpoints(def, &store, &run_id)?;
             // Best-effort WorkflowStarted audit event, matching
             // execute_after_insert's behavior so the audit chain
@@ -879,6 +890,81 @@ impl WorkflowRunner {
             run_status,
             all_step_statuses: status_map,
         })
+    }
+
+    /// Append a `WorkflowCompleted` audit event to the run's
+    /// hash-chained `metadata.audit_log` when a wait-driven run
+    /// reaches a terminal status. Sprint follow-up to `0.5-S2f`:
+    /// the wait driver's terminating event was missing from the
+    /// audit chain, leaving distributed runs with a `WorkflowStarted`
+    /// genesis but no closing entry.
+    ///
+    /// **Idempotent.** If the chain already contains a
+    /// `WorkflowCompleted` event (e.g. the wait driver was
+    /// re-invoked against an already-Completed run, or the run
+    /// originally finished in-process and a wait was attached
+    /// later), this is a no-op and returns `Ok(())`.
+    ///
+    /// **Result hash convention** mirrors the in-process runner
+    /// (`runner.rs` line ~1041 / ~1593): the `result_hash` is the
+    /// `output_hash` of the LAST Completed step (sorted by
+    /// step_id, the same iteration order as
+    /// `list_step_checkpoints`). When no step has a hash (run
+    /// failed before any step completed), falls back to a
+    /// 64-zero hex string. `total_duration_ms` is `0` because the
+    /// wait driver does not track per-run wall-clock duration —
+    /// operators read `runs.started_at` / `updated_at` columns
+    /// for that, both of which are operational-only per
+    /// project convention §15.
+    ///
+    /// **Best-effort failure mode.** Same posture as the in-process
+    /// `WorkflowCompleted` emit: callers in the wait driver SHOULD
+    /// log + continue rather than failing the run if the CAS budget
+    /// exhausts. A missed terminating event is operationally
+    /// annoying but not a correctness failure; the existing chain
+    /// entries remain valid.
+    #[cfg(feature = "persist-sqlite")]
+    pub fn append_wait_terminal_audit_event(
+        store: &RunCheckpointStore,
+        run_id: &str,
+    ) -> Result<(), WorkflowRunError> {
+        let metadata_json = store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).map_err(|e| {
+            WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+        })?;
+        // Idempotent: skip if a WorkflowCompleted entry already
+        // exists in the chain. Two concurrent wait clients reaching
+        // terminal at the same moment would otherwise emit two
+        // entries; this guard collapses to one.
+        let already_terminal = metadata.audit_log.iter().any(|entry| {
+            matches!(
+                entry.event,
+                crate::audit::AuditEvent::WorkflowCompleted { .. }
+            )
+        });
+        if already_terminal {
+            return Ok(());
+        }
+        let checkpoints = store
+            .list_step_checkpoints(run_id)
+            .map_err(WorkflowRunError::from)?;
+        let result_hash = checkpoints
+            .iter()
+            .filter(|c| matches!(c.status, PersistStepStatus::Completed))
+            .next_back()
+            .and_then(|c| c.output_hash.clone())
+            .unwrap_or_else(|| "0".repeat(64));
+        append_audit_event(
+            store,
+            run_id,
+            crate::audit::AuditEvent::WorkflowCompleted {
+                result_hash,
+                total_duration_ms: 0,
+            },
+        )
     }
 
     /// Internal shared body for `run_persistent` and
@@ -4965,6 +5051,151 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("workflow_def"), "msg: {msg}");
         assert!(msg.contains("submit-only"), "msg: {msg}");
+    }
+
+    #[test]
+    fn submit_only_with_concurrency_gt_one_still_succeeds() {
+        // Regression: the --concurrency warning at submit time
+        // (adversarial-review F3 from 0.5-S2e) must NOT cause
+        // the run to fail. The warning is informational; the
+        // submit-only path proceeds normally.
+        let (def, dir) = make_workflow_with_steps(&[("step1", "fn main() -> Int { 7 }")]);
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 4, // triggers the warning
+            submit_only: true,
+        };
+        let result =
+            WorkflowRunner::run_persistent(&def, &options, data_dir.path()).expect("submit ok");
+        assert_eq!(result.status, WorkflowStatus::Running);
+        assert!(result.step_results.is_empty());
+    }
+
+    // ── append_wait_terminal_audit_event ──
+
+    #[test]
+    fn append_wait_terminal_audit_event_appends_workflow_completed() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        WorkflowRunner::append_wait_terminal_audit_event(&store, &result.run_id).unwrap();
+        let metadata_json = store
+            .get_run_metadata(&result.run_id)
+            .unwrap()
+            .expect("metadata present");
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        let log = parsed
+            .get("audit_log")
+            .expect("audit_log present")
+            .as_array()
+            .expect("audit_log is array");
+        // submit-only emits WorkflowStarted; we just appended
+        // WorkflowCompleted.
+        let kinds: Vec<&str> = log
+            .iter()
+            .filter_map(|e| {
+                let event = e.get("event")?;
+                if let Some(obj) = event.as_object() {
+                    obj.keys().next().map(String::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            kinds.contains(&"WorkflowStarted"),
+            "expected WorkflowStarted in chain; got {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"WorkflowCompleted"),
+            "expected WorkflowCompleted in chain; got {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn append_wait_terminal_audit_event_is_idempotent() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // First append — adds the entry.
+        WorkflowRunner::append_wait_terminal_audit_event(&store, &result.run_id).unwrap();
+        // Second append — must be a no-op (no second WorkflowCompleted).
+        WorkflowRunner::append_wait_terminal_audit_event(&store, &result.run_id).unwrap();
+        let metadata_json = store.get_run_metadata(&result.run_id).unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        let log = parsed.get("audit_log").unwrap().as_array().unwrap();
+        let completed_count = log
+            .iter()
+            .filter(|e| {
+                e.get("event")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.contains_key("WorkflowCompleted"))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            completed_count, 1,
+            "expected exactly 1 WorkflowCompleted entry; got {completed_count}"
+        );
+    }
+
+    #[test]
+    fn append_wait_terminal_audit_event_uses_zero_hash_when_no_step_completed() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // No step completed — append at terminal time anyway.
+        WorkflowRunner::append_wait_terminal_audit_event(&store, &result.run_id).unwrap();
+        let metadata_json = store.get_run_metadata(&result.run_id).unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        let log = parsed.get("audit_log").unwrap().as_array().unwrap();
+        let completed_entry = log
+            .iter()
+            .find(|e| {
+                e.get("event")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.contains_key("WorkflowCompleted"))
+                    .unwrap_or(false)
+            })
+            .expect("WorkflowCompleted entry");
+        let hash = completed_entry["event"]["WorkflowCompleted"]["result_hash"]
+            .as_str()
+            .unwrap();
+        assert_eq!(hash, "0".repeat(64), "expected zero-hash fallback");
     }
 
     #[test]

@@ -223,3 +223,29 @@ examples/workflows/
 - **Replay compatibility**: Execution can be recorded and replayed. `EventLog` captures capability results; `ReplayEngine` verifies determinism.
 - **Package content hashing**: Packages use SHA-256 content hashes for integrity verification.
 - **Path traversal prevention**: PatchBundle validates against `..` and absolute paths, with `canonicalize()` defense-in-depth. LLM cache and context store validate hex-only keys/hashes.
+
+## Parallel-Agent Best Practices
+
+When delegating work to sub-agents via the `Agent` tool with `isolation: "worktree"`, the sub-agent runs in a separate git worktree under `.claude/worktrees/agent-<id>/` with its `cwd` set to that worktree path. **However**, the agent will still happily accept absolute paths in `Edit`/`Write`/`Read` tool calls and write to those literal paths — bypassing the worktree.
+
+**Failure mode (observed 2026-04-27):** prompts containing absolute paths like `/Users/.../ai-lang/orchestrator/src/...` cause sub-agents to write to the calling agent's main worktree, NOT their isolated agent worktree. Result: files cross-contaminate between branches; concurrent sprints converge onto a single branch unintentionally.
+
+**Required when launching parallel worktree agents:**
+
+1. **Brief with RELATIVE paths only.** "Edit `orchestrator/src/workflow/runner.rs`" — never `/Users/.../orchestrator/src/workflow/runner.rs`. The agent's `cwd = worktree-path`, so relative paths resolve correctly.
+
+2. **Have the agent verify its worktree at startup.** Include in the agent prompt:
+   ```
+   Before any file edits, run:
+     pwd
+     git rev-parse --show-toplevel
+     git branch --show-current
+   These three values must be the same path (or root/path) and your assigned branch.
+   If they aren't, STOP and report — your tools will write to the wrong worktree.
+   ```
+
+3. **Use the `docs/AGENT-PROMPT-TEMPLATE.md` template** as the starting skeleton. It bakes in the relative-path discipline + cwd verification.
+
+4. **If the failure mode does occur:** stop the agents via `SendMessage`, run full gates (`cargo test --workspace`, `clippy -D warnings`, `fmt --check`), reconcile via single decomposed commit. Strong gates absorb the contamination cleanly; trying to retroactively split branches is busywork.
+
+5. **Default to sequential** for sprints touching the same crate. Worktree-isolated parallel work pays off when sprints are on **completely disjoint** code surfaces (e.g. `tooling/` + `crates/llmvm-cli/` only). Same-crate parallelism risks merge conflicts even when isolation works.
