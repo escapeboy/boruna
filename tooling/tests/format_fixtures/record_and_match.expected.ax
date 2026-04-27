@@ -1,0 +1,16 @@
+type User {
+    name: String,
+    age: Int,
+}
+
+fn classify(n: Int) -> String {
+    match n {
+        0 => "zero",
+        _ => "nonzero",
+    }
+}
+
+fn main() -> Int {
+    let u: User = User { name: "ada", age: 36 }
+    u.age
+}

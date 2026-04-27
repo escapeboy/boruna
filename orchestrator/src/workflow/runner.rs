@@ -49,10 +49,15 @@ pub struct RunOptions {
     /// Pending steps via existing mechanisms.
     ///
     /// Honored only on the persistent path. Workflows using
-    /// approval gates / external triggers / retry policy
-    /// in their FIRST wave fail at submit time — distributed
-    /// mode for those features is deferred to a future
-    /// sprint.
+    /// approval gates / external triggers in their FIRST wave
+    /// fail at submit time — distributed mode for those step
+    /// kinds is deferred to a future sprint.
+    ///
+    /// Sprint `0.5-S5`: per-step `RetryPolicy` IS honored in
+    /// distributed mode via the `coordinator wait` driver.
+    /// A worker-reported failure on a step with retry budget
+    /// remaining is requeued (Failed → Pending,
+    /// `attempt_count += 1`); the next worker re-runs.
     #[cfg_attr(not(feature = "persist-sqlite"), allow(dead_code))]
     pub submit_only: bool,
 }
@@ -197,8 +202,19 @@ pub struct AdvanceResult {
     /// Step IDs that transitioned Unknown → Pending in this tick.
     /// Sorted ascending. Empty when no new steps became ready.
     pub newly_pending: Vec<String>,
+    /// Step IDs that transitioned Failed → Pending in this tick via
+    /// the per-step `RetryPolicy` (sprint `0.5-S5`). Sorted ascending.
+    /// Empty when no Failed-with-retry-budget steps were observed.
+    /// Distinguished from [`Self::newly_pending`] so the wait driver
+    /// can print a different log line ("requeued (attempt N)" vs
+    /// just "pending"). Operational only; both kinds are reflected
+    /// in [`Self::all_step_statuses`].
+    pub newly_requeued: Vec<String>,
     /// Overall run status as derived from the checkpoint set:
-    /// - `Failed` if any step is in `Failed` status (terminal).
+    /// - `Failed` if any step is in `Failed` status AND has no
+    ///   retry budget remaining (sprint `0.5-S5`). A Failed-with-
+    ///   budget step keeps the run `Running` and is requeued in
+    ///   this same tick.
     /// - `Completed` if all steps in the workflow def are in
     ///   `Completed` status (terminal).
     /// - `Running` otherwise (transient).
@@ -727,6 +743,7 @@ impl WorkflowRunner {
         store: &RunCheckpointStore,
         run_id: &str,
     ) -> Result<AdvanceResult, WorkflowRunError> {
+        use crate::persistence::RequeueOutcome;
         let row = store
             .get_run(run_id)
             .map_err(WorkflowRunError::from)?
@@ -744,9 +761,74 @@ impl WorkflowRunner {
             .list_step_checkpoints(run_id)
             .map_err(WorkflowRunError::from)?;
         let mut status_map: BTreeMap<String, PersistStepStatus> = BTreeMap::new();
+        // Capture full per-step view; we need attempt_count + error_msg
+        // for the retry pass below.
+        let mut checkpoint_by_id: BTreeMap<String, &StepCheckpoint> = BTreeMap::new();
         for cp in &checkpoints {
             status_map.insert(cp.step_id.clone(), cp.status);
+            checkpoint_by_id.insert(cp.step_id.clone(), cp);
         }
+
+        // 0.5-S5: Failed-step retry pass. For each Failed step whose
+        // RetryPolicy still has budget AND whose recorded error class
+        // is retry-eligible per the policy, atomically requeue
+        // (Failed → Pending, attempt_count += 1). The status_map entry
+        // flips so the downstream "any_failed" check below sees Pending,
+        // not Failed.
+        //
+        // Iteration is over def.steps so order is BTreeMap-sorted —
+        // deterministic. The persistence primitive is idempotent
+        // against concurrent wait clients (convention §14).
+        let mut newly_requeued: Vec<String> = Vec::new();
+        for step_id in def.steps.keys() {
+            if !matches!(status_map.get(step_id), Some(PersistStepStatus::Failed)) {
+                continue;
+            }
+            let cp = match checkpoint_by_id.get(step_id) {
+                Some(cp) => cp,
+                None => continue,
+            };
+            let step_def = match def.steps.get(step_id) {
+                Some(s) => s,
+                None => continue,
+            };
+            let policy = match step_def.retry.as_ref() {
+                Some(p) => p,
+                None => continue,
+            };
+            // Budget gate: attempt_count is the number of attempts
+            // already used. max_attempts <= 1 (or budget exhausted)
+            // means no retry. Also handled by should_retry_class but
+            // short-circuited here so we don't hit the persistence
+            // layer for an exhausted policy.
+            if policy.max_attempts <= 1 || cp.attempt_count >= policy.max_attempts {
+                continue;
+            }
+            let class = classify_failure_message(cp.error_msg.as_deref().unwrap_or(""));
+            if !should_retry_class(Some(policy), class) {
+                continue;
+            }
+            let outcome = store
+                .requeue_failed_step_for_retry(run_id, step_id)
+                .map_err(WorkflowRunError::from)?;
+            match outcome {
+                RequeueOutcome::Requeued { .. } => {
+                    newly_requeued.push(step_id.clone());
+                    status_map.insert(step_id.clone(), PersistStepStatus::Pending);
+                }
+                // Race: a concurrent wait client already moved the row
+                // off Failed. Idempotent no-op. Refresh status_map to
+                // reflect on-disk truth.
+                RequeueOutcome::NotFailed { current_status } => {
+                    status_map.insert(step_id.clone(), current_status);
+                }
+                // Defensive: no code path produces NotFound today (no
+                // DELETE on step_checkpoints), but don't panic if a
+                // future migration changes that.
+                RequeueOutcome::NotFound => {}
+            }
+        }
+
         let ready = Self::compute_ready_steps(def, &status_map);
         let mut newly_pending: Vec<String> = Vec::new();
         for step_id in &ready {
@@ -773,6 +855,10 @@ impl WorkflowRunner {
                 status_map.insert(step_id.clone(), PersistStepStatus::Pending);
             }
         }
+        // 0.5-S5: Failed → run_status=Failed only if at least one Failed
+        // step has no retry budget remaining. A Failed-with-budget step
+        // was requeued above (status_map flipped to Pending), so the
+        // any_failed scan here only sees genuinely-terminal failures.
         let any_failed = status_map
             .values()
             .any(|s| matches!(s, PersistStepStatus::Failed));
@@ -789,6 +875,7 @@ impl WorkflowRunner {
         };
         Ok(AdvanceResult {
             newly_pending,
+            newly_requeued,
             run_status,
             all_step_statuses: status_map,
         })
@@ -2657,6 +2744,57 @@ fn classify_vm_error(e: &VmError) -> &'static str {
     }
 }
 
+/// Classify a wire-level `error_msg` string into one of the
+/// [`error_class`] strings (sprint `0.5-S5`). Used by
+/// [`WorkflowRunner::advance_run_one_tick`] to decide whether a
+/// distributed-mode step failure is retry-eligible per its
+/// [`RetryPolicy`].
+///
+/// **Why a separate classifier from [`classify_vm_error`]:** the
+/// in-process retry path holds the live [`VmError`] and classifies
+/// it directly. The wait driver only sees the persisted `error_msg`
+/// string — the worker stripped the typed enum and emitted a
+/// human-readable prefix (`"compile: …"`, `"runtime: …"`,
+/// `"policy parse: …"`, `"report_complete rejected …"`). Mapping
+/// those prefixes back to error_class strings is best-effort. An
+/// unknown prefix falls back to [`error_class::RUNTIME_ERROR`] —
+/// the most-conservative default given the existing taxonomy
+/// (RUNTIME_ERROR is "not recommended for retry" per its docs, so a
+/// retry_on=[] + on_transient=true policy still retries it; an
+/// allowlisted policy will only retry it if RUNTIME_ERROR is
+/// explicitly listed).
+///
+/// **Operational only.** The classifier doesn't need to be perfect;
+/// it just needs to be consistent with what the worker produces.
+/// Convention §15: attempt_count and retry decisions don't feed any
+/// audit hash.
+pub(crate) fn classify_failure_message(error_msg: &str) -> &'static str {
+    let trimmed = error_msg.trim_start();
+    if trimmed.starts_with("compile:") || trimmed.starts_with("compile error") {
+        error_class::COMPILE_ERROR
+    } else if trimmed.starts_with("policy parse") {
+        // Policy parse failures are deterministic — same JSON in,
+        // same parse error out. Treat as RUNTIME_ERROR so a
+        // permissive retry_on=[]+on_transient=true policy retries
+        // it (operator may have updated the policy in the
+        // meantime), but an allowlisted policy won't unless
+        // explicitly listed.
+        error_class::RUNTIME_ERROR
+    } else if trimmed.starts_with("runtime:") {
+        // Worker-emitted "runtime: <VmError display>". Could be a
+        // wall-time-exceeded or capability-denied underneath; we
+        // can't tell from the string without a finer wire format.
+        // Default to RUNTIME_ERROR. A future sprint adds a typed
+        // error_kind field on the FailRequest so the wait driver
+        // sees the original class.
+        error_class::RUNTIME_ERROR
+    } else if trimmed.contains("cannot read") {
+        error_class::IO_ERROR
+    } else {
+        error_class::RUNTIME_ERROR
+    }
+}
+
 /// Decide whether a step failure with the given class should retry
 /// per the supplied policy (sprint `0.4-S8`).
 ///
@@ -4492,6 +4630,216 @@ mod tests {
             .unwrap();
         let r = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
         assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+    }
+
+    // ── 0.5-S5: distributed retry policies ──
+
+    /// Build a 1-step workflow with a configurable RetryPolicy on s1.
+    /// Returns (def, workflow_dir tempdir).
+    fn make_retry_policy_workflow(retry: Option<RetryPolicy>) -> (WorkflowDef, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = dir.path().join("steps");
+        std::fs::create_dir_all(&steps_dir).unwrap();
+        std::fs::write(dir.path().join("steps/s1.ax"), "fn main() -> Int { 1 }").unwrap();
+        let mut steps = BTreeMap::new();
+        steps.insert(
+            "s1".to_string(),
+            StepDef {
+                kind: StepKind::Source {
+                    source: "steps/s1.ax".into(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry,
+                budget: None,
+            },
+        );
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "retry-test".into(),
+            version: "1.0.0".into(),
+            description: "retry-test".into(),
+            steps,
+            edges: vec![],
+        };
+        (def, dir)
+    }
+
+    /// Run submit_only on `def` and fail s1 once with the supplied error_msg.
+    /// Returns (store, run_id).
+    fn submit_and_fail_s1(
+        def: &WorkflowDef,
+        workflow_dir: &Path,
+        error_msg: &str,
+    ) -> (RunCheckpointStore, String) {
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: workflow_dir.to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(def, &options, data_dir.path()).unwrap();
+        // Reopen the store rather than let the tempdir drop. We
+        // leak data_dir intentionally — tests are short-lived and
+        // the OS reclaims tempdirs on process exit.
+        let db_path = data_dir.path().join("runs.db");
+        // Persist the path so the store survives the closure.
+        let store = RunCheckpointStore::open(&db_path).unwrap();
+        let claim = store
+            .claim_step(&result.run_id, "s1", "w", 1_000_000_000, 0)
+            .unwrap();
+        let claim_id = match claim {
+            crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("{other:?}"),
+        };
+        store
+            .fail_step_cas(&result.run_id, "s1", claim_id, error_msg, 1, 1)
+            .unwrap();
+        // Move ownership of the store out of the closure; data_dir's
+        // tempdir is leaked here so the file stays valid for the
+        // caller's subsequent operations on the store.
+        std::mem::forget(data_dir);
+        (store, result.run_id)
+    }
+
+    #[test]
+    fn advance_run_one_tick_requeues_failed_step_with_retry_budget() {
+        // Adversarial case 1: retry=3, attempt_count=1, on_transient=true.
+        // Failed → requeued; run stays Running.
+        let (def, dir) = make_retry_policy_workflow(Some(RetryPolicy {
+            max_attempts: 3,
+            on_transient: true,
+            retry_on: vec![],
+        }));
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "runtime: boom");
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Running);
+        assert_eq!(r.newly_requeued, vec!["s1".to_string()]);
+        assert_eq!(
+            r.all_step_statuses.get("s1"),
+            Some(&PersistStepStatus::Pending),
+        );
+        let cps = store.list_step_checkpoints(&run_id).unwrap();
+        assert_eq!(cps[0].status, PersistStepStatus::Pending);
+        assert_eq!(cps[0].attempt_count, 2);
+        assert_eq!(cps[0].error_msg, None);
+    }
+
+    #[test]
+    fn advance_run_one_tick_does_not_requeue_when_budget_exhausted() {
+        // Adversarial case 2: retry=2 with attempt_count=2 already burned.
+        // No requeue → run = Failed.
+        let (def, dir) = make_retry_policy_workflow(Some(RetryPolicy {
+            max_attempts: 2,
+            on_transient: true,
+            retry_on: vec![],
+        }));
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "runtime: boom");
+        // Manually bump attempt_count to 2 to simulate prior retries.
+        store
+            .upsert_step_checkpoint(&StepCheckpoint {
+                run_id: run_id.clone(),
+                step_id: "s1".into(),
+                status: PersistStepStatus::Failed,
+                output_json: None,
+                output_hash: None,
+                started_at_ms: Some(0),
+                ended_at_ms: Some(1),
+                error_msg: Some("runtime: boom".into()),
+                attempt_count: 2,
+                worker_id: None,
+                lease_expires_at_ms: None,
+                claim_id: 1,
+            })
+            .unwrap();
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+        assert!(r.newly_requeued.is_empty());
+    }
+
+    #[test]
+    fn advance_run_one_tick_does_not_requeue_for_single_attempt_policy() {
+        // Adversarial case 3: max_attempts=1 → no retry. Run = Failed.
+        let (def, dir) = make_retry_policy_workflow(Some(RetryPolicy {
+            max_attempts: 1,
+            on_transient: true,
+            retry_on: vec![],
+        }));
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "runtime: boom");
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+        assert!(r.newly_requeued.is_empty());
+    }
+
+    #[test]
+    fn advance_run_one_tick_does_not_requeue_when_class_not_in_allowlist() {
+        // Adversarial case 4: retry_on=["wall_time_exceeded"] but
+        // failure class is "runtime_error". No requeue.
+        let (def, dir) = make_retry_policy_workflow(Some(RetryPolicy {
+            max_attempts: 5,
+            on_transient: false,
+            retry_on: vec![error_class::WALL_TIME_EXCEEDED.to_string()],
+        }));
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "runtime: boom");
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+        assert!(r.newly_requeued.is_empty());
+    }
+
+    #[test]
+    fn advance_run_one_tick_requeues_with_empty_retry_on_and_on_transient() {
+        // Adversarial case 5: retry_on=[], on_transient=true → retry any class.
+        let (def, dir) = make_retry_policy_workflow(Some(RetryPolicy {
+            max_attempts: 3,
+            on_transient: true,
+            retry_on: vec![],
+        }));
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "compile: bad syntax");
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Running);
+        assert_eq!(r.newly_requeued, vec!["s1".to_string()]);
+    }
+
+    #[test]
+    fn advance_run_one_tick_does_not_requeue_when_no_retry_policy() {
+        // No retry policy at all → Failed remains Failed.
+        let (def, dir) = make_retry_policy_workflow(None);
+        let (store, run_id) = submit_and_fail_s1(&def, dir.path(), "runtime: boom");
+        let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+        assert!(r.newly_requeued.is_empty());
+    }
+
+    #[test]
+    fn classify_failure_message_known_prefixes() {
+        assert_eq!(
+            classify_failure_message("compile: bad syntax"),
+            error_class::COMPILE_ERROR,
+        );
+        assert_eq!(
+            classify_failure_message("runtime: assertion failed"),
+            error_class::RUNTIME_ERROR,
+        );
+        assert_eq!(
+            classify_failure_message("policy parse: invalid JSON"),
+            error_class::RUNTIME_ERROR,
+        );
+        assert_eq!(
+            classify_failure_message("cannot read steps/foo.ax: NotFound"),
+            error_class::IO_ERROR,
+        );
+        // Unknown prefix → conservative fallback.
+        assert_eq!(
+            classify_failure_message("something completely unexpected"),
+            error_class::RUNTIME_ERROR,
+        );
+        assert_eq!(classify_failure_message(""), error_class::RUNTIME_ERROR);
     }
 
     #[test]

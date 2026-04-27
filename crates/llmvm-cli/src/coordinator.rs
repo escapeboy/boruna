@@ -33,7 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -78,6 +79,19 @@ pub struct CoordinatorConfig {
     /// red WARNING block appears on coordinator-served pages
     /// when bound to a non-loopback address (sprint 0.5-S2d).
     pub bind_warning: Option<String>,
+    /// Shared-secret bearer token for HTTP authentication
+    /// (sprint `0.5-S3`). When `Some`, every coord HTTP route
+    /// requires `Authorization: Bearer <secret>` header; mismatched
+    /// or missing headers return `401 + coord.unauthorized`. When
+    /// `None`, no auth is enforced (the pre-0.5-S3 behavior is
+    /// preserved for backwards-compatibility on loopback-only
+    /// deployments).
+    ///
+    /// Operators generate a secret via `openssl rand -hex 32` and
+    /// pass it via `--shared-secret <hex>` flag or
+    /// `BORUNA_COORD_SECRET` env var. The same value MUST be set
+    /// on every worker via the analogous flag or env var.
+    pub shared_secret: Option<String>,
 }
 
 /// Minimum sweep interval. Lower values would cause the
@@ -95,6 +109,7 @@ pub async fn run_serve(
     max_lease_ttl_ms: u64,
     poll_timeout_ms: u64,
     sweep_interval_ms: u64,
+    shared_secret: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = data_dir.join("runs.db");
     if !db_path.exists() {
@@ -141,6 +156,20 @@ pub async fn run_serve(
             .map(|(n, v)| (n.as_str(), v.as_str())),
     );
 
+    let auth_state = match shared_secret.as_deref() {
+        Some(_) => "enabled (shared-secret bearer)",
+        None if bind.is_loopback() => "disabled (loopback bind only)",
+        None => "DISABLED (non-loopback bind without --shared-secret)",
+    };
+    eprintln!("    auth: {auth_state}");
+    if shared_secret.is_none() && !bind.is_loopback() {
+        eprintln!(
+            "[WARNING] coordinator is bound to a non-loopback address with NO --shared-secret. \
+             Anyone with network access can SUBMIT and CONTROL distributed work. \
+             Pass --shared-secret <hex> (or BORUNA_COORD_SECRET env) to enable auth."
+        );
+    }
+
     let state = CoordinatorState {
         store: Arc::new(Mutex::new(store)),
         workers: Arc::new(Mutex::new(HashMap::new())),
@@ -150,6 +179,7 @@ pub async fn run_serve(
             max_lease_ttl_ms,
             poll_timeout_ms,
             bind_warning,
+            shared_secret,
         },
     };
 
@@ -241,6 +271,63 @@ async fn background_sweep_loop(state: CoordinatorState, interval_ms: u64) {
     }
 }
 
+/// Constant-time byte-slice equality. Avoids the early-exit pattern of `==`
+/// that would leak per-byte timing information about a bearer token's
+/// content to a network-adjacent attacker.
+///
+/// **Length-leakage:** the early-return on length-mismatch leaks the
+/// expected secret length. Acceptable for our use case — operators
+/// generate secrets via `openssl rand -hex 32` (a known length) and the
+/// length is not what an attacker is trying to brute-force.
+fn constant_time_bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Build a JSON 401 response with the stable `coord.unauthorized`
+/// `error_kind`. Matches the `ErrorBody` shape used elsewhere.
+fn unauthorized_response() -> Response {
+    let body = ErrorBody::new(
+        "coord.unauthorized",
+        "missing or invalid Authorization: Bearer header",
+    );
+    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+}
+
+/// Axum middleware that validates the `Authorization: Bearer <secret>`
+/// header against the coordinator's configured shared-secret. When no
+/// shared-secret is configured, the middleware is a pass-through (the
+/// pre-0.5-S3 no-auth behavior).
+async fn auth_middleware(
+    State(state): State<CoordinatorState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.config.shared_secret.as_deref() else {
+        return next.run(request).await;
+    };
+    let Some(header_val) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return unauthorized_response();
+    };
+    let Ok(header_str) = header_val.to_str() else {
+        return unauthorized_response();
+    };
+    let Some(provided) = header_str.strip_prefix("Bearer ") else {
+        return unauthorized_response();
+    };
+    if !constant_time_bytes_eq(provided.as_bytes(), expected.as_bytes()) {
+        return unauthorized_response();
+    }
+    next.run(request).await
+}
+
 pub fn build_router(state: CoordinatorState) -> Router {
     // Sprint 0.5-S2d: merge the dashboard's read-only routes
     // (/, /runs/:id, /api/runs, /api/runs/:id) onto the
@@ -257,6 +344,13 @@ pub fn build_router(state: CoordinatorState) -> Router {
     // served pages too.
     let dashboard_router =
         crate::dashboard::dashboard_routes(state.store.clone(), state.config.bind_warning.clone());
+    // Sprint 0.5-S3: auth middleware applies to BOTH coord routes
+    // (mutations + claims) AND the dashboard's read-only routes
+    // (since they expose run state including step_sources). Operators
+    // who specifically want a public read-only dashboard with auth-
+    // gated mutations should run a separate `boruna dashboard serve`
+    // process without the shared-secret. The merged listener is
+    // strictly all-or-nothing for auth.
     let coord_router = Router::new()
         .route("/api/workers/register", post(handle_register))
         .route("/api/workers/heartbeat", post(handle_heartbeat))
@@ -273,8 +367,9 @@ pub fn build_router(state: CoordinatorState) -> Router {
         // run"), it must opt into a body limit explicitly OR
         // be added to coord_router instead.
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(state);
-    coord_router.merge(dashboard_router)
+        .with_state(state.clone());
+    let merged = coord_router.merge(dashboard_router);
+    merged.layer(middleware::from_fn_with_state(state, auth_middleware))
 }
 
 // ── Wire shapes ──
@@ -887,6 +982,14 @@ pub fn run_wait(
                 return Ok(2);
             }
         };
+        // Print explicit "requeued" lines (sprint 0.5-S5) BEFORE the
+        // generic transition loop so operators see "step s1: requeued
+        // (retry)" instead of just "step s1: pending" when a Failed
+        // step transitions back to Pending via the retry policy.
+        for sid in &result.newly_requeued {
+            println!("step {sid}: requeued (retry)");
+            prev.insert(sid.clone(), "pending".into());
+        }
         // Print step transitions in sorted order (BTreeMap iteration).
         // newly_pending is always reflected in all_step_statuses (see
         // advance_run_one_tick: status_map is updated alongside the
@@ -960,6 +1063,7 @@ mod tests {
                 max_lease_ttl_ms: 600_000,
                 poll_timeout_ms: 200,
                 bind_warning: None,
+                shared_secret: None,
             },
         }
     }

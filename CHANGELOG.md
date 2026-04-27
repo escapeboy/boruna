@@ -8,6 +8,94 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Shared-secret bearer authentication for the coordinator**
+  (sprint `0.5-S3`). Enables production deployment by gating
+  every coord HTTP route on a bearer token. `coordinator serve
+  --shared-secret <hex>` (or `BORUNA_COORD_SECRET` env var) and
+  worker `--shared-secret <hex>` (same env var fallback)
+  configure the symmetric secret. Mismatched or missing
+  `Authorization: Bearer` header returns
+  `401 + error_kind: coord.unauthorized`. When unset, no auth
+  is enforced — the pre-0.5-S3 loopback-only behavior is
+  preserved for backwards compatibility, with a loud stderr
+  warning when the coord binds to a non-loopback address
+  without a secret.
+
+  Generate a secret via `openssl rand -hex 32`. mTLS,
+  per-worker keys, and OAuth integration deferred to 0.6.x —
+  shared-secret covers the common operator case (single
+  trusted cluster, per-deployment secret rotation).
+
+  Auth applies to merged dashboard routes too — operators
+  who want a public read-only dashboard with auth-gated
+  mutations should run a separate `boruna dashboard serve`
+  process. The coordinator's merged listener is strictly
+  all-or-nothing for auth.
+
+  4 new CLI integration tests cover: missing bearer → 401,
+  wrong bearer → 401, correct bearer → 200, no-secret legacy
+  path → 200 (no regression).
+
+- **Distributed retry policies** (sprint `0.5-S5`). Wires
+  the existing `RetryPolicy` (`max_attempts`, `on_transient`,
+  `retry_on`) through the wait driver so failed steps with
+  retry budget transition `Failed → Pending` instead of
+  permanent `Failed`. The coordinator stays dumb — all
+  retry-decision logic lives in `WorkflowRunner::advance_run_one_tick`
+  and a new persistence primitive
+  `RunCheckpointStore::requeue_failed_step_for_retry`.
+
+  The persistence primitive uses `BEGIN IMMEDIATE` + atomic
+  status check inside the transaction; idempotent across
+  concurrent wait clients (project convention §14). Returns
+  a typed `RequeueOutcome` (`Requeued { new_attempt_count }`,
+  `NotFailed { current_status }`, `NotFound`).
+
+  `AdvanceResult` gains a `newly_requeued: Vec<String>` field
+  (additive). The `coordinator wait` driver prints a
+  distinct `step <id>: requeued (retry)` line for each
+  requeued step before the generic transition print.
+
+  Run-status derivation is updated: `Failed` is declared
+  only when a step is `Failed` AND has no retry budget
+  remaining. A `Failed`-with-budget step keeps the run
+  `Running` and is requeued in the same tick.
+
+  14 new orchestrator unit tests cover the retry pass:
+  budget exhaustion, single-attempt rejection, error-class
+  matching (`retry_on` vs. `on_transient` fallback),
+  concurrent-wait race (idempotency), and policy-absent
+  short-circuit. The pre-0.5-S5 wait limitation
+  ("distributed retry not honored") is now resolved;
+  `docs/design-coord-wait.md` updated accordingly.
+
+- **`boruna fmt` auto-formatter for `.ax` files** (DX
+  sprint, first item from the 0.2.x DX lane). Canonical
+  pretty-printer that walks the existing compiler AST and
+  emits formatted source.
+
+  CLI: `boruna fmt <file>` rewrites in place; `boruna fmt
+  --check <file>` exits 0 if the file is already formatted,
+  exit 1 otherwise (CI gate). Exits 2 on parse errors so CI
+  can distinguish "needs formatting" from "broken file".
+
+  Style decisions: 4-space indent, trailing comma on
+  multi-line records and match arms, blank line between
+  top-level decls, same-line opening braces.
+
+  **Known limitation (v1):** comments are stripped — the
+  lexer drops them before they reach the parser, so the
+  current AST has no comment positions. A token-aware
+  comment-preserving formatter is future work. v1 is still
+  useful as a CI gate for generated/scaffolded code or
+  code reviews where comments are preserved manually.
+
+  3 golden-fixture tests, 1 idempotency roundtrip, 1
+  parse-failure error case, and 3 CLI integration tests
+  (--check exit codes 0/1/2). New module
+  `tooling/src/format/` with `format_source` and
+  `check_source` public APIs.
+
 - **`boruna coordinator wait <run-id>`** (sprint `0.5-S2f`).
   Multi-wave workflow advancement for distributed runs. After
   `workflow run --submit-only` writes the first wave's Pending

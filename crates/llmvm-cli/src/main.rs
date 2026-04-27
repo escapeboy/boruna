@@ -19,6 +19,7 @@ use boruna_vm::vm::Vm;
 mod coordinator;
 #[cfg(feature = "serve")]
 mod dashboard;
+mod format;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "serve")]
@@ -104,6 +105,19 @@ enum Command {
     Ast {
         /// Source file path (.ax)
         file: PathBuf,
+    },
+    /// Format a .ax source file (canonical pretty-print).
+    ///
+    /// Default: rewrite the file in place. With `--check`, exit 0 if the
+    /// file is already formatted, exit 1 otherwise (CI gate). Exits 2 on
+    /// parse errors so CI can distinguish "needs formatting" from
+    /// "broken file". v1 strips comments — see `docs/design-boruna-fmt.md`.
+    Fmt {
+        /// Source file (.ax) to format.
+        file: PathBuf,
+        /// Check whether the file is already formatted; do not modify it.
+        #[arg(long)]
+        check: bool,
     },
     /// Framework commands.
     #[command(subcommand)]
@@ -192,6 +206,17 @@ enum CoordinatorCommand {
         /// values are clamped + a warning is logged).
         #[arg(long, default_value = "30000")]
         sweep_interval_ms: u64,
+        /// Shared-secret bearer token for HTTP authentication
+        /// (sprint `0.5-S3`). When set, every coord HTTP route
+        /// requires `Authorization: Bearer <secret>` header.
+        /// Generate via `openssl rand -hex 32`. Falls back to
+        /// `BORUNA_COORD_SECRET` env var. When unset, no auth
+        /// is enforced — operators binding to a non-loopback
+        /// address without a secret get a loud stderr warning
+        /// (the no-auth posture remains backwards-compatible
+        /// for loopback-only deployments).
+        #[arg(long, env = "BORUNA_COORD_SECRET")]
+        shared_secret: Option<String>,
     },
     /// Drive a submit-only workflow run to terminal status by
     /// computing downstream-ready successors as workers complete
@@ -250,6 +275,13 @@ enum WorkerCommand {
         /// to wait before returning 204.
         #[arg(long, default_value = "30000")]
         poll_timeout_ms: u64,
+        /// Shared-secret bearer token for HTTP authentication
+        /// (sprint `0.5-S3`). MUST match the coordinator's
+        /// `--shared-secret`. Falls back to `BORUNA_COORD_SECRET`
+        /// env var. When unset, no `Authorization` header is
+        /// sent — only works when the coord also has no secret.
+        #[arg(long, env = "BORUNA_COORD_SECRET")]
+        shared_secret: Option<String>,
     },
 }
 
@@ -979,6 +1011,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let json = serde_json::to_string_pretty(&program)?;
             println!("{json}");
         }
+        Command::Fmt { file, check } => format::run_fmt(&file, check)?,
         Command::Framework(fw) => run_framework(fw)?,
         Command::Lang(lang) => run_lang(lang)?,
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
@@ -1013,6 +1046,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
             max_lease_ttl_ms,
             poll_timeout_ms,
             sweep_interval_ms,
+            shared_secret,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
@@ -1027,6 +1061,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
                     max_lease_ttl_ms,
                     poll_timeout_ms,
                     sweep_interval_ms,
+                    shared_secret,
                 )?;
             }
             #[cfg(not(feature = "persist-sqlite"))]
@@ -1038,6 +1073,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
                     max_lease_ttl_ms,
                     poll_timeout_ms,
                     sweep_interval_ms,
+                    shared_secret,
                 );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
             }
@@ -1075,8 +1111,15 @@ fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> 
             worker_id,
             lease_ttl_ms,
             poll_timeout_ms,
+            shared_secret,
         } => {
-            worker::run_worker(coordinator, worker_id, lease_ttl_ms, poll_timeout_ms)?;
+            worker::run_worker(
+                coordinator,
+                worker_id,
+                lease_ttl_ms,
+                poll_timeout_ms,
+                shared_secret,
+            )?;
         }
     }
     Ok(())

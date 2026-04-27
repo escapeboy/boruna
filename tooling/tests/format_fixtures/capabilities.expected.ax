@@ -1,0 +1,8 @@
+fn fetch(url: String) -> String !{net.fetch} {
+    url
+}
+
+fn main() -> Int {
+    let s: String = fetch("https://example.com")
+    0
+}

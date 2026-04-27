@@ -144,12 +144,14 @@ These were validated by adversarial review (`ce-correctness-reviewer`)
 and accepted for v0.5.x. Each will be revisited in 0.5-S3+ or
 0.6.x as appropriate.
 
-1. **Distributed retry policies are not honored.** A step that
-   fails on first attempt is terminal in distributed mode. The
-   wait driver detects `Failed` status and exits 1 even if the
-   step's `RetryPolicy` would have succeeded in-process. Wired
-   through in a future sprint together with the
-   `coord.retry_*` audit events.
+1. ~~**Distributed retry policies are not honored.**~~
+   **Resolved by sprint 0.5-S5.** The wait driver reads each
+   Failed step's `RetryPolicy` and requeues (Failed → Pending)
+   when budget remains and the error class matches the policy's
+   `retry_on` list (or `on_transient` fallback). Run-status
+   declares `Failed` only when a step is `Failed` AND has no
+   retry budget left. See `WorkflowRunner::advance_run_one_tick`
+   retry pass and `RunCheckpointStore::requeue_failed_step_for_retry`.
 
 2. **Audit chain has no wait-driven terminating event.**
    Submit-only emits `WorkflowStarted`. The wait driver does
