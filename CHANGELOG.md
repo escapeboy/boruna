@@ -8,6 +8,45 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`boruna workflow run --submit-only`** (sprint `0.5-S2e`).
+  The first end-to-end path for dispatching a real workflow
+  through a coord+workers cluster. Submit-only mode:
+  validates + computes the DAG, embeds source-step bodies in
+  `metadata_json.step_sources`, inserts the run row + initial
+  wave's source-step Pending checkpoints, then **exits before
+  spawning thread workers**. The cluster picks up the steps
+  via existing claim/dispatch mechanisms.
+
+  ```sh
+  boruna coordinator serve --data-dir /var/lib/boruna &
+  boruna worker run --coordinator http://127.0.0.1:8090 &
+  boruna workflow run examples/workflows/llm_code_review \
+      --submit-only --data-dir /var/lib/boruna
+  ```
+
+  Workflows using approval-gate / external-trigger steps in
+  the first wave are rejected at submit time with a typed
+  error (`submit-only mode does not support ... in the first
+  wave`). Distributed mode for those features is deferred.
+
+  Multi-wave automatic advancement is NOT done — operators
+  monitor via the dashboard or `boruna workflow show
+  <run-id>`. Wave loop integration becomes 0.5-S2f or later.
+
+  Added field `RunOptions::submit_only: bool` and field
+  `PersistedRunMetadata::step_sources: BTreeMap<String,
+  String>` (with `#[serde(default)]` for back-compat). The
+  `WorkflowStarted` audit event fires for submit-only runs
+  matching the in-process `run_persistent` semantics.
+
+  Tests: 3 new unit tests (insertion shape, metadata
+  embedding, approval-gate rejection) + 1 new CLI integration
+  test that runs `boruna workflow run --submit-only` against
+  a real workflow.json + .ax file with a spawned coord+worker
+  pair, asserts the step transitions through Pending →
+  Running → Completed and the output_json matches the
+  expected value.
+
 - **Coordinator + dashboard listener-merge** (sprint
   `0.5-S2d`). The dashboard's read-only routes (`/`,
   `/runs/:id`, `/api/runs`, `/api/runs/:id`) are now served

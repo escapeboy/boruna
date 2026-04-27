@@ -61,6 +61,7 @@ fn retry_actually_sleeps_between_attempts() {
         workflow_dir: dir.path().to_string_lossy().to_string(),
         live: false,
         concurrency: 1,
+        submit_only: false,
     };
 
     let start = Instant::now();

@@ -40,6 +40,21 @@ pub struct RunOptions {
     /// Default `1`.
     #[cfg_attr(not(feature = "persist-sqlite"), allow(dead_code))]
     pub concurrency: usize,
+    /// Submit-only mode (sprint `0.5-S2e`). When `true`,
+    /// `run_persistent` validates the workflow, embeds step
+    /// sources in metadata, inserts the run row + initial
+    /// wave's source-step Pending checkpoints, then
+    /// **returns BEFORE spawning thread workers**. The
+    /// distributed cluster (coord + workers) picks up the
+    /// Pending steps via existing mechanisms.
+    ///
+    /// Honored only on the persistent path. Workflows using
+    /// approval gates / external triggers / retry policy
+    /// in their FIRST wave fail at submit time — distributed
+    /// mode for those features is deferred to a future
+    /// sprint.
+    #[cfg_attr(not(feature = "persist-sqlite"), allow(dead_code))]
+    pub submit_only: bool,
 }
 
 impl Default for RunOptions {
@@ -50,6 +65,7 @@ impl Default for RunOptions {
             workflow_dir: String::new(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         }
     }
 }
@@ -139,6 +155,20 @@ struct PersistedRunMetadata {
     /// wall-clock ordering for callers that need it.
     #[serde(default)]
     audit_log: Vec<crate::audit::AuditEntry>,
+    /// Step source bodies indexed by `step_id`. Populated by
+    /// `prepare_persistent_run` for source-kind steps (sprint
+    /// `0.5-S2e`); read by the coordinator's
+    /// `extract_step_source` to serve workers a work item
+    /// without requiring filesystem access to `workflow_dir`.
+    /// Defaulted so pre-0.5-S2e databases (no `step_sources`
+    /// key) parse cleanly.
+    ///
+    /// **OPERATIONAL ONLY.** Source content is already
+    /// captured in `workflow_hash` for replay/audit purposes;
+    /// embedding the bodies here is a transport convenience,
+    /// not a replay-verified record.
+    #[serde(default)]
+    step_sources: BTreeMap<String, String>,
 }
 
 /// Per-step approval decision recorded by `boruna workflow approve` /
@@ -317,6 +347,45 @@ impl WorkflowRunner {
         data_dir: &Path,
     ) -> Result<WorkflowRunResult, WorkflowRunError> {
         let (store, run_id) = Self::prepare_persistent_run(def, options, data_dir)?;
+        if options.submit_only {
+            // Sprint 0.5-S2e: submit-only mode. Insert the
+            // initial wave's source-step Pending checkpoints and
+            // emit the WorkflowStarted audit event, then return
+            // a partial result. The distributed cluster (coord +
+            // workers) picks up the Pending steps via existing
+            // mechanisms.
+            //
+            // Wave advancement (mark next wave's steps Pending
+            // when this wave completes) is NOT done by this
+            // path — operators must monitor the run via the
+            // dashboard or `workflow show`. Multi-wave automatic
+            // advancement is a future sprint.
+            Self::insert_initial_wave_pending_checkpoints(def, &store, &run_id)?;
+            // Best-effort WorkflowStarted audit event, matching
+            // execute_after_insert's behavior so the audit chain
+            // has its genesis entry.
+            let policy_hash_seed = serde_json::to_string(&options.policy).unwrap_or_default();
+            if let Err(e) = append_audit_event(
+                &store,
+                &run_id,
+                crate::audit::AuditEvent::WorkflowStarted {
+                    workflow_hash: Self::workflow_hash_from_def(def),
+                    policy_hash: sha256_hex(&policy_hash_seed),
+                },
+            ) {
+                eprintln!(
+                    "warning: failed to append WorkflowStarted audit event for submit-only run \
+                     '{run_id}': {e}"
+                );
+            }
+            return Ok(WorkflowRunResult {
+                run_id,
+                workflow_name: def.name.clone(),
+                status: WorkflowStatus::Running,
+                step_results: BTreeMap::new(),
+                total_duration_ms: 0,
+            });
+        }
         Self::execute_after_insert(def, options, data_dir, &store, run_id)
     }
 
@@ -366,6 +435,7 @@ impl WorkflowRunner {
             approvals: BTreeMap::new(),
             triggers: BTreeMap::new(),
             audit_log: Vec::new(),
+            step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -386,6 +456,116 @@ impl WorkflowRunner {
                 Self::execute_after_insert(def, options, data_dir, &store, run_id).map(Some)
             }
         }
+    }
+
+    /// Read the `.ax` source for every `Source`-kind step in
+    /// `def` and return a `step_id → source` map. Sprint
+    /// `0.5-S2e`: populated into `metadata_json.step_sources` so
+    /// the distributed coordinator can serve workers without
+    /// requiring filesystem access to `workflow_dir`.
+    ///
+    /// Approval-gate and external-trigger steps don't have an
+    /// `.ax` source — they're skipped here (the coordinator only
+    /// dispatches source steps to workers).
+    #[cfg(feature = "persist-sqlite")]
+    fn collect_step_sources(
+        def: &WorkflowDef,
+        workflow_dir: &str,
+    ) -> Result<BTreeMap<String, String>, WorkflowRunError> {
+        use crate::workflow::definition::StepKind;
+        // Size caps (adversarial-review F2): metadata_json must
+        // round-trip through SQLite and be embedded in HTTP
+        // responses; oversized metadata blocks the dispatch
+        // path. 256 KiB per step covers comfortably-large `.ax`
+        // sources; 4 MiB aggregate covers ~16 large steps.
+        const MAX_PER_STEP_BYTES: usize = 256 * 1024;
+        const MAX_AGGREGATE_BYTES: usize = 4 * 1024 * 1024;
+        let mut out = BTreeMap::new();
+        let mut total_bytes: usize = 0;
+        let base = std::path::PathBuf::from(workflow_dir);
+        for (step_id, step_def) in &def.steps {
+            if let StepKind::Source { source } = &step_def.kind {
+                let path = base.join(source);
+                let body = std::fs::read_to_string(&path).map_err(|e| {
+                    WorkflowRunError::Io(format!(
+                        "step '{step_id}' source '{}' read failed: {e}",
+                        path.display()
+                    ))
+                })?;
+                if body.len() > MAX_PER_STEP_BYTES {
+                    return Err(WorkflowRunError::Validation(format!(
+                        "step '{step_id}' source is {} bytes; exceeds per-step cap of {} bytes",
+                        body.len(),
+                        MAX_PER_STEP_BYTES
+                    )));
+                }
+                total_bytes = total_bytes.saturating_add(body.len());
+                if total_bytes > MAX_AGGREGATE_BYTES {
+                    return Err(WorkflowRunError::Validation(format!(
+                        "aggregate step_sources size exceeds cap of {} bytes \
+                         (after step '{step_id}')",
+                        MAX_AGGREGATE_BYTES
+                    )));
+                }
+                out.insert(step_id.clone(), body);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Submit-only initial-wave Pending checkpoint insertion
+    /// (sprint `0.5-S2e`). For the first topological level, write
+    /// a Pending step checkpoint for every `Source`-kind step.
+    /// Approval-gate and external-trigger steps are NOT supported
+    /// in submit-only mode — they require runner-side
+    /// orchestration that distributed mode doesn't yet handle.
+    #[cfg(feature = "persist-sqlite")]
+    fn insert_initial_wave_pending_checkpoints(
+        def: &WorkflowDef,
+        store: &RunCheckpointStore,
+        run_id: &str,
+    ) -> Result<(), WorkflowRunError> {
+        use crate::persistence::StepCheckpoint;
+        use crate::workflow::definition::StepKind;
+        let levels =
+            WorkflowValidator::topological_levels(def).map_err(WorkflowRunError::Validation)?;
+        let Some(first_level) = levels.first() else {
+            return Ok(());
+        };
+        for step_id in first_level {
+            let step_def = def.steps.get(step_id).ok_or_else(|| {
+                WorkflowRunError::Internal(format!("step not found in def: {step_id}"))
+            })?;
+            match &step_def.kind {
+                StepKind::Source { .. } => {
+                    store
+                        .upsert_step_checkpoint(&StepCheckpoint {
+                            run_id: run_id.to_string(),
+                            step_id: step_id.clone(),
+                            status: PersistStepStatus::Pending,
+                            output_json: None,
+                            output_hash: None,
+                            started_at_ms: None,
+                            ended_at_ms: None,
+                            error_msg: None,
+                            attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
+                        })
+                        .map_err(WorkflowRunError::from)?;
+                }
+                StepKind::ApprovalGate { .. } | StepKind::ExternalTrigger { .. } => {
+                    return Err(WorkflowRunError::Validation(format!(
+                        "submit-only mode does not support {:?}-kind steps in the first wave \
+                         (step '{step_id}'); use the in-process runner for workflows with \
+                         approval gates or external triggers",
+                        step_def.kind
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Internal shared body for `run_persistent` and
@@ -421,6 +601,7 @@ impl WorkflowRunner {
             approvals: BTreeMap::new(),
             triggers: BTreeMap::new(),
             audit_log: Vec::new(),
+            step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -1027,6 +1208,9 @@ impl WorkflowRunner {
             workflow_dir,
             live: options.live,
             concurrency: options.concurrency.max(1),
+            // Resume always executes in-process; submit-only is
+            // a fresh-run-only mode (sprint 0.5-S2e).
+            submit_only: false,
         };
 
         // Reset run status to Running for the resume window.
@@ -3700,6 +3884,101 @@ mod tests {
         (def, dir)
     }
 
+    // ── Submit-only mode (sprint 0.5-S2e) ──
+
+    #[test]
+    fn submit_only_inserts_run_and_initial_pending_checkpoints() {
+        let (def, dir) = make_workflow_with_steps(&[
+            ("step1", "fn main() -> Int { 1 }"),
+            ("step2", "fn main() -> Int { 2 }"),
+        ]);
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        // Submit-only returns an in-flight result.
+        assert_eq!(result.status, WorkflowStatus::Running);
+        assert!(result.step_results.is_empty());
+
+        // The run row exists; step1 (initial wave) is Pending.
+        let store_path = data_dir.path().join("runs.db");
+        let store = crate::persistence::RunCheckpointStore::open(&store_path).unwrap();
+        let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+        assert_eq!(cps.len(), 1, "only initial-wave step should be inserted");
+        assert_eq!(cps[0].step_id, "step1");
+        assert_eq!(cps[0].status, crate::persistence::StepStatus::Pending);
+    }
+
+    #[test]
+    fn submit_only_embeds_step_sources_in_metadata() {
+        let (def, dir) = make_workflow_with_steps(&[
+            ("step1", "fn main() -> Int { 99 }"),
+            ("step2", "fn main() -> Int { 100 }"),
+        ]);
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        let metadata_json = store
+            .get_run_metadata(&result.run_id)
+            .unwrap()
+            .expect("metadata present");
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        let sources = parsed
+            .get("step_sources")
+            .expect("step_sources key present")
+            .as_object()
+            .expect("step_sources is object");
+        assert_eq!(sources.len(), 2);
+        assert!(sources["step1"].as_str().unwrap().contains("99"));
+        assert!(sources["step2"].as_str().unwrap().contains("100"));
+    }
+
+    #[test]
+    fn submit_only_rejects_approval_gate_in_first_wave() {
+        // Build a workflow whose first wave contains an
+        // approval gate. Submit-only should reject it.
+        let (def, dir) = make_workflow_with_steps(&[(
+            "approve",
+            "fn main() -> Int { 1 }", // body unused for approval gate
+        )]);
+        // Mutate the def to make the only step an approval gate.
+        let mut mutated = def.clone();
+        for step in mutated.steps.values_mut() {
+            step.kind = StepKind::ApprovalGate {
+                required_role: "ops".into(),
+                condition: None,
+            };
+        }
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let err = WorkflowRunner::run_persistent(&mutated, &options, data_dir.path()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("submit-only"), "msg: {msg}");
+        assert!(msg.contains("approval"), "msg: {msg}");
+    }
+
     #[test]
     fn test_run_linear_workflow() {
         let (def, dir) = make_workflow_with_steps(&[
@@ -3714,6 +3993,7 @@ mod tests {
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -3737,6 +4017,7 @@ mod tests {
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -3785,6 +4066,7 @@ mod tests {
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         };
 
         // With allow_all, should succeed
@@ -3861,6 +4143,7 @@ mod tests {
             workflow_dir: dir.path().to_string_lossy().to_string(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -3890,6 +4173,7 @@ mod tests {
             workflow_dir: "/tmp".into(),
             live: false,
             concurrency: 1,
+            submit_only: false,
         };
         assert!(WorkflowRunner::run(&def, &options).is_err());
     }
@@ -4370,6 +4654,7 @@ mod tests {
                 workflow_dir: dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -4420,6 +4705,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
 
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -4447,6 +4733,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             let r2 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -4496,6 +4783,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -4526,6 +4814,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
 
             // Insert a run row with a deliberately-altered workflow_hash
@@ -4907,6 +5196,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -5001,6 +5291,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let err = WorkflowRunner::run_persistent(&def, &options, Path::new("/"))
                 .expect_err("must reject /");
@@ -5077,6 +5368,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: c,
+                submit_only: false,
             };
             let dir1 = tempfile::tempdir().unwrap();
             let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
@@ -5109,6 +5401,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 4,
+                submit_only: false,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -5166,6 +5459,7 @@ mod tests {
                 workflow_dir: dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 4,
+                submit_only: false,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -5188,6 +5482,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r1.status, WorkflowStatus::Completed);
@@ -5319,6 +5614,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 4,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -5396,6 +5692,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -5494,6 +5791,7 @@ mod tests {
                 workflow_dir: wf_dir.to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -6211,6 +6509,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -6252,6 +6551,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -6297,6 +6597,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -6345,6 +6646,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -6433,6 +6735,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -6534,6 +6837,7 @@ mod tests {
                 workflow_dir: dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -6628,6 +6932,7 @@ mod tests {
                 workflow_dir: dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(
@@ -6651,6 +6956,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: c,
+                submit_only: false,
             };
             let dir1 = tempfile::tempdir().unwrap();
             let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
@@ -6751,6 +7057,7 @@ mod tests {
                 workflow_dir: wf_dir.to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -7184,6 +7491,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let err = WorkflowRunner::run(&def, &options).expect_err("ephemeral path must error");
             assert!(matches!(err, WorkflowRunError::Validation(_)));
@@ -7348,6 +7656,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 2,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -7394,6 +7703,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 2,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -7445,6 +7755,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 2,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -7514,6 +7825,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 2,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -7653,6 +7965,7 @@ mod tests {
                 workflow_dir: dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 2,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -7693,6 +8006,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -7741,6 +8055,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -7783,6 +8098,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             let store = open_store(data_dir.path()).unwrap();
@@ -7893,6 +8209,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 2,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -7985,6 +8302,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8043,6 +8361,7 @@ mod tests {
                 workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                 live: false,
                 concurrency: 1,
+                submit_only: false,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             record_approval_decision(
@@ -8123,6 +8442,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8188,6 +8508,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8240,6 +8561,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8289,6 +8611,7 @@ mod tests {
                     workflow_dir: wf_dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8406,6 +8729,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8483,6 +8807,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )
@@ -8552,6 +8877,7 @@ mod tests {
                     workflow_dir: dir.path().to_string_lossy().to_string(),
                     live: false,
                     concurrency: 1,
+                    submit_only: false,
                 },
                 data_dir.path(),
             )

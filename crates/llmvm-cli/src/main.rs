@@ -454,6 +454,25 @@ enum WorkflowCommand {
         /// Persistent path only; incompatible with `--ephemeral`.
         #[arg(long, conflicts_with = "ephemeral")]
         skip_if_running: bool,
+        /// Submit the workflow to a distributed coord+workers
+        /// cluster instead of executing in-process (sprint
+        /// `0.5-S2e`). Validates + inserts the run row +
+        /// initial wave's source-step Pending checkpoints +
+        /// embeds step sources in metadata, then exits. The
+        /// cluster picks up the steps via existing
+        /// claim/dispatch mechanisms.
+        ///
+        /// Persistent path only; incompatible with
+        /// `--ephemeral` and `--skip-if-running` (the
+        /// skip-if-running path executes in-process and
+        /// silently ignores submit-only — adversarial-review
+        /// finding F1, fixed by making them mutually
+        /// exclusive). Workflows using approval-gate /
+        /// external-trigger steps in the first wave fail at
+        /// submit time. Multi-wave automatic advancement is
+        /// deferred to a future sprint.
+        #[arg(long, conflicts_with_all = ["ephemeral", "skip_if_running"])]
+        submit_only: bool,
         /// CI/CD safety check: refuse to run if the on-disk def's
         /// workflow_hash doesn't match this value (case-insensitive
         /// 64-char SHA-256 hex). Capture via `boruna workflow
@@ -2032,6 +2051,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             ephemeral,
             concurrency,
             skip_if_running,
+            submit_only,
             expect_workflow_hash,
         } => {
             if concurrency == 0 {
@@ -2068,6 +2088,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 workflow_dir: dir.display().to_string(),
                 live,
                 concurrency,
+                submit_only,
             };
 
             let result = if ephemeral {

@@ -50,6 +50,7 @@ fn test_run_llm_code_review_completes() {
         live: false,
         workflow_dir: "../examples/workflows/llm_code_review".into(),
         concurrency: 1,
+        submit_only: false,
     };
 
     let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -69,6 +70,7 @@ fn test_run_document_processing_completes() {
         live: false,
         workflow_dir: "../examples/workflows/document_processing".into(),
         concurrency: 1,
+        submit_only: false,
     };
 
     let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -89,6 +91,7 @@ fn test_run_customer_support_triage_pauses_at_approval() {
         live: false,
         workflow_dir: "../examples/workflows/customer_support_triage".into(),
         concurrency: 1,
+        submit_only: false,
     };
 
     let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -116,6 +119,7 @@ fn test_workflow_determinism_same_result() {
         live: false,
         workflow_dir: "../examples/workflows/llm_code_review".into(),
         concurrency: 1,
+        submit_only: false,
     };
 
     let result1 = WorkflowRunner::run(&def, &options).unwrap();

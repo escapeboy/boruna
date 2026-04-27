@@ -421,6 +421,109 @@ fn worker_kill_mid_step_lease_expires_then_reclaim() {
 }
 
 #[test]
+fn cli_workflow_run_submit_only_then_worker_completes() {
+    // Sprint 0.5-S2e: full end-to-end via the marquee CLI
+    // path. Spawn coordinator + worker. Use
+    // `boruna workflow run --submit-only` against a 1-step
+    // workflow on disk (real workflow.json + .ax file).
+    // Assert:
+    //   1. `workflow run --submit-only` exits 0.
+    //   2. The step transitions Pending → Running →
+    //      Completed via the worker.
+    //   3. The output_json matches the expected value (proof
+    //      that the `.ax` source flowed through metadata,
+    //      coordinator, worker, and back).
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let wf_dir = dir.path().join("wf");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("step1.ax"), "fn main() -> Int { 7 }\n").unwrap();
+    std::fs::write(
+        wf_dir.join("workflow.json"),
+        r#"{
+            "schema_version": 1,
+            "name": "submit-test",
+            "version": "1.0.0",
+            "steps": {
+                "step1": {
+                    "kind": "source",
+                    "source": "step1.ax",
+                    "capabilities": [],
+                    "outputs": {"result": "Int"}
+                }
+            },
+            "edges": []
+        }"#,
+    )
+    .unwrap();
+
+    // Pre-create the data dir so the coordinator can open
+    // runs.db. We bootstrap by running submit-only first
+    // (which creates runs.db), then start the coordinator.
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Submit the workflow (creates runs.db + Pending step1).
+    let submit_out = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--submit-only",
+        ])
+        .output()
+        .expect("invoke boruna workflow run --submit-only");
+    assert!(
+        submit_out.status.success(),
+        "submit failed: stderr={}",
+        String::from_utf8_lossy(&submit_out.stderr)
+    );
+
+    // Find the run_id by scanning runs.db.
+    let store = RunCheckpointStore::open(&data_dir.join("runs.db")).unwrap();
+    let runs = store.list_runs().unwrap();
+    assert_eq!(runs.len(), 1, "expected exactly one run after submit");
+    let run_id = runs[0].run_id.clone();
+    drop(store);
+
+    // Spawn coordinator + worker and wait for the step to complete.
+    let (coord_child, port) = spawn_coordinator(&data_dir, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "submit-worker", 30_000);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut completed = false;
+    let mut last_state = String::new();
+    while Instant::now() < deadline {
+        let store = RunCheckpointStore::open(&data_dir.join("runs.db")).unwrap();
+        let cps = store.list_step_checkpoints(&run_id).unwrap();
+        last_state = format!(
+            "{:?}",
+            cps.iter()
+                .map(|c| (c.step_id.as_str(), c.status))
+                .collect::<Vec<_>>()
+        );
+        if let Some(cp) = cps.first() {
+            if cp.status == StepStatus::Completed {
+                completed = true;
+                assert_eq!(cp.output_json.as_deref(), Some("7"));
+                assert_eq!(cp.claim_id, 1);
+                break;
+            }
+        }
+        drop(store);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    kill_child(worker);
+    kill_child(coord_child);
+    assert!(
+        completed,
+        "step never reached Completed; last state: {last_state}"
+    );
+}
+
+#[test]
 fn coord_bg_sweep_requeues_expired_lease() {
     // Sprint 0.5-S2c: prove the background sweep fires
     // periodically and requeues stale leases without
