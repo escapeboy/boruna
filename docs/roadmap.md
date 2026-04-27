@@ -2,9 +2,20 @@
 
 This roadmap describes what Boruna is working toward. It is realistic, not aspirational marketing. Items without a milestone are under consideration but not scheduled.
 
-Last refreshed: 2026-04-26 (after v0.3.0 ship).
+Last refreshed: 2026-04-27 (after the 0.5-S2 distributed-execution sprint cycle).
 
-## Current: 0.3.0
+## Current: 0.4.0 (pending tag)
+
+Workspace version is `0.4.0` in `Cargo.toml`. The distributed-execution stack from the 0.5.0 plan landed early via the 0.5-S2 sub-sprint cycle (S2a → S2f) on master without a release tag. The next release tag will likely be cut after the 0.5-S3 (auth) sprint lands, since exposing the coordinator publicly without auth is a footgun.
+
+**On master since v0.3.0 tag:**
+- 0.4-S1 → 0.4-S16 — Operations cycle (workflow dashboard, OpenTelemetry observability, Prometheus metrics, multi-environment namespacing, policy-as-code, fine-grained policy, output schema validation, net record/replay, capability identity hash, audit decision events, parent-dir fsync). Each sprint has a corresponding `docs/design-*.md` + retro under `retro/`.
+- 0.5-S1 — ADR 002 (distributed step execution architecture).
+- 0.5-S2a → 0.5-S2f — distributed-execution stack: claim/lease persistence, coordinator/worker HTTP MVP, background lease-expiry sweep, coord+dashboard listener-merge, `workflow run --submit-only`, `coordinator wait <run-id>` for multi-wave advancement.
+
+**The 0.5.0 cycle is now end-to-end functional for arbitrary multi-wave workflows.** Operators can submit a real workflow.json + .ax files via `--submit-only` and drive to terminal status via `coordinator wait`, with a coord+workers cluster doing the actual execution.
+
+## Previous: 0.3.0
 
 Released 2026-04-26 — closes every big-rock theme on the original 0.3.0 plan: persistent workflow state (crash-resumable), concurrent step execution within waves, step retry policies, idempotent invocation, workflow versioning for CI/CD safety, the LLM-handler decision (BYOH), per-step attempt tracking with the project's first schema migration, workflow step output piping via the `step_input` builtin, and async step execution via the external-trigger CLI for webhook-driven workflows. Plus review-driven safety work (atomic trigger-commit closing a TOCTOU race; SSRF-hardened real HTTP handler).
 
@@ -63,34 +74,47 @@ Focus: workflows that survive process restarts, handle long-running steps, and u
 - [x] **Atomic trigger commit** closing TOCTOU race (`0.3-S16`, review-driven)
 - [ ] **Scheduled workflows** — trigger workflows on a cron schedule (deferred to 0.3.x; partially addressed by `--skip-if-running` for safe cron invocation)
 
-## 0.4.0 — Operations
+## 0.4.0 — Operations (mostly shipped on master, tag pending)
 
-Target: Q4 2026
+Originally targeted Q4 2026; landed early as 0.4-S1 → 0.4-S16 + 0.5-S1 → 0.5-S2f. Tag will be cut after auth (0.5-S3) lands.
 
-Focus: running Boruna in team environments. Combines original 0.4.0 plan with FleetQ observability + UX asks.
-
-- [ ] **Distributed step execution** — run steps on separate worker processes
-- [ ] **Workflow dashboard** — web UI for run history, step status, evidence inspection
-- [ ] **Prometheus metrics endpoint**
-- [ ] **OpenTelemetry observability** ([#9](https://github.com/escapeboy/boruna/issues/9)) — per-capability OTLP spans (`boruna.cap.<name>`) with timing, byte counts, error attributes. Activation via `OTEL_EXPORTER_OTLP_ENDPOINT`. P2 from FleetQ.
-- [ ] **Streaming output from `boruna_run`** ([#4](https://github.com/escapeboy/boruna/issues/4)) — periodic `progress` events plus optional `EventLog` event streaming. P1 from FleetQ.
-- [ ] **Policy management** — define and version capability policies as code
+- [x] **Distributed step execution** — coord+workers HTTP cluster + multi-wave advancement (0.5-S2a → 0.5-S2f)
+- [x] **Workflow dashboard** — Axum + askama SSR (0.4-S16); merged into the coordinator listener (0.5-S2d)
+- [x] **Prometheus metrics endpoint** — `/metrics` route + per-run-status counters (0.4-S?)
+- [x] **OpenTelemetry observability** ([#9](https://github.com/escapeboy/boruna/issues/9)) — per-capability OTLP spans (0.4-S5)
+- [x] **Policy management as code** — `Policy` JSON files + `boruna policy validate` (0.4-S?)
+- [x] **Multi-environment support** — `--env` flag + namespaced data-dir + Prometheus `env=` label (0.4-S14)
+- [ ] **Streaming output from `boruna_run`** ([#4](https://github.com/escapeboy/boruna/issues/4)) — periodic `progress` events. P1 from FleetQ.
 - [ ] **LLM provider registry** — configure and route between model providers
-- [ ] **Multi-environment support** — dev/staging/production policy separation
+- [ ] **Scheduled workflows** (carried over from 0.3.x) — full cron daemon vs. external-scheduler-friendly mode
 
-## 0.5.0 — Spec freeze candidate
+## 0.5.0 — Distributed execution + spec freeze
 
-Target: Q1 2027
+Target: ~Q3-Q4 2026 (accelerated from original Q1 2027 target).
 
-Focus: lock down what 1.0 will guarantee. No new capabilities; this is the version where the API surface stops moving. Anything that ships here is what 1.0 commits to forever.
+Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is production-grade, (b) lock the API surface for 1.0.
 
+### (a) Distributed-execution closure
+
+- [x] **`workflow run --submit-only`** + **`coordinator wait`** — end-to-end multi-wave (0.5-S2e/f)
+- [ ] **0.5-S3 — Authentication** — shared-secret bearer token (mTLS deferred to 0.6.x). MUST land before any non-loopback bind is recommended. Gating for production deployments.
+- [ ] **0.5-S4 — `workflow run --coordinator <url>`** — combines submit + wait in one command for CI workflows
+- [ ] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
+- [ ] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
+- [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
+- [ ] **Coordinator HA / failover** — eliminates the single-coord SPOF; worker leases survive coord failover
+- [ ] **Worker capability tagging / placement** — workers advertise capabilities; coord routes work to compatible workers (gates `coord.binary_mismatch` relaxation)
+- [ ] **Rolling upgrades** — heterogeneous worker versions via per-capability version negotiation
+
+### (b) Spec freeze
+
+- [x] **Stable, documented MCP tool response schemas** ([#6](https://github.com/escapeboy/boruna/issues/6)) — `protocol_version: 1` (0.5-S4 of FleetQ track)
+- [x] **Output JSON Schema validation as first-class gate** ([#8](https://github.com/escapeboy/boruna/issues/8)) (0.5-S6 of FleetQ track)
+- [x] **Record/replay for `net.fetch`** ([#7](https://github.com/escapeboy/boruna/issues/7)) (0.5-S7 of FleetQ track)
 - [ ] **Versioned `.ax` language specification** — formal grammar, type rules, capability semantics. Each future release publishes against a `language_version`.
 - [ ] **Versioned workflow DAG schema** — JSON Schema for `workflow.json` with `schema_version` field; backwards-compatible parser.
 - [ ] **Versioned evidence bundle format** — schema for the bundle directory contents, `format_version` field, forward-compat reader.
-- [ ] **Stable, documented MCP tool response schemas** ([#6](https://github.com/escapeboy/boruna/issues/6)) — `protocol_version: 1` on every tool response (validate, run, check, repair, etc.). P1 from FleetQ.
 - [ ] **Migration tooling beta** — `boruna migrate <from-version>` upgrade path for any pre-1.0 breaking change.
-- [ ] **Output JSON Schema validation as first-class gate** ([#8](https://github.com/escapeboy/boruna/issues/8)) — declare schema, get typed validation errors. P2 from FleetQ.
-- [ ] **Record/replay for `net.fetch`** ([#7](https://github.com/escapeboy/boruna/issues/7)) — distinctive selling point that lands in spec freeze for stable storage format. P2 from FleetQ.
 
 ## 1.0.0 — Production readiness
 
