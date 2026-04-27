@@ -16,9 +16,13 @@ use boruna_vm::replay::EventLog;
 use boruna_vm::vm::Vm;
 
 #[cfg(feature = "serve")]
+mod coordinator;
+#[cfg(feature = "serve")]
 mod dashboard;
 #[cfg(feature = "serve")]
 mod serve;
+#[cfg(feature = "serve")]
+mod worker;
 
 #[derive(Parser)]
 #[command(
@@ -141,6 +145,70 @@ enum Command {
     #[cfg(feature = "serve")]
     #[command(subcommand)]
     Dashboard(DashboardCommand),
+    /// Distributed-execution coordinator — HTTP server that
+    /// dispatches workflow steps to remote workers (sprint
+    /// 0.5-S2b, ADR 002). Requires `--features serve`. Loopback
+    /// default; **no authentication** — front with reverse
+    /// proxy if exposed publicly.
+    #[cfg(feature = "serve")]
+    #[command(subcommand)]
+    Coordinator(CoordinatorCommand),
+    /// Distributed-execution worker — polls a coordinator for
+    /// claimable steps, executes them, reports results (sprint
+    /// 0.5-S2b, ADR 002). Requires `--features serve`.
+    #[cfg(feature = "serve")]
+    #[command(subcommand)]
+    Worker(WorkerCommand),
+}
+
+#[cfg(feature = "serve")]
+#[derive(Subcommand)]
+enum CoordinatorCommand {
+    /// Serve the coordinator HTTP routes.
+    Serve {
+        /// Persistent data directory holding `runs.db`. Same
+        /// fallback chain as `boruna workflow run`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Listen port (default 8090).
+        #[arg(long, default_value = "8090")]
+        port: u16,
+        /// Bind address. Defaults to `127.0.0.1`. Pass `0.0.0.0`
+        /// to expose on all interfaces (you accept the
+        /// no-auth-on-LAN consequences).
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Cap on lease TTL workers can request (default 5 min).
+        #[arg(long, default_value = "300000")]
+        max_lease_ttl_ms: u64,
+        /// Long-poll wait timeout for `/api/work/claim`
+        /// (default 30 s).
+        #[arg(long, default_value = "30000")]
+        poll_timeout_ms: u64,
+    },
+}
+
+#[cfg(feature = "serve")]
+#[derive(Subcommand)]
+enum WorkerCommand {
+    /// Run a worker that polls the named coordinator for work.
+    Run {
+        /// Coordinator base URL, e.g.
+        /// `http://coord.internal:8090`.
+        #[arg(long)]
+        coordinator: String,
+        /// Optional worker id; auto-generated if absent.
+        #[arg(long)]
+        worker_id: Option<String>,
+        /// Lease TTL the worker requests on each claim.
+        /// Coordinator may cap this.
+        #[arg(long, default_value = "300000")]
+        lease_ttl_ms: u64,
+        /// Long-poll timeout the worker tells the coordinator
+        /// to wait before returning 204.
+        #[arg(long, default_value = "30000")]
+        poll_timeout_ms: u64,
+    },
 }
 
 #[cfg(feature = "serve")]
@@ -866,6 +934,59 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "serve")]
         Command::Dashboard(d) => run_dashboard(d)?,
+        #[cfg(feature = "serve")]
+        Command::Coordinator(c) => run_coordinator(c)?,
+        #[cfg(feature = "serve")]
+        Command::Worker(w) => run_worker_cmd(w)?,
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serve")]
+fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        CoordinatorCommand::Serve {
+            data_dir,
+            port,
+            bind,
+            max_lease_ttl_ms,
+            poll_timeout_ms,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let bind_addr: std::net::IpAddr = bind
+                    .parse()
+                    .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
+                coordinator::run_serve(
+                    resolved,
+                    port,
+                    bind_addr,
+                    max_lease_ttl_ms,
+                    poll_timeout_ms,
+                )?;
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (data_dir, port, bind, max_lease_ttl_ms, poll_timeout_ms);
+                return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serve")]
+fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        WorkerCommand::Run {
+            coordinator,
+            worker_id,
+            lease_ttl_ms,
+            poll_timeout_ms,
+        } => {
+            worker::run_worker(coordinator, worker_id, lease_ttl_ms, poll_timeout_ms)?;
+        }
     }
     Ok(())
 }

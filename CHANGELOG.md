@@ -8,6 +8,73 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Coordinator/worker HTTP MVP** (sprint `0.5-S2b`). The HTTP
+  layer over the persistence-layer state machine from 0.5-S2a.
+  Two new CLI subcommands behind the `serve` feature flag:
+  - `boruna coordinator serve --data-dir <path> [--port 8090]
+    [--bind 127.0.0.1] [--max-lease-ttl-ms 300000]
+    [--poll-timeout-ms 30000]`
+  - `boruna worker run --coordinator <url> [--worker-id <name>]
+    [--lease-ttl-ms 300000] [--poll-timeout-ms 30000]`
+
+  Six HTTP routes per ADR 002:
+  `POST /api/workers/register`, `POST /api/workers/heartbeat`,
+  `GET /api/work/claim` (long-poll), `POST /api/work/complete`,
+  `POST /api/work/fail`, `POST /api/work/extend-lease`. Every
+  response carries `protocol_version: 1`. Worker-side: register
+  → long-poll claim → compile + execute the step's `.ax`
+  source → POST result. Heartbeats every 10 s in a background
+  task.
+
+  Stable `coord.*` `error_kind` taxonomy, locked at this
+  sprint's ship: `coord.lease_expired`, `coord.unknown_worker`,
+  `coord.binary_mismatch`, `coord.invalid_request`,
+  `coord.output_too_large`, `coord.step_not_found`. The HTTP
+  layer maps the persistence-layer outcome enums (from 0.5-S2a)
+  1:1 — no string-equality drift.
+
+  Workers must match the coordinator's `capability_set_hash`
+  per ADR 002's atomic-upgrade rule; mismatched workers get
+  `409 + coord.binary_mismatch`. Output payload size capped at
+  8 MiB per ADR 002; oversize bodies get `413 Payload Too
+  Large` from Axum's `DefaultBodyLimit`.
+
+  Workers parse policy via the strict validator from sprint
+  `0.4-S15` (`boruna_vm::policy_validate::parse`), so workers
+  reject the same shapes the CLI rejects with the same stable
+  `error_kind` strings.
+
+  On startup, the coordinator runs `expire_leases_and_requeue`
+  to void any stale leases left over from a prior coordinator
+  process (per ADR 002's "coordinator restart = all leases
+  void" rule).
+
+  Loopback (`127.0.0.1`) by default. Non-loopback bind emits a
+  loud stderr warning. **No authentication** — operators
+  exposing the coordinator MUST front it with an
+  auth-enforcing reverse proxy.
+
+  Tests: 9 coordinator handler unit tests (route shapes,
+  error_kind strings, status codes, lease-cap enforcement) +
+  4 worker unit tests (compile, execute, hash determinism,
+  url-encoding) + 6 CLI integration tests including the
+  flagship `worker_kill_mid_step_lease_expires_then_reclaim`
+  regression that exercises the slow-but-not-dead worker race
+  end-to-end at the wire level.
+
+  New deps in the `serve` feature: `reqwest 0.12` (json +
+  rustls-tls, no openssl) for the worker's HTTP client; `uuid
+  1` for worker_id / session_token allocation.
+
+  **Not in this sprint (deferred to 0.5-S2c):** workflow
+  runner integration (`boruna workflow run --coordinator
+  <url>`), wave-loop coordinator-side dispatcher, dashboard +
+  coordinator listener-merge.
+
+  See `docs/design-coordinator-worker-http.md`,
+  `docs/architecture-coordinator-worker-http.md`,
+  `docs/test-plan-coordinator-worker-http.md`.
+
 - **Claim/lease persistence API** (sprint `0.5-S2a`). The
   persistence-layer half of ADR 002. Schema v3 adds three
   operational columns to `step_checkpoints`: `worker_id` (opaque
