@@ -80,13 +80,21 @@ pub struct CoordinatorConfig {
     pub bind_warning: Option<String>,
 }
 
+/// Minimum sweep interval. Lower values would cause the
+/// background task to busy-loop. 100 ms is fast enough for
+/// integration tests; production operators pick something
+/// larger via `--sweep-interval-ms`.
+const MIN_SWEEP_INTERVAL_MS: u64 = 100;
+
 #[tokio::main]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     data_dir: PathBuf,
     port: u16,
     bind: IpAddr,
     max_lease_ttl_ms: u64,
     poll_timeout_ms: u64,
+    sweep_interval_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = data_dir.join("runs.db");
     if !db_path.exists() {
@@ -145,6 +153,25 @@ pub async fn run_serve(
         },
     };
 
+    // Background lease-expiry sweep (sprint 0.5-S2c). Wakes
+    // up every `sweep_interval_ms`, calls
+    // `expire_leases_and_requeue`. Logs only when a non-zero
+    // number of leases were requeued.
+    //
+    // Without this loop, the coordinator's startup sweep is
+    // the ONLY recovery from a worker crash — operators
+    // would have to restart the coordinator process to
+    // unstick a stranded step.
+    let effective_sweep_ms = sweep_interval_ms.max(MIN_SWEEP_INTERVAL_MS);
+    if sweep_interval_ms < MIN_SWEEP_INTERVAL_MS {
+        eprintln!(
+            "[WARNING] --sweep-interval-ms {sweep_interval_ms} below minimum \
+             {MIN_SWEEP_INTERVAL_MS}; using {effective_sweep_ms} ms"
+        );
+    }
+    let sweep_state = state.clone();
+    let sweep_task = tokio::spawn(background_sweep_loop(sweep_state, effective_sweep_ms));
+
     let app = build_router(state);
 
     let addr = std::net::SocketAddr::new(bind, port);
@@ -152,10 +179,66 @@ pub async fn run_serve(
     eprintln!("    data-dir: {}", data_dir.display());
     eprintln!("    max_lease_ttl_ms: {max_lease_ttl_ms}");
     eprintln!("    poll_timeout_ms: {poll_timeout_ms}");
+    eprintln!("    sweep_interval_ms: {effective_sweep_ms}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    let result = axum::serve(listener, app).await;
+    sweep_task.abort();
+    result?;
     Ok(())
+}
+
+/// Background lease-expiry sweep task. Runs for the lifetime
+/// of the coordinator process; aborted when `axum::serve`
+/// exits.
+///
+/// Failure semantics: best-effort. Errors log + continue to
+/// the next tick. The HTTP server keeps running even if the
+/// sweep panics — operators monitor stderr to notice
+/// unrecovered failures.
+async fn background_sweep_loop(state: CoordinatorState, interval_ms: u64) {
+    let mut tick = tokio::time::interval(Duration::from_millis(interval_ms));
+    // First tick fires immediately; skip it (the startup
+    // sweep already ran).
+    tick.tick().await;
+    // Track poison-mutex state so we log once instead of
+    // silently skipping forever (adversarial-review F2).
+    let mut poison_logged = false;
+    loop {
+        tick.tick().await;
+        // `now_ms + 1` matches the startup sweep's threshold
+        // (line ~109) so the boundary `lease_expires_at == now_ms`
+        // is treated as expired by both code paths
+        // (adversarial-review F1).
+        let now_ms = now_unix_ms();
+        let result = {
+            let store = match state.store.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    if !poison_logged {
+                        eprintln!(
+                            "coordinator sweep: store mutex poisoned; \
+                             background sweep is now silently skipping ticks. \
+                             A handler panicked while holding the lock — \
+                             investigate stderr for the original panic."
+                        );
+                        poison_logged = true;
+                    }
+                    continue;
+                }
+            };
+            store.expire_leases_and_requeue(now_ms + 1)
+        };
+        match result {
+            Ok(0) => {} // no-op tick; quiet
+            Ok(n) => {
+                eprintln!("coordinator sweep: requeued {n} expired-lease step(s)")
+            }
+            Err(e) => {
+                eprintln!("coordinator sweep: error {e} — retrying next tick")
+            }
+        }
+    }
 }
 
 pub fn build_router(state: CoordinatorState) -> Router {

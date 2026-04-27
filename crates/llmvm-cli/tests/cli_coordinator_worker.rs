@@ -114,6 +114,15 @@ fn populate_pending_step(data_dir: &Path, run_id: &str, step_id: &str, source: &
 }
 
 fn spawn_coordinator(data_dir: &Path, max_lease_ttl_ms: u64, poll_timeout_ms: u64) -> (Child, u16) {
+    spawn_coordinator_with_sweep(data_dir, max_lease_ttl_ms, poll_timeout_ms, 30_000)
+}
+
+fn spawn_coordinator_with_sweep(
+    data_dir: &Path,
+    max_lease_ttl_ms: u64,
+    poll_timeout_ms: u64,
+    sweep_interval_ms: u64,
+) -> (Child, u16) {
     let port = pick_free_port();
     let child = Command::new(boruna_bin())
         .args([
@@ -127,6 +136,8 @@ fn spawn_coordinator(data_dir: &Path, max_lease_ttl_ms: u64, poll_timeout_ms: u6
             &max_lease_ttl_ms.to_string(),
             "--poll-timeout-ms",
             &poll_timeout_ms.to_string(),
+            "--sweep-interval-ms",
+            &sweep_interval_ms.to_string(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -407,4 +418,185 @@ fn worker_kill_mid_step_lease_expires_then_reclaim() {
     kill_child(worker_b);
     kill_child(coord_child);
     assert!(completed, "worker B never reclaimed and completed");
+}
+
+#[test]
+fn coord_bg_sweep_requeues_expired_lease() {
+    // Sprint 0.5-S2c: prove the background sweep fires
+    // periodically and requeues stale leases without
+    // requiring a coordinator restart.
+    use boruna_orchestrator::persistence::StepCheckpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_json = serde_json::json!({
+        "step_sources": { "step1": "fn main() -> Int { 1 }\n" }
+    })
+    .to_string();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+    store
+        .insert_run(&RunRow {
+            run_id: "run-bg".into(),
+            workflow_name: "wf".into(),
+            workflow_hash: "h".into(),
+            status: RunStatus::Running,
+            started_at_ms: 0,
+            updated_at_ms: 0,
+            policy_json: r#"{"default_allow":true}"#.into(),
+            metadata_json,
+        })
+        .unwrap();
+    store
+        .upsert_step_checkpoint(&StepCheckpoint {
+            run_id: "run-bg".into(),
+            step_id: "step1".into(),
+            status: StepStatus::Pending,
+            output_json: None,
+            output_hash: None,
+            started_at_ms: None,
+            ended_at_ms: None,
+            error_msg: None,
+            attempt_count: 1,
+            worker_id: None,
+            lease_expires_at_ms: None,
+            claim_id: 0,
+        })
+        .unwrap();
+    drop(store);
+
+    // Spawn coordinator with a fast sweep interval (200 ms).
+    let (coord_child, _port) = spawn_coordinator_with_sweep(dir.path(), 60_000, 1_000, 200);
+
+    // Give the coordinator a moment past startup, then create
+    // a stale claim using the persistence API directly. The
+    // claim's lease expires in the past (`lease_expires_at=1`).
+    std::thread::sleep(Duration::from_millis(300));
+    let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+    let outcome = store
+        .claim_step("run-bg", "step1", "ghost-worker", 1, 0)
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        boruna_orchestrator::persistence::ClaimOutcome::Claimed { .. }
+    ));
+    drop(store);
+
+    // Wait long enough for at least one sweep tick.
+    std::thread::sleep(Duration::from_millis(600));
+
+    // Verify the row is back to Pending without any external
+    // sweep call.
+    let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+    let cp = store
+        .list_step_checkpoints("run-bg")
+        .unwrap()
+        .pop()
+        .unwrap();
+    drop(store);
+    kill_child(coord_child);
+
+    assert_eq!(
+        cp.status,
+        StepStatus::Pending,
+        "background sweep should have requeued the stale-lease row"
+    );
+    assert_eq!(cp.worker_id, None);
+    assert_eq!(cp.lease_expires_at_ms, None);
+    // claim_id is preserved across requeue (per 0.5-S2a contract).
+    assert_eq!(cp.claim_id, 1);
+}
+
+#[test]
+fn worker_completes_two_step_linear_dag() {
+    // Sprint 0.5-S2c: prove the protocol scales beyond a
+    // single step. Pre-populate two Pending steps; the
+    // worker claims+completes both. Note: the coordinator
+    // does NOT yet do DAG advancement (that's 0.5-S2d), so
+    // this test pre-populates BOTH steps as Pending up
+    // front. In practice the operator's wave loop would do
+    // this via separate calls to upsert_step_checkpoint as
+    // each step's dependency is satisfied.
+    use boruna_orchestrator::persistence::StepCheckpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_json = serde_json::json!({
+        "step_sources": {
+            "step1": "fn main() -> Int { 10 }\n",
+            "step2": "fn main() -> Int { 20 }\n",
+        }
+    })
+    .to_string();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+    store
+        .insert_run(&RunRow {
+            run_id: "run-2step".into(),
+            workflow_name: "wf".into(),
+            workflow_hash: "h".into(),
+            status: RunStatus::Running,
+            started_at_ms: 0,
+            updated_at_ms: 0,
+            policy_json: r#"{"default_allow":true}"#.into(),
+            metadata_json,
+        })
+        .unwrap();
+    for step_id in ["step1", "step2"] {
+        store
+            .upsert_step_checkpoint(&StepCheckpoint {
+                run_id: "run-2step".into(),
+                step_id: step_id.into(),
+                status: StepStatus::Pending,
+                output_json: None,
+                output_hash: None,
+                started_at_ms: None,
+                ended_at_ms: None,
+                error_msg: None,
+                attempt_count: 1,
+                worker_id: None,
+                lease_expires_at_ms: None,
+                claim_id: 0,
+            })
+            .unwrap();
+    }
+    drop(store);
+
+    let (coord_child, port) = spawn_coordinator(dir.path(), 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "two-step-worker", 30_000);
+
+    let db_path = dir.path().join("runs.db");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut both_completed = false;
+    let mut last_state = String::new();
+    while Instant::now() < deadline {
+        let store = RunCheckpointStore::open(&db_path).unwrap();
+        let cps = store.list_step_checkpoints("run-2step").unwrap();
+        last_state = format!(
+            "{:?}",
+            cps.iter()
+                .map(|c| (c.step_id.as_str(), c.status))
+                .collect::<Vec<_>>()
+        );
+        if cps.len() == 2 && cps.iter().all(|c| c.status == StepStatus::Completed) {
+            both_completed = true;
+            // Verify the per-step outputs.
+            for cp in &cps {
+                let expected_output = match cp.step_id.as_str() {
+                    "step1" => "10",
+                    "step2" => "20",
+                    _ => panic!("unexpected step_id {}", cp.step_id),
+                };
+                assert_eq!(cp.output_json.as_deref(), Some(expected_output));
+                assert!(cp.output_hash.as_deref().unwrap().starts_with("sha256:"));
+                assert_eq!(cp.claim_id, 1);
+            }
+            break;
+        }
+        drop(store);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    kill_child(worker);
+    kill_child(coord_child);
+    assert!(
+        both_completed,
+        "expected both steps Completed within 15s; last state: {last_state}"
+    );
 }
