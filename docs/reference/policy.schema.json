@@ -24,7 +24,8 @@
       "propertyNames": {
         "enum": [
           "net.fetch", "fs.read", "fs.write", "db.query", "ui.render",
-          "time.now", "random", "llm.call", "actor.spawn", "actor.send"
+          "time.now", "random", "llm.call", "actor.spawn", "actor.send",
+          "step.input"
         ]
       }
     },

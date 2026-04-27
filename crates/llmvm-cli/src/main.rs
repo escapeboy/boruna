@@ -861,15 +861,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some(name) = &env_name {
         validate_env_name(name)?;
-        // Mirror to BORUNA_ENV so downstream code (like the metrics
-        // exporter) can read it via env var. Cleaner than threading
-        // it through every call site.
-        // SAFETY: single-threaded at this point — Cli::parse has
-        // returned and no async tasks are spawned yet (the
-        // telemetry runtime is still in main). Other threads cannot
-        // observe a torn read.
-        unsafe { std::env::set_var("BORUNA_ENV", name) };
     }
+    // Threaded explicitly into resolve_data_dir() and metrics::export()
+    // below — no env-var side channel.
+    let env_arg = env_name.as_deref();
 
     match cli.command {
         Command::Compile { file, output } => {
@@ -1016,10 +1011,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Lang(lang) => run_lang(lang)?,
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
-        Command::Workflow(wf) => run_workflow(wf)?,
-        Command::Evidence(ev) => run_evidence(ev)?,
+        Command::Workflow(wf) => run_workflow(wf, env_arg)?,
+        Command::Evidence(ev) => run_evidence(ev, env_arg)?,
         Command::Capability(cap) => run_capability(cap)?,
-        Command::Metrics(m) => run_metrics(m)?,
+        Command::Metrics(m) => run_metrics(m, env_arg)?,
         Command::Policy(p) => {
             let code = run_policy(p);
             if code != 0 {
@@ -1027,9 +1022,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         #[cfg(feature = "serve")]
-        Command::Dashboard(d) => run_dashboard(d)?,
+        Command::Dashboard(d) => run_dashboard(d, env_arg)?,
         #[cfg(feature = "serve")]
-        Command::Coordinator(c) => run_coordinator(c)?,
+        Command::Coordinator(c) => run_coordinator(c, env_arg)?,
         #[cfg(feature = "serve")]
         Command::Worker(w) => run_worker_cmd(w)?,
     }
@@ -1037,7 +1032,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "serve")]
-fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Error>> {
+fn run_coordinator(
+    cmd: CoordinatorCommand,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         CoordinatorCommand::Serve {
             data_dir,
@@ -1050,7 +1048,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let bind_addr: std::net::IpAddr = bind
                     .parse()
                     .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
@@ -1086,7 +1084,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let exit_code =
                     coordinator::run_wait(resolved, run_id, poll_interval_ms, max_wait_secs)?;
                 if exit_code != 0 {
@@ -1126,7 +1124,10 @@ fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[cfg(feature = "serve")]
-fn run_dashboard(cmd: DashboardCommand) -> Result<(), Box<dyn std::error::Error>> {
+fn run_dashboard(
+    cmd: DashboardCommand,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         DashboardCommand::Serve {
             data_dir,
@@ -1135,7 +1136,7 @@ fn run_dashboard(cmd: DashboardCommand) -> Result<(), Box<dyn std::error::Error>
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let bind_addr: std::net::IpAddr = bind
                     .parse()
                     .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
@@ -1266,14 +1267,17 @@ fn print_policy_show(p: &boruna_vm::Policy) {
     }
 }
 
-fn run_metrics(cmd: MetricsCommand) -> Result<(), Box<dyn std::error::Error>> {
+fn run_metrics(
+    cmd: MetricsCommand,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         MetricsCommand::Export { data_dir } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved = resolve_data_dir(data_dir.as_ref());
-                let text =
-                    boruna_orchestrator::metrics::export(&resolved).map_err(|e| format!("{e}"))?;
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                let text = boruna_orchestrator::metrics::export(&resolved, env_arg)
+                    .map_err(|e| format!("{e}"))?;
                 // Write directly to stdout — no trailing newline
                 // adjustment; format_prometheus already terminates
                 // each line with \n. Operators redirect this to a
@@ -2102,7 +2106,10 @@ fn make_gateway(
     Ok(CapabilityGateway::new(policy))
 }
 
-fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> {
+fn run_workflow(
+    cmd: WorkflowCommand,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use boruna_orchestrator::audit::{AuditEvent, AuditLog, EvidenceBundleBuilder};
     use boruna_orchestrator::workflow::{
         RunOptions, WorkflowDef, WorkflowRunner, WorkflowValidator,
@@ -2195,7 +2202,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             } else {
                 #[cfg(feature = "persist-sqlite")]
                 {
-                    let resolved = resolve_data_dir(data_dir.as_ref());
+                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                     // 0.3-S7 → 0.3-S10: cron-friendly idempotent
                     // invocation. With --skip-if-running, the
                     // (check-in-flight + insert) sequence runs as a
@@ -2346,7 +2353,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             #[cfg(feature = "persist-sqlite")]
             {
                 use boruna_orchestrator::workflow::ResumeOptions;
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 println!("resuming run '{run_id}' from {}", resolved.display());
 
                 // 0.3-S9: pre-flight expected-hash check. The
@@ -2424,7 +2431,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             #[cfg(feature = "persist-sqlite")]
             {
                 use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 record_approval_decision(
                     &resolved,
                     &run_id,
@@ -2454,7 +2461,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             #[cfg(feature = "persist-sqlite")]
             {
                 use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 record_approval_decision(
                     &resolved,
                     &run_id,
@@ -2509,7 +2516,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
                 // "step crashed parsing JSON" three layers down.
                 serde_json::from_str::<serde_json::Value>(&payload_str)
                     .map_err(|e| format!("--payload is not valid JSON: {e}"))?;
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
                     .map_err(|e| format!("{e}"))?;
                 println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
@@ -2531,7 +2538,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let detail = boruna_orchestrator::workflow::show_run(&resolved, &run_id)
                     .map_err(|e| format!("{e}"))?;
                 if json {
@@ -2685,7 +2692,7 @@ fn run_workflow(cmd: WorkflowCommand) -> Result<(), Box<dyn std::error::Error>> 
             #[cfg(feature = "persist-sqlite")]
             {
                 use boruna_orchestrator::persistence::RunStatus as PersistRunStatus;
-                let resolved = resolve_data_dir(data_dir.as_ref());
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let filter = match status.as_deref() {
                     None => None,
                     Some("running") => Some(PersistRunStatus::Running),
@@ -2793,13 +2800,14 @@ fn check_workflow_hash_expectation(
 /// fallback chain: explicit flag → `BORUNA_DATA_DIR` env var → `./.boruna/data`
 /// in the current working directory.
 ///
-/// Sprint 0.4-S14: when `BORUNA_ENV` is set (via the `--env` global
-/// flag or directly in the environment), the resolved path is
+/// Sprint 0.4-S14: when `env_name` is `Some` (resolved from the
+/// `--env` global flag or `BORUNA_ENV`), the resolved path is
 /// further namespaced as `<base>/<env>/`. This lets operators run
 /// the same workflow against different environments without manual
-/// data-dir bookkeeping.
+/// data-dir bookkeeping. The env name is threaded explicitly from
+/// `run()` rather than mutating process state via `set_var`.
 #[cfg(feature = "persist-sqlite")]
-fn resolve_data_dir(flag: Option<&PathBuf>) -> PathBuf {
+fn resolve_data_dir(flag: Option<&PathBuf>, env_name: Option<&str>) -> PathBuf {
     let base = if let Some(p) = flag {
         p.clone()
     } else if let Ok(env) = std::env::var("BORUNA_DATA_DIR") {
@@ -2811,12 +2819,10 @@ fn resolve_data_dir(flag: Option<&PathBuf>) -> PathBuf {
     } else {
         PathBuf::from("./.boruna/data")
     };
-    if let Ok(env_name) = std::env::var("BORUNA_ENV") {
-        if !env_name.is_empty() {
-            return base.join(env_name);
-        }
+    match env_name.filter(|s| !s.is_empty()) {
+        Some(name) => base.join(name),
+        None => base,
     }
-    base
 }
 
 /// Validate an env name is filesystem-safe and Prometheus-label-safe
@@ -2849,7 +2855,10 @@ fn validate_env_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> {
+fn run_evidence(
+    cmd: EvidenceCommand,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use boruna_orchestrator::audit::{evidence::BundleManifest, verify::verify_bundle};
 
     match cmd {
@@ -2860,7 +2869,7 @@ fn run_evidence(cmd: EvidenceCommand) -> Result<(), Box<dyn std::error::Error>> 
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                let resolved_data = resolve_data_dir(data_dir.as_ref());
+                let resolved_data = resolve_data_dir(data_dir.as_ref(), env_arg);
                 let manifest = boruna_orchestrator::workflow::create_bundle(
                     &resolved_data,
                     &run_id,

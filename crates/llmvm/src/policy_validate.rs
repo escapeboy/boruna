@@ -713,4 +713,137 @@ mod tests {
             assert_eq!(err.error_kind(), *kind);
         }
     }
+
+    // ─── Schema drift detection ───
+    //
+    // `docs/reference/policy.schema.json` is hand-written. These
+    // tests detect drift between the schema and the parser by
+    // comparing capability names, top-level fields, net-policy
+    // fields, rule fields, and schema_version. They run as plain
+    // unit tests (no jsonschema dep) by parsing the schema as
+    // generic JSON and walking specific paths.
+
+    fn load_schema() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/reference/policy.schema.json");
+        let json = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("schema is not valid JSON: {e}"))
+    }
+
+    #[test]
+    fn schema_version_const_matches_parser_constant() {
+        let schema = load_schema();
+        let v = schema["properties"]["schema_version"]["const"]
+            .as_u64()
+            .expect("schema_version.const present and integer");
+        assert_eq!(
+            v,
+            u64::from(POLICY_SCHEMA_VERSION),
+            "schema schema_version drift — schema={v}, parser={POLICY_SCHEMA_VERSION}"
+        );
+    }
+
+    #[test]
+    fn schema_top_level_fields_match_parser_allowlist() {
+        let schema = load_schema();
+        let mut schema_fields: Vec<String> = schema["properties"]
+            .as_object()
+            .expect("properties is an object")
+            .keys()
+            .cloned()
+            .collect();
+        schema_fields.sort();
+        let mut parser_fields: Vec<String> = POLICY_TOP_LEVEL_FIELDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        parser_fields.sort();
+        assert_eq!(
+            schema_fields, parser_fields,
+            "top-level field drift between policy.schema.json and POLICY_TOP_LEVEL_FIELDS"
+        );
+    }
+
+    #[test]
+    fn schema_net_policy_fields_match_parser_allowlist() {
+        let schema = load_schema();
+        let mut schema_fields: Vec<String> = schema["$defs"]["netPolicy"]["properties"]
+            .as_object()
+            .expect("$defs.netPolicy.properties is an object")
+            .keys()
+            .cloned()
+            .collect();
+        schema_fields.sort();
+        let mut parser_fields: Vec<String> =
+            NET_POLICY_FIELDS.iter().map(|s| s.to_string()).collect();
+        parser_fields.sort();
+        assert_eq!(
+            schema_fields, parser_fields,
+            "net_policy field drift between policy.schema.json and NET_POLICY_FIELDS"
+        );
+    }
+
+    #[test]
+    fn schema_rule_fields_match_parser_allowlist() {
+        let schema = load_schema();
+        let mut schema_fields: Vec<String> = schema["$defs"]["policyRule"]["properties"]
+            .as_object()
+            .expect("$defs.policyRule.properties is an object")
+            .keys()
+            .cloned()
+            .collect();
+        schema_fields.sort();
+        let mut parser_fields: Vec<String> =
+            POLICY_RULE_FIELDS.iter().map(|s| s.to_string()).collect();
+        parser_fields.sort();
+        assert_eq!(
+            schema_fields, parser_fields,
+            "rule field drift between policy.schema.json and POLICY_RULE_FIELDS"
+        );
+    }
+
+    #[test]
+    fn schema_capability_enum_matches_canonical_names() {
+        // The schema constrains `rules` keys via a propertyNames.enum.
+        // That list must equal the canonical names emitted by
+        // `Capability::name()` for every variant the parser would
+        // accept — otherwise a policy file mentioning `step.input`
+        // (canonical) is rejected by schema validators yet accepted
+        // by `parse()`, leaving operators with conflicting tools.
+        let schema = load_schema();
+        let mut schema_caps: Vec<String> = schema["properties"]["rules"]["propertyNames"]["enum"]
+            .as_array()
+            .expect("rules.propertyNames.enum is an array")
+            .iter()
+            .map(|v| v.as_str().expect("enum entries are strings").to_string())
+            .collect();
+        schema_caps.sort();
+
+        // Canonical name for every Capability variant. Any new variant
+        // must add itself here AND to the schema enum.
+        use boruna_bytecode::Capability;
+        let mut canonical: Vec<String> = [
+            Capability::NetFetch,
+            Capability::FsRead,
+            Capability::FsWrite,
+            Capability::DbQuery,
+            Capability::UiRender,
+            Capability::TimeNow,
+            Capability::Random,
+            Capability::LlmCall,
+            Capability::ActorSpawn,
+            Capability::ActorSend,
+            Capability::StepInput,
+        ]
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+        canonical.sort();
+
+        assert_eq!(
+            schema_caps, canonical,
+            "capability enum drift — schema and parser disagree on which capability names are accepted"
+        );
+    }
 }

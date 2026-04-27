@@ -158,9 +158,25 @@ impl AuditLog {
     /// surrounding container (e.g., a run's persisted metadata blob)
     /// and need to restore the in-memory log without re-serializing
     /// to JSON. The chain is **not** re-verified here — call
-    /// [`Self::verify`] explicitly if the source is untrusted.
+    /// [`Self::verify`] explicitly if the source is untrusted, or
+    /// use [`Self::from_entries_verified`] to fuse load + verify.
     pub fn from_entries(entries: Vec<AuditEntry>) -> Self {
         AuditLog { entries }
+    }
+
+    /// Construct + verify in one step. Returns the constructed
+    /// `AuditLog` on success, or `Err(bad_seq)` on the first entry
+    /// whose hash chain breaks — same error semantics as
+    /// [`Self::verify`]. Use this when loading the log from a
+    /// less-trusted surface (e.g., `metadata.audit_log` rehydrated
+    /// from sqlite) so chain-integrity violations surface at load
+    /// time instead of propagating into derived artifacts (evidence
+    /// bundles, append operations) that would otherwise treat the
+    /// tampered chain as valid.
+    pub fn from_entries_verified(entries: Vec<AuditEntry>) -> Result<Self, u64> {
+        let log = AuditLog { entries };
+        log.verify()?;
+        Ok(log)
     }
 
     /// Consume the log and return its owned entries (sprint `0.4-S9`).

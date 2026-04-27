@@ -38,7 +38,7 @@ use crate::workflow::WorkflowRunError;
 /// Pure data — formatting to Prometheus text is a separate function
 /// so the snapshot can be reused by other exporters (e.g. JSON for a
 /// future dashboard endpoint).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetricsSnapshot {
     /// `(workflow_name, status) -> count` for `boruna_workflow_runs_total`.
     pub runs_total: BTreeMap<(String, String), u64>,
@@ -47,7 +47,35 @@ pub struct MetricsSnapshot {
     /// `(workflow_name, step_id, status) -> count` of step terminal
     /// transitions across all runs.
     pub step_completions: BTreeMap<(String, String, String), u64>,
+    /// `workflow_name -> RunDurationHistogram` for terminal runs only
+    /// (`completed`/`failed`). Computed from `updated_at_ms - started_at_ms`.
+    /// Aggregated across runs of the same workflow so dashboards can
+    /// show p50/p95/p99 via Prometheus' `histogram_quantile()`.
+    pub run_durations: BTreeMap<String, RunDurationHistogram>,
 }
+
+/// Pre-bucketed histogram of run durations (seconds) for a single
+/// workflow. Buckets follow the cumulative-count convention of
+/// Prometheus histograms: `bucket_counts[i]` is the count of
+/// observations whose value is `<= RUN_DURATION_BUCKETS_SECONDS[i]`.
+/// `count` is the total number of observations and `sum_seconds`
+/// the sum of all observed values — together they let Prometheus
+/// derive the average over a window.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RunDurationHistogram {
+    pub bucket_counts: [u64; RUN_DURATION_BUCKETS_SECONDS.len()],
+    pub count: u64,
+    pub sum_seconds: f64,
+}
+
+/// Bucket boundaries (in seconds) for run duration histograms,
+/// covering the full operational range we expect: sub-second runs
+/// up through hour-long workflows. The `+Inf` bucket is implicit at
+/// emission time. Boundaries chosen to cover both interactive
+/// (≤30s) and long-running (≥30 min) workloads with sensible
+/// resolution at each scale.
+pub const RUN_DURATION_BUCKETS_SECONDS: &[f64] =
+    &[0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 1800.0, 7200.0];
 
 /// Compute a metrics snapshot from the persistent run store. Reads
 /// all rows; the persistent store is bounded by run history retention.
@@ -78,6 +106,30 @@ pub fn compute_snapshot(data_dir: &Path) -> Result<MetricsSnapshot, WorkflowRunE
                 .runs_in_flight
                 .entry(run.workflow_name.clone())
                 .or_insert(0) += 1;
+        }
+
+        // run_durations: only terminal runs (completed/failed) — the
+        // duration of a still-running or paused run is not meaningful
+        // as a histogram observation. `updated_at_ms` for a terminal
+        // run is the moment of transition to that terminal status, so
+        // it serves as a reasonable end-time approximation. Negative
+        // durations (clock skew between submit and complete on the
+        // same machine — should never happen, but defensive) clamp to
+        // zero to keep the histogram monotone.
+        if matches!(run.status, RunStatus::Completed | RunStatus::Failed) {
+            let elapsed_ms = (run.updated_at_ms - run.started_at_ms).max(0);
+            let elapsed_s = (elapsed_ms as f64) / 1000.0;
+            let hist = snapshot
+                .run_durations
+                .entry(run.workflow_name.clone())
+                .or_default();
+            hist.count += 1;
+            hist.sum_seconds += elapsed_s;
+            for (i, &boundary) in RUN_DURATION_BUCKETS_SECONDS.iter().enumerate() {
+                if elapsed_s <= boundary {
+                    hist.bucket_counts[i] += 1;
+                }
+            }
         }
 
         // step_completions: walk the run's checkpoints; only count
@@ -138,9 +190,9 @@ pub fn format_prometheus(snapshot: &MetricsSnapshot) -> String {
 /// `None`, output is identical to the legacy `format_prometheus`.
 ///
 /// Operators running multi-environment deployments use the
-/// `--env` global CLI flag to select the env. The env is mirrored
-/// to `BORUNA_ENV` so [`export`] picks it up automatically; direct
-/// callers can pass it here without going through env vars.
+/// `--env` global CLI flag to select the env. The CLI threads
+/// the resolved env name directly into [`export`]; no env-var
+/// side channel is involved.
 pub fn format_prometheus_with_env(snapshot: &MetricsSnapshot, env: Option<&str>) -> String {
     let env_prefix = env
         .map(|e| format!("env=\"{}\",", escape_label(e)))
@@ -191,6 +243,42 @@ pub fn format_prometheus_with_env(snapshot: &MetricsSnapshot, env: Option<&str>)
         ));
     }
 
+    // boruna_workflow_run_duration_seconds (histogram). Emitted as
+    // one block per workflow with cumulative `_bucket{le=...}` lines,
+    // a `_count` total, and a `_sum`. Operators feed this into
+    // `histogram_quantile()` for p50/p95/p99 dashboards.
+    out.push_str(
+        "# HELP boruna_workflow_run_duration_seconds Duration of \
+         terminal (completed/failed) workflow runs in seconds.\n",
+    );
+    out.push_str("# TYPE boruna_workflow_run_duration_seconds histogram\n");
+    for (workflow, hist) in &snapshot.run_durations {
+        let label = escape_label(workflow);
+        for (i, &boundary) in RUN_DURATION_BUCKETS_SECONDS.iter().enumerate() {
+            out.push_str(&format!(
+                "boruna_workflow_run_duration_seconds_bucket\
+                 {{{env_prefix}workflow=\"{label}\",le=\"{boundary}\"}} {}\n",
+                hist.bucket_counts[i]
+            ));
+        }
+        // Mandatory `+Inf` bucket — equals total count by convention.
+        out.push_str(&format!(
+            "boruna_workflow_run_duration_seconds_bucket\
+             {{{env_prefix}workflow=\"{label}\",le=\"+Inf\"}} {}\n",
+            hist.count
+        ));
+        out.push_str(&format!(
+            "boruna_workflow_run_duration_seconds_count\
+             {{{env_prefix}workflow=\"{label}\"}} {}\n",
+            hist.count
+        ));
+        out.push_str(&format!(
+            "boruna_workflow_run_duration_seconds_sum\
+             {{{env_prefix}workflow=\"{label}\"}} {}\n",
+            hist.sum_seconds
+        ));
+    }
+
     out
 }
 
@@ -214,16 +302,15 @@ fn escape_label(s: &str) -> String {
 /// Reads the persistent store, computes a snapshot, and renders to
 /// Prometheus text format.
 ///
-/// Sprint `0.4-S14`: when the `BORUNA_ENV` environment variable is
-/// set (typically via the `--env` global CLI flag), every metric
-/// series gains an `env="<env>"` label. Operators running
-/// multi-environment deployments scrape each environment as a
-/// separate textfile collector source and Prometheus
-/// dashboards filter / group by `env`.
-pub fn export(data_dir: &Path) -> Result<String, WorkflowRunError> {
+/// Sprint `0.4-S14`: when `env` is `Some`, every metric series
+/// gains an `env="<env>"` label. Operators running multi-environment
+/// deployments scrape each environment as a separate textfile
+/// collector source and Prometheus dashboards filter / group by
+/// `env`. The env name is threaded explicitly from the CLI's
+/// `--env` flag — no environment-variable side channel.
+pub fn export(data_dir: &Path, env: Option<&str>) -> Result<String, WorkflowRunError> {
     let snapshot = compute_snapshot(data_dir)?;
-    let env = std::env::var("BORUNA_ENV").ok().filter(|s| !s.is_empty());
-    Ok(format_prometheus_with_env(&snapshot, env.as_deref()))
+    Ok(format_prometheus_with_env(&snapshot, env))
 }
 
 #[cfg(test)]
@@ -239,7 +326,7 @@ mod tests {
         let dir = empty_data_dir();
         // Open the store to create the schema.
         let _ = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
-        let out = export(dir.path()).unwrap();
+        let out = export(dir.path(), None).unwrap();
         assert!(out.contains("# HELP boruna_workflow_runs_total"));
         assert!(out.contains("# TYPE boruna_workflow_runs_total counter"));
         assert!(out.contains("# HELP boruna_workflow_runs_in_flight"));
@@ -509,12 +596,12 @@ mod tests {
     }
 
     #[test]
-    fn export_picks_up_boruna_env_from_environment() {
-        // End-to-end: setting BORUNA_ENV before calling export
-        // must produce output with env labels. This locks the
-        // contract that the CLI's --env flag (which mirrors to
-        // BORUNA_ENV) flows through to the exporter without
-        // needing to thread the env through every call.
+    fn export_with_explicit_env_emits_env_labels() {
+        // End-to-end: passing an env name into export must produce
+        // output with env labels. Locks the contract that the
+        // CLI's --env flag (which is now threaded directly through
+        // the call) flows through to the exporter without needing
+        // an environment-variable side channel.
         use crate::persistence::RunRow;
         let dir = empty_data_dir();
         let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
@@ -532,28 +619,107 @@ mod tests {
             .unwrap();
         drop(store);
 
-        // SAFETY: tests run on a single thread per Rust default
-        // (this test does not spawn threads, and the surrounding
-        // test harness is mutexed via a serial_test or similar
-        // when env vars are touched — but to be safe within the
-        // tests in this module that may run in parallel, scope the
-        // change tightly).
-        let prior = std::env::var("BORUNA_ENV").ok();
-        unsafe { std::env::set_var("BORUNA_ENV", "production") };
-
-        let out = export(dir.path()).unwrap();
+        let out = export(dir.path(), Some("production")).unwrap();
         assert!(out.contains(
             r#"boruna_workflow_runs_total{env="production",workflow="wf",status="completed"} 1"#
         ));
+    }
 
-        // Restore prior state so other tests in this module aren't
-        // affected by the env var leak.
-        unsafe {
-            match prior {
-                Some(v) => std::env::set_var("BORUNA_ENV", v),
-                None => std::env::remove_var("BORUNA_ENV"),
-            }
-        };
+    #[test]
+    fn export_with_no_env_omits_env_label() {
+        // Regression: env=None must produce label-free series, so
+        // single-environment deployments don't see a stray env="" label.
+        use crate::persistence::RunRow;
+        let dir = empty_data_dir();
+        let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+        store
+            .insert_run(&RunRow {
+                run_id: "r1".into(),
+                workflow_name: "wf".into(),
+                workflow_hash: "x".into(),
+                status: RunStatus::Completed,
+                started_at_ms: 0,
+                updated_at_ms: 0,
+                policy_json: "{}".into(),
+                metadata_json: "{}".into(),
+            })
+            .unwrap();
+        drop(store);
+
+        let out = export(dir.path(), None).unwrap();
+        assert!(out.contains(r#"boruna_workflow_runs_total{workflow="wf",status="completed"} 1"#));
+        assert!(!out.contains(r#"env="""#));
+    }
+
+    #[test]
+    fn run_duration_histogram_buckets_terminal_runs_only() {
+        // Setup: insert four runs with varying durations and statuses.
+        // Only completed/failed contribute to the histogram; running
+        // and paused runs are excluded (their duration is undefined).
+        use crate::persistence::RunRow;
+        let dir = empty_data_dir();
+        let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+        let runs = [
+            ("r1", RunStatus::Completed, 0i64, 250i64), // 0.25s — bucket le=0.5
+            ("r2", RunStatus::Completed, 0, 3_000),     // 3s — bucket le=5
+            ("r3", RunStatus::Failed, 0, 45_000),       // 45s — bucket le=60
+            ("r4", RunStatus::Running, 0, 2_000),       // excluded
+        ];
+        for (id, status, started, updated) in runs {
+            store
+                .insert_run(&RunRow {
+                    run_id: id.into(),
+                    workflow_name: "wf".into(),
+                    workflow_hash: "x".into(),
+                    status,
+                    started_at_ms: started,
+                    updated_at_ms: updated,
+                    policy_json: "{}".into(),
+                    metadata_json: "{}".into(),
+                })
+                .unwrap();
+        }
+        drop(store);
+
+        let snap = compute_snapshot(dir.path()).unwrap();
+        let hist = snap.run_durations.get("wf").expect("wf histogram");
+        assert_eq!(hist.count, 3);
+        assert!((hist.sum_seconds - (0.25 + 3.0 + 45.0)).abs() < 1e-9);
+        // Cumulative bucket counts: each observation falls into ALL
+        // buckets whose boundary >= its value.
+        // 0.1 → 0 obs ≤ 0.1
+        // 0.5 → 1 (0.25)
+        // 1.0 → 1
+        // 5.0 → 2 (0.25, 3)
+        // 10  → 2
+        // 30  → 2
+        // 60  → 3 (0.25, 3, 45)
+        // 300, 1800, 7200 → 3
+        assert_eq!(hist.bucket_counts, [0, 1, 1, 2, 2, 2, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn format_prometheus_emits_histogram_lines() {
+        let mut snap = MetricsSnapshot::default();
+        snap.run_durations.insert(
+            "wf".to_string(),
+            RunDurationHistogram {
+                bucket_counts: [0, 1, 1, 2, 2, 2, 3, 3, 3, 3],
+                count: 3,
+                sum_seconds: 48.25,
+            },
+        );
+        let out = format_prometheus(&snap);
+        assert!(out.contains("# TYPE boruna_workflow_run_duration_seconds histogram"));
+        assert!(out
+            .contains(r#"boruna_workflow_run_duration_seconds_bucket{workflow="wf",le="0.5"} 1"#));
+        assert!(
+            out.contains(r#"boruna_workflow_run_duration_seconds_bucket{workflow="wf",le="60"} 3"#)
+        );
+        assert!(out
+            .contains(r#"boruna_workflow_run_duration_seconds_bucket{workflow="wf",le="+Inf"} 3"#));
+        assert!(out.contains(r#"boruna_workflow_run_duration_seconds_count{workflow="wf"} 3"#));
+        assert!(out.contains(r#"boruna_workflow_run_duration_seconds_sum{workflow="wf"} 48.25"#));
     }
 
     #[test]
@@ -622,7 +788,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let out = export(dir.path()).unwrap();
+        let out = export(dir.path(), None).unwrap();
         assert!(out.contains("boruna_workflow_runs_total{workflow=\"etl\",status=\"completed\"} 1"));
         assert!(out.contains("boruna_workflow_runs_total{workflow=\"etl\",status=\"paused\"} 1"));
         assert!(out.contains("boruna_workflow_runs_in_flight{workflow=\"etl\"} 1"));

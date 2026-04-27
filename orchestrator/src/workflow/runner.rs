@@ -2806,6 +2806,15 @@ pub mod error_class {
     /// Step input resolution failed (e.g., upstream output missing).
     /// Recommended for retry: no — DAG-level concern, not transient.
     pub const INPUT_RESOLUTION: &str = "input_resolution";
+    /// Network-level transient failure from a `net.fetch` capability
+    /// call: timeout, connection refused, DNS resolution failure,
+    /// connection reset mid-stream, etc. Detected by string-matching
+    /// the `ureq` error wrapper emitted by `http_handler`. SSRF
+    /// blocks and policy-allowlist denials are *not* this class —
+    /// those are deterministic configuration errors and surface as
+    /// `RUNTIME_ERROR` (not retry-eligible by default).
+    /// Recommended for retry: yes — typically transient.
+    pub const TRANSIENT_NETWORK: &str = "transient_network";
 }
 
 /// Classify a [`VmError`] into one of the strings in [`error_class`]
@@ -2817,6 +2826,14 @@ fn classify_vm_error(e: &VmError) -> &'static str {
         VmError::ExecutionLimitExceeded(_) => error_class::STEP_LIMIT_EXCEEDED,
         VmError::CapabilityDenied(_) => error_class::CAPABILITY_DENIED,
         VmError::CapabilityBudgetExceeded(_) => error_class::CAPABILITY_BUDGET_EXCEEDED,
+        // Capability errors surface as AssertionFailed wrapping the
+        // handler's `Err(String)` (see capability_gateway::invoke).
+        // Distinguish transient network failures (retry-eligible) from
+        // deterministic policy/config errors (not retry-eligible) by
+        // matching the http_handler's error wrappers.
+        VmError::AssertionFailed(msg) if is_transient_network_error(msg) => {
+            error_class::TRANSIENT_NETWORK
+        }
         // All other VmError variants — including assertion failures,
         // type errors, index-out-of-bounds, division by zero, match
         // exhaustion, stack errors, invalid IP / function / constant /
@@ -2828,6 +2845,22 @@ fn classify_vm_error(e: &VmError) -> &'static str {
         // demands it.
         _ => error_class::RUNTIME_ERROR,
     }
+}
+
+/// Detect transient-network markers in an error message string.
+/// Used by both [`classify_vm_error`] (in-process retry path) and
+/// [`classify_failure_message`] (distributed wait-driver path) so
+/// the two paths agree on what counts as TRANSIENT_NETWORK.
+///
+/// Matches the wrappers emitted by `crates/llmvm/src/http_handler.rs`:
+/// `"HTTP request failed: ..."` and
+/// `"failed to read response body: ..."`. Both indicate the network
+/// call reached the wire but the transport / peer / DNS broke.
+/// SSRF blocks (`"blocked request to ..."`) and allowlist denials
+/// (`"domain '..' not in allowlist"`) are intentionally NOT matched —
+/// they're deterministic config errors, not transient.
+fn is_transient_network_error(msg: &str) -> bool {
+    msg.contains("HTTP request failed:") || msg.contains("failed to read response body:")
 }
 
 /// Classify a wire-level `error_msg` string into one of the
@@ -2867,13 +2900,19 @@ pub(crate) fn classify_failure_message(error_msg: &str) -> &'static str {
         // explicitly listed.
         error_class::RUNTIME_ERROR
     } else if trimmed.starts_with("runtime:") {
-        // Worker-emitted "runtime: <VmError display>". Could be a
-        // wall-time-exceeded or capability-denied underneath; we
-        // can't tell from the string without a finer wire format.
-        // Default to RUNTIME_ERROR. A future sprint adds a typed
+        // Worker-emitted "runtime: <VmError display>". Most variants
+        // collapse to RUNTIME_ERROR (we can't recover wall-time vs
+        // capability-denied vs assertion from a free-form string),
+        // but transient-network failures carry a distinctive
+        // wrapper from http_handler that survives Display, so we
+        // can recover that one class. A future sprint adds a typed
         // error_kind field on the FailRequest so the wait driver
-        // sees the original class.
-        error_class::RUNTIME_ERROR
+        // sees the original class for all variants.
+        if is_transient_network_error(trimmed) {
+            error_class::TRANSIENT_NETWORK
+        } else {
+            error_class::RUNTIME_ERROR
+        }
     } else if trimmed.contains("cannot read") {
         error_class::IO_ERROR
     } else {
@@ -4028,13 +4067,23 @@ pub fn create_bundle(
         }
     }
 
-    // Hash-chained audit log from metadata. `AuditLog::from_entries`
-    // does not re-verify the chain at this point — verification
-    // happens via `boruna evidence verify` (which re-reads the chain
-    // from disk and walks it). If the on-disk metadata had been
-    // tampered with directly via sqlite3 surgery, that tamper
-    // surfaces at verify time, not bundle time.
-    let audit = AuditLog::from_entries(metadata.audit_log);
+    // Hash-chained audit log from metadata. We verify the chain at
+    // bundle-creation time so that direct sqlite3 tamper of
+    // `metadata.audit_log` surfaces *here* (operator gets a clear
+    // error and an unwritten bundle) rather than propagating into a
+    // bundle that downstream `boruna evidence verify` would later
+    // flag — the latter is too late to prevent a tampered bundle
+    // from being shipped to a compliance reviewer. This catches
+    // chain-link corruption (mutation without re-hashing); a fully
+    // forged chain rebuilt with consistent hashes is out of scope
+    // for this defense and requires an out-of-band hash root.
+    let audit = AuditLog::from_entries_verified(metadata.audit_log).map_err(|bad_seq| {
+        WorkflowRunError::Io(format!(
+            "audit chain integrity check failed at sequence {bad_seq}: \
+             metadata.audit_log appears to have been tampered with — \
+             refusing to build evidence bundle"
+        ))
+    })?;
 
     let manifest = builder
         .finalize(&audit)
@@ -4926,6 +4975,66 @@ mod tests {
             error_class::RUNTIME_ERROR,
         );
         assert_eq!(classify_failure_message(""), error_class::RUNTIME_ERROR);
+    }
+
+    #[test]
+    fn classify_failure_message_detects_transient_network() {
+        // Worker-emitted "runtime: <Display of AssertionFailed wrapping
+        // a net.fetch handler error>" must classify as transient_network
+        // so retry_on=["transient_network"] policies engage.
+        assert_eq!(
+            classify_failure_message(
+                "runtime: assertion failed: capability error: HTTP request failed: dns error"
+            ),
+            error_class::TRANSIENT_NETWORK,
+        );
+        assert_eq!(
+            classify_failure_message(
+                "runtime: assertion failed: capability error: failed to read response body: connection reset"
+            ),
+            error_class::TRANSIENT_NETWORK,
+        );
+        // SSRF blocks and allowlist denials are deterministic config
+        // errors — must NOT classify as transient_network (operators
+        // shouldn't retry a misconfigured policy).
+        assert_eq!(
+            classify_failure_message(
+                "runtime: assertion failed: capability error: blocked request to localhost (localhost)"
+            ),
+            error_class::RUNTIME_ERROR,
+        );
+        assert_eq!(
+            classify_failure_message(
+                "runtime: assertion failed: capability error: domain 'example.com' not in allowlist: []"
+            ),
+            error_class::RUNTIME_ERROR,
+        );
+    }
+
+    #[test]
+    fn classify_vm_error_detects_transient_network() {
+        use boruna_vm::VmError;
+        // AssertionFailed wrapping the http_handler's wrappers must
+        // map to transient_network on the in-process retry path.
+        assert_eq!(
+            classify_vm_error(&VmError::AssertionFailed(
+                "capability error: HTTP request failed: timeout".into(),
+            )),
+            error_class::TRANSIENT_NETWORK,
+        );
+        // Plain assertion failures stay as RUNTIME_ERROR.
+        assert_eq!(
+            classify_vm_error(&VmError::AssertionFailed("user assertion: x != 0".into())),
+            error_class::RUNTIME_ERROR,
+        );
+        // SSRF block surfaces inside AssertionFailed — must remain
+        // RUNTIME_ERROR (deterministic config error, not transient).
+        assert_eq!(
+            classify_vm_error(&VmError::AssertionFailed(
+                "capability error: blocked request to private IP (10.0.0.1)".into(),
+            )),
+            error_class::RUNTIME_ERROR,
+        );
     }
 
     #[test]
@@ -9740,6 +9849,82 @@ mod tests {
             // ends up in the bundle alongside the source-step outputs.
             assert!(bundle_path.join("outputs/analyze/result.json").exists());
             assert!(bundle_path.join("outputs/publish/result.json").exists());
+        }
+
+        #[test]
+        fn create_bundle_rejects_tampered_audit_chain() {
+            // Defense-in-depth: if metadata.audit_log is mutated
+            // out-of-band (sqlite3 surgery), bundle creation must
+            // refuse rather than silently producing a bundle whose
+            // internal hash matches the tampered chain. The downstream
+            // `boruna evidence verify` step would catch the inconsistency
+            // when comparing against an out-of-band hash root, but
+            // catching at bundle creation prevents the tampered bundle
+            // from leaving the operator's machine in the first place.
+            use crate::persistence::RunCheckpointStore;
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let data_dir = tempfile::tempdir().unwrap();
+            let r = WorkflowRunner::run_persistent(
+                &def,
+                &RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency: 1,
+                    submit_only: false,
+                },
+                data_dir.path(),
+            )
+            .unwrap();
+            record_approval_decision(
+                data_dir.path(),
+                &r.run_id,
+                "human_review",
+                ApprovalKind::Approved,
+                None,
+            )
+            .unwrap();
+            WorkflowRunner::resume(
+                &r.run_id,
+                data_dir.path(),
+                &ResumeOptions {
+                    policy: Some(Policy::allow_all()),
+                    workflow_dir_override: Some(wf_dir.path().to_string_lossy().to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            // Tamper: read metadata, mutate the first audit entry's
+            // `entry_hash` to a known-wrong value, persist back.
+            let store = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let raw = store.get_run_metadata(&r.run_id).unwrap().unwrap();
+            let mut metadata: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let log = metadata
+                .get_mut("audit_log")
+                .and_then(|v| v.as_array_mut())
+                .expect("metadata.audit_log present");
+            assert!(!log.is_empty(), "expected at least one audit entry");
+            log[0]["entry_hash"] = serde_json::Value::String("0".repeat(64));
+            let tampered = serde_json::to_string(&metadata).unwrap();
+            store.update_run_metadata(&r.run_id, &tampered, 0).unwrap();
+            drop(store);
+
+            let output_dir = tempfile::tempdir().unwrap();
+            let err = create_bundle(data_dir.path(), &r.run_id, output_dir.path())
+                .expect_err("tampered chain must abort bundle creation");
+            assert!(
+                format!("{err}").contains("audit chain integrity check failed"),
+                "expected integrity-check error, got: {err}"
+            );
+            // The bundle directory must NOT contain a manifest — the
+            // tampered run produced no bundle artifact.
+            assert!(!output_dir
+                .path()
+                .join(&r.run_id)
+                .join("manifest.json")
+                .exists());
         }
 
         #[test]
