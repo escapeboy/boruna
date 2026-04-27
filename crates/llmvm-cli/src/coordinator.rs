@@ -40,7 +40,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use boruna_bytecode::compute_capability_set_hash;
 use boruna_orchestrator::persistence::{
-    ClaimOutcome, ExtendOutcome, RunCheckpointStore, RunStatus, StepStatus, TerminalOutcome,
+    BlobStoreError, ClaimOutcome, ExtendOutcome, RunCheckpointStore, RunStatus, StepStatus,
+    TerminalOutcome,
 };
 use serde::{Deserialize, Serialize};
 
@@ -368,6 +369,12 @@ pub fn build_router(state: CoordinatorState) -> Router {
         // submit / status routes.
         .route("/api/runs/{run_id}/approve", post(handle_approve_run))
         .route("/api/runs/{run_id}/trigger", post(handle_trigger_run))
+        // Sprint 0.5-S7: fetch a large step output stored in the
+        // coordinator's blob store. Run-scoped: the route only
+        // returns bytes if the requested hash is referenced by a
+        // checkpoint under this run, preventing the route from
+        // serving as a generic blob server. Same auth as the rest.
+        .route("/api/runs/{run_id}/blobs/{hash}", get(handle_get_blob))
         // The 8 MiB DefaultBodyLimit applies to coord routes
         // ONLY (not dashboard routes) because Axum's per-
         // router layer scoping means layers attached pre-merge
@@ -1223,6 +1230,109 @@ async fn handle_trigger_run(
     }
 }
 
+/// `GET /api/runs/{run_id}/blobs/{hash}` — return the bytes of a
+/// large step output stored in the coordinator's blob store. Sprint
+/// 0.5-S7.
+///
+/// **Run-scoped:** the route only returns bytes if `hash` is referenced
+/// by a step checkpoint under `run_id`. Even though hashes are
+/// content-addressed and globally unique by collision resistance, this
+/// scope makes the route's authorization story trivial — every run is
+/// already gated by the bearer-token middleware, and access to
+/// `run_id` implies access to its outputs. A future cross-run dedup
+/// route would be a NEW endpoint with its own access-control story.
+///
+/// Error_kind taxonomy (sprint 0.5-S7, locked):
+/// - `coord.blobs.bad_hash` — 400 — `hash` is not 64 lowercase hex
+///   characters.
+/// - `coord.blobs.not_found` — 404 — no checkpoint under `run_id`
+///   references this hash, OR the checkpoint references it but the
+///   blob file is missing on disk.
+/// - `coord.unauthorized` — 401 (handled upstream by `auth_middleware`).
+async fn handle_get_blob(
+    State(state): State<CoordinatorState>,
+    Path((run_id, hash)): Path<(String, String)>,
+) -> Response {
+    // Validate hash format BEFORE any other check. A malformed hash is
+    // never a valid query — even on an unknown run — so 400 is the
+    // accurate signal for clients passing a bad URL.
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return respond_err(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::new(
+                "coord.blobs.bad_hash",
+                "hash must be 64 lowercase hex characters",
+            ),
+        );
+    }
+
+    // Acquire store inside the async fn synchronously (the orchestrator's
+    // single-threaded SQLite connection lives inside Arc<Mutex<...>>).
+    let store_guard = match state.store.lock() {
+        Ok(g) => g,
+        Err(_) => return internal_error("store lock poisoned"),
+    };
+
+    // Run-scope check before any filesystem access.
+    let owned = match store_guard.run_owns_blob_ref(&run_id, &hash) {
+        Ok(b) => b,
+        Err(e) => return internal_error(&format!("run_owns_blob_ref: {e}")),
+    };
+    if !owned {
+        // 404 covers both "no run", "no checkpoint", and "checkpoint
+        // does not reference this hash". Doesn't disambiguate to avoid
+        // exposing run existence to unauthorized-but-otherwise-valid-
+        // bearer callers.
+        return respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new(
+                "coord.blobs.not_found",
+                format!("no blob '{hash}' referenced by run '{run_id}'"),
+            ),
+        );
+    }
+
+    // Run owns the ref; resolve via blob store.
+    let blob_store = match store_guard.blob_store() {
+        Some(bs) => bs.clone(),
+        None => {
+            return internal_error("coordinator opened without a blob store (in-memory mode?)");
+        }
+    };
+    drop(store_guard);
+
+    match blob_store.read_bytes(&hash) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(BlobStoreError::BadHash) => respond_err(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::new(
+                "coord.blobs.bad_hash",
+                "hash must be 64 lowercase hex characters",
+            ),
+        ),
+        Err(BlobStoreError::NotFound) => respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new(
+                "coord.blobs.not_found",
+                format!(
+                    "blob '{hash}' is referenced by a checkpoint under '{run_id}' \
+                     but is missing from the blob store on disk"
+                ),
+            ),
+        ),
+        Err(e) => internal_error(&format!("blob read: {e}")),
+    }
+}
+
 /// Map a `WorkflowRunError` from the approve path to an HTTP
 /// response with the locked `coord.approve.*` error_kind taxonomy.
 /// Sprint 0.5-S6.
@@ -1800,6 +1910,7 @@ mod tests {
                 worker_id: None,
                 lease_expires_at_ms: None,
                 claim_id: 0,
+                output_blob_ref: None,
             })
             .unwrap();
     }
@@ -2422,6 +2533,150 @@ mod tests {
         });
         let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(v["error_kind"], "coord.unauthorized");
+    }
+
+    // ── Sprint 0.5-S7: blob-fetch route ──
+
+    /// In-memory store wired to a real on-disk blob store at a per-test
+    /// tempdir. Used by the blob-route handler tests.
+    fn fresh_state_with_blob_store() -> (CoordinatorState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs_root = dir.path().join("blobs");
+        let store = RunCheckpointStore::open_in_memory_with_blob_store(blobs_root).unwrap();
+        let capability_set_hash = compute_capability_set_hash(
+            boruna_bytecode::Capability::ALL
+                .iter()
+                .map(|c| (c.name().to_string(), c.version().to_string()))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_str())),
+        );
+        let state = CoordinatorState {
+            store: Arc::new(Mutex::new(store)),
+            workers: Arc::new(Mutex::new(HashMap::new())),
+            workflow_dirs: Arc::new(Mutex::new(HashMap::new())),
+            capability_set_hash,
+            config: CoordinatorConfig {
+                max_lease_ttl_ms: 600_000,
+                poll_timeout_ms: 200,
+                bind_warning: None,
+                shared_secret: None,
+            },
+        };
+        (state, dir)
+    }
+
+    fn complete_running_step_in_state(
+        state: &CoordinatorState,
+        run_id: &str,
+        step_id: &str,
+        output_json: &str,
+    ) -> String {
+        use sha2::Digest;
+        pending_step(state, run_id, step_id, "fn main() -> Int { 0 }");
+        let store = state.store.lock().unwrap();
+        let claim_id = match store
+            .claim_step(run_id, step_id, "wkr-test", 9_999_999_999, 1_000)
+            .unwrap()
+        {
+            ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("expected Claimed, got {other:?}"),
+        };
+        let mut h = sha2::Sha256::new();
+        h.update(output_json.as_bytes());
+        let hash = format!("{:x}", h.finalize());
+        store
+            .complete_step_cas(run_id, step_id, claim_id, output_json, &hash, 1, 2_000)
+            .unwrap();
+        hash
+    }
+
+    async fn get_request(app: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, bytes)
+    }
+
+    #[tokio::test]
+    async fn get_blob_returns_bytes_for_referenced_hash() {
+        let (state, _dir) = fresh_state_with_blob_store();
+        let payload = "\"".to_string()
+            + &"a".repeat(boruna_orchestrator::persistence::BLOB_THRESHOLD + 1)
+            + "\"";
+        let hash = complete_running_step_in_state(&state, "RUN-1", "s1", &payload);
+        let app = build_router(state);
+        let (status, bytes) = get_request(&app, &format!("/api/runs/RUN-1/blobs/{hash}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, payload.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn get_blob_bad_hash_short() {
+        let (state, _dir) = fresh_state_with_blob_store();
+        let app = build_router(state);
+        let (status, bytes) = get_request(&app, "/api/runs/RUN-1/blobs/abc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.blobs.bad_hash");
+    }
+
+    #[tokio::test]
+    async fn get_blob_bad_hash_uppercase() {
+        let (state, _dir) = fresh_state_with_blob_store();
+        let app = build_router(state);
+        // 64 chars but uppercase → format check fails before scope check.
+        let bad = "A".repeat(64);
+        let (status, bytes) = get_request(&app, &format!("/api/runs/RUN-1/blobs/{bad}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.blobs.bad_hash");
+    }
+
+    #[tokio::test]
+    async fn get_blob_not_found_unknown_hash() {
+        let (state, _dir) = fresh_state_with_blob_store();
+        let app = build_router(state);
+        let bogus = "0".repeat(64);
+        let (status, bytes) = get_request(&app, &format!("/api/runs/RUN-1/blobs/{bogus}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.blobs.not_found");
+    }
+
+    #[tokio::test]
+    async fn get_blob_run_scope_enforced() {
+        // Run-A produces a blob; GET on run-B for the same hash → 404.
+        let (state, _dir) = fresh_state_with_blob_store();
+        let payload = "\"".to_string()
+            + &"q".repeat(boruna_orchestrator::persistence::BLOB_THRESHOLD + 1)
+            + "\"";
+        let hash = complete_running_step_in_state(&state, "RUN-A", "s1", &payload);
+        let app = build_router(state);
+        let (status, bytes) = get_request(&app, &format!("/api/runs/RUN-B/blobs/{hash}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.blobs.not_found");
+    }
+
+    #[tokio::test]
+    async fn get_blob_unauthorized_no_bearer() {
+        let (mut state, _dir) = fresh_state_with_blob_store();
+        state.config.shared_secret = Some("super-secret".into());
+        let app = build_router(state);
+        let bogus = "0".repeat(64);
+        let (status, bytes) = get_request(&app, &format!("/api/runs/RUN-1/blobs/{bogus}")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error_kind"], "coord.unauthorized");
     }
 }

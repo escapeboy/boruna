@@ -109,6 +109,7 @@ fn populate_pending_step(data_dir: &Path, run_id: &str, step_id: &str, source: &
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         })
         .unwrap();
 }
@@ -428,6 +429,7 @@ fn worker_kill_mid_step_lease_expires_then_reclaim() {
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         })
         .unwrap();
     // Simulate "worker A claimed and was killed": call the
@@ -1046,6 +1048,7 @@ fn coord_bg_sweep_requeues_expired_lease() {
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         })
         .unwrap();
     drop(store);
@@ -1249,6 +1252,7 @@ fn worker_completes_two_step_linear_dag() {
                 worker_id: None,
                 lease_expires_at_ms: None,
                 claim_id: 0,
+                output_blob_ref: None,
             })
             .unwrap();
     }

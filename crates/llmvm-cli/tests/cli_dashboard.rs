@@ -137,6 +137,7 @@ fn populate_db(data_dir: &Path) {
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         })
         .unwrap();
 }

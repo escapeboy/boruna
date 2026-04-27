@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS step_checkpoints (
     worker_id        TEXT,                        -- OPERATIONAL ONLY
     lease_expires_at INTEGER,                     -- OPERATIONAL ONLY
     claim_id         INTEGER NOT NULL DEFAULT 0,  -- OPERATIONAL ONLY
+    -- 0.5-S7 (schema v4 column, included here for fresh databases;
+    -- existing v3 databases get this via the v3->v4 migration in
+    -- init()). Content-addressed reference to large step outputs
+    -- offloaded to the blob store under <data-dir>/blobs/. The ref
+    -- equals output_hash whenever set, by construction. REPLAY-VERIFIED.
+    -- Mutually exclusive with output_json; the application layer
+    -- enforces "exactly one of (output_json, output_blob_ref) is
+    -- non-null in terminal states".
+    output_blob_ref  TEXT,                        -- REPLAY-VERIFIED
     PRIMARY KEY (run_id, step_id)
 );
 

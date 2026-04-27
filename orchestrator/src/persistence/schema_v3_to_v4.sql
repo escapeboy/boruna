@@ -1,0 +1,30 @@
+-- v3 → v4 migration (sprint 0.5-S7): adds the output_blob_ref column
+-- to step_checkpoints. Powers content-addressed offloading of large
+-- step outputs to a sharded blob store under
+-- `<data-dir>/<env>/blobs/`.
+--
+-- The column is REPLAY-VERIFIED per project convention #15: when set,
+-- it equals the existing `output_hash` column by construction inside
+-- `complete_step_cas` (the ref IS the SHA-256 hash of the bytes that
+-- were stored as a blob). Replay reads the bytes back through the
+-- BlobStore and re-hashes for comparison.
+--
+-- output_json and output_blob_ref are MUTUALLY EXCLUSIVE:
+--   - output_json     IS NOT NULL, output_blob_ref IS NULL  → small output stored inline
+--   - output_json     IS NULL,     output_blob_ref IS NOT NULL → large output stored as blob
+--   - both NULL → step has not yet completed (Pending / Running / paused)
+-- The mutual-exclusion invariant is enforced at the application layer in
+-- `complete_step_cas` and validated on read by the `read_step_output`
+-- accessor (returns PersistenceError::Inconsistent if both columns set).
+-- A SQL CHECK constraint cannot be added via ALTER TABLE in SQLite
+-- without a full table rewrite, so the application layer is canonical.
+--
+-- ALTER TABLE ADD COLUMN with a constant DEFAULT (NULL) is fast in
+-- SQLite — no table rewrite. Existing v3 rows have output_blob_ref
+-- NULL meaning "inline / not yet stored as blob".
+--
+-- NOTE: this script runs INSIDE the migration transaction in init();
+-- it is guarded by a column-presence check so re-running on a fresh
+-- DB (where SCHEMA_V1_SQL already lays down the column) is a no-op.
+
+ALTER TABLE step_checkpoints ADD COLUMN output_blob_ref TEXT;

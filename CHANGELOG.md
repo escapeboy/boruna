@@ -8,6 +8,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Output blob references for large step outputs** (sprint
+  `0.5-S7`). Step outputs whose JSON encoding exceeds 64 KiB are
+  now offloaded to a content-addressed blob store at
+  `<data-dir>/blobs/<aa>/<hash>`, keyed by SHA-256. The
+  `step_checkpoints.output_blob_ref` column carries the hash; the
+  inline `output_json` column is left NULL when the blob path is
+  used. Mutually exclusive: at most one of the two columns is
+  populated for any terminal-state row. Audit hashes are
+  unchanged — the ref IS the existing `output_hash`, so
+  evidence-bundle replay across pre-S7 and post-S7 runs produces
+  byte-identical hash chains. New schema migration `v3 → v4`
+  (additive `ALTER TABLE ADD COLUMN`, no table rewrite). New
+  coordinator HTTP route `GET /api/runs/{run_id}/blobs/{hash}`,
+  bearer-gated and run-scoped (the route only serves bytes if
+  the requested hash is referenced by a checkpoint under the
+  given run_id, preventing the route from acting as a generic
+  blob server). New `error_kind` taxonomy: `coord.blobs.bad_hash`
+  (400) and `coord.blobs.not_found` (404). Threshold is hard-coded
+  for the sprint (no `Policy` knob); a future sprint may make it
+  configurable. 27 new unit tests (15 blob_store, 12 persistence)
+  + 5 new coord handler tests. See
+  `docs/design-output-blob-refs.md` and
+  `docs/architecture-output-blob-refs.md`.
+
 - **Distributed approval-gate / external-trigger** (sprint
   `0.5-S6`). Two new operator-facing routes — `POST
   /api/runs/{run_id}/approve` and `POST /api/runs/{run_id}/trigger`

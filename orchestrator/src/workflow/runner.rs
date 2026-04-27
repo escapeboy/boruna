@@ -808,6 +808,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                 }
@@ -1036,6 +1037,7 @@ impl WorkflowRunner {
                                 worker_id: None,
                                 lease_expires_at_ms: None,
                                 claim_id: 0,
+                                output_blob_ref: None,
                             })
                             .map_err(WorkflowRunError::from)?;
                         status_map.insert(step_id.clone(), PersistStepStatus::AwaitingApproval);
@@ -1066,6 +1068,7 @@ impl WorkflowRunner {
                                 worker_id: None,
                                 lease_expires_at_ms: None,
                                 claim_id: 0,
+                                output_blob_ref: None,
                             })
                             .map_err(WorkflowRunError::from)?;
                         status_map
@@ -1197,6 +1200,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                     transitions.push((step_id.clone(), PersistStepStatus::Completed));
@@ -1220,6 +1224,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                     transitions.push((step_id.clone(), PersistStepStatus::Failed));
@@ -1280,6 +1285,7 @@ impl WorkflowRunner {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .map_err(WorkflowRunError::from)?;
             transitions.push((step_id.clone(), PersistStepStatus::Completed));
@@ -1637,8 +1643,15 @@ impl WorkflowRunner {
             match cp.status {
                 PersistStepStatus::Completed => {
                     already_completed.insert(cp.step_id.clone());
-                    if let Some(output_json) = &cp.output_json {
-                        let value: boruna_bytecode::Value = serde_json::from_str(output_json)
+                    // Sprint 0.5-S7: large outputs live in the blob
+                    // store; the row's output_json is None but the row
+                    // has output_blob_ref set. read_step_output
+                    // resolves either source.
+                    if let Some(output_json) = store
+                        .read_step_output(run_id, &cp.step_id)
+                        .map_err(WorkflowRunError::from)?
+                    {
+                        let value: boruna_bytecode::Value = serde_json::from_str(&output_json)
                             .map_err(|e| {
                                 WorkflowRunError::Internal(format!(
                                     "corrupt output_json for step '{}': {e}",
@@ -1795,6 +1808,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                     data_store
@@ -1833,6 +1847,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                     prior_results.insert(
@@ -1942,6 +1957,7 @@ impl WorkflowRunner {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .map_err(WorkflowRunError::from)?;
             data_store
@@ -2346,6 +2362,7 @@ impl WorkflowRunner {
                                 worker_id: None,
                                 lease_expires_at_ms: None,
                                 claim_id: 0,
+                                output_blob_ref: None,
                             })
                             .map_err(WorkflowRunError::from)?;
                         step_results.insert(
@@ -2503,6 +2520,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
+                                    output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -2543,6 +2561,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
+                                    output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -2598,6 +2617,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
+                                    output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -2721,6 +2741,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                     }
@@ -2788,6 +2809,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
+                            output_blob_ref: None,
                         })
                         .map_err(WorkflowRunError::from)?;
                         break;
@@ -2841,6 +2863,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
+                                    output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                                 emit_step_terminal_audit(
@@ -2886,6 +2909,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
+                                    output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                                 emit_step_terminal_audit(
@@ -3810,6 +3834,7 @@ fn persist_one_pause(
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         })
         .map_err(WorkflowRunError::from)?;
     eprintln!("{message}");
@@ -4498,15 +4523,24 @@ pub fn create_bundle(
         .add_policy(&run.policy_json)
         .map_err(|e| WorkflowRunError::Io(format!("bundle add_policy: {e}")))?;
 
-    // Per-step outputs. Steps with no `output_json` (failed before
-    // producing output, still pending, or paused at a gate) contribute
-    // nothing. Each output is added as `outputs/<step_id>/result.json`
-    // — matches `WorkflowRunner::execute_*`'s "result"-named output
-    // convention.
+    // Per-step outputs. Steps with no output (failed before producing
+    // output, still pending, or paused at a gate) contribute nothing.
+    // Each output is added as `outputs/<step_id>/result.json` — matches
+    // `WorkflowRunner::execute_*`'s "result"-named output convention.
+    //
+    // Sprint 0.5-S7: outputs that exceeded `BLOB_THRESHOLD` live in the
+    // blob store, not in the row's `output_json` column. We MUST resolve
+    // via the new `read_step_output` accessor — reading `cp.output_json`
+    // directly would silently omit large outputs from the evidence
+    // bundle, which is a compliance regression (the bundle would verify
+    // but be incomplete).
     for cp in &checkpoints {
-        if let Some(output_json) = &cp.output_json {
+        if let Some(output_json) = store
+            .read_step_output(run_id, &cp.step_id)
+            .map_err(WorkflowRunError::from)?
+        {
             builder
-                .add_step_output(&cp.step_id, "result", output_json)
+                .add_step_output(&cp.step_id, "result", &output_json)
                 .map_err(|e| {
                     WorkflowRunError::Io(format!(
                         "bundle add_step_output for '{}': {e}",
@@ -5492,6 +5526,7 @@ mod tests {
                 worker_id: None,
                 lease_expires_at_ms: None,
                 claim_id: 1,
+                output_blob_ref: None,
             })
             .unwrap();
         let r = WorkflowRunner::advance_run_one_tick(&store, &run_id).unwrap();
@@ -6895,6 +6930,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
 
@@ -6983,6 +7019,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
 
@@ -7069,6 +7106,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
 
@@ -8255,6 +8293,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
             // gate is awaiting approval (sentinel will rejection-halt).
@@ -8272,6 +8311,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
 

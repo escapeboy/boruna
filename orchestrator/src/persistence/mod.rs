@@ -35,6 +35,9 @@ use std::time::Duration;
 use rusqlite::{params, Connection, Error as SqlError, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+pub mod blob_store;
+pub use blob_store::{BlobStore, BlobStoreError};
+
 /// Wire-format version of the on-disk schema.
 ///
 /// History:
@@ -44,6 +47,13 @@ use serde::{Deserialize, Serialize};
 ///   column to record retry attempts per step. Migrated additively
 ///   via `schema_v1_to_v2.sql` (`ALTER TABLE ADD COLUMN`); existing
 ///   rows default to 1.
+/// - **v3** (sprint `0.5-S2a`): adds the claim/lease columns
+///   (`worker_id`, `lease_expires_at`, `claim_id`) to
+///   `step_checkpoints` for distributed execution per ADR 002.
+/// - **v4** (sprint `0.5-S7`): adds `step_checkpoints.output_blob_ref`
+///   for content-addressed offloading of large step outputs. The
+///   column equals the existing `output_hash` whenever set; the
+///   bytes live under the data-dir's `blobs/` subdirectory.
 ///
 /// Bumped on EITHER additive or breaking changes when there's a
 /// migration to run on existing databases (the bump signals "v_n
@@ -51,14 +61,15 @@ use serde::{Deserialize, Serialize};
 /// fresh databases, [`SCHEMA_V1_SQL`] is the canonical creation
 /// script and reflects the latest schema; older versions matter
 /// only for the migration chain.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Canonical creation script for fresh databases. Reflects the
-/// LATEST schema (currently v3 — includes `attempt_count` and the
-/// claim/lease columns from sprint 0.5-S2a). Applied via
+/// LATEST schema (currently v4 — includes `attempt_count`, the
+/// claim/lease columns from sprint 0.5-S2a, and the
+/// `output_blob_ref` column from sprint 0.5-S7). Applied via
 /// `IF NOT EXISTS`, so re-opens are idempotent and existing
 /// databases see no DDL from this script. Migrations from older
-/// versions (v1 → v2 → v3) run separately via the
+/// versions (v1 → v2 → v3 → v4) run separately via the
 /// `SCHEMA_V*_TO_V*_SQL` chain in `init()`.
 const SCHEMA_V1_SQL: &str = include_str!("schema_v1.sql");
 
@@ -71,6 +82,20 @@ const SCHEMA_V1_TO_V2_SQL: &str = include_str!("schema_v1_to_v2.sql");
 /// state per ADR 002. Applied in [`RunCheckpointStore::init`] when
 /// opening a v2 database.
 const SCHEMA_V2_TO_V3_SQL: &str = include_str!("schema_v2_to_v3.sql");
+
+/// v3 → v4 migration: adds `step_checkpoints.output_blob_ref` for
+/// content-addressed offloading of large step outputs. Applied in
+/// [`RunCheckpointStore::init`] when opening a v3 database.
+const SCHEMA_V3_TO_V4_SQL: &str = include_str!("schema_v3_to_v4.sql");
+
+/// Threshold above which `output_json` is offloaded to the blob
+/// store rather than stored inline in `step_checkpoints.output_json`.
+///
+/// 64 KiB chosen to keep small-to-medium outputs on a single SQLite
+/// page and to keep the inline path the common case for typical
+/// workflow steps. Hard-coded for sprint 0.5-S7; a future sprint
+/// may expose a knob if integrators need a different operating point.
+pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
 /// Errors surfaced by the persistence layer. Distinct kinds so callers can
 /// react differently (retry on `Busy`, abort on `SchemaVersionMismatch`,
@@ -107,6 +132,21 @@ pub enum PersistenceError {
     /// `serde_json::Value`-compatible — but propagated rather than panicked.
     #[error("serialize error: {0}")]
     Serialize(#[from] serde_json::Error),
+
+    /// A `step_checkpoint` row violates a layer invariant. Sprint 0.5-S7:
+    /// fired by [`RunCheckpointStore::read_step_output`] when both
+    /// `output_json` and `output_blob_ref` are populated on a single
+    /// row (mutual-exclusion violation). Either column may be set; not
+    /// both.
+    #[error("inconsistent: {0}")]
+    Inconsistent(String),
+
+    /// I/O failure surfaced from the blob store layer (sprint 0.5-S7).
+    /// `read_step_output` and `complete_step_cas` propagate filesystem
+    /// or UTF-8 errors here so callers don't have to dispatch on a
+    /// nested `BlobStoreError`.
+    #[error("blob store: {0}")]
+    BlobStore(String),
 }
 
 /// Lifecycle status of a workflow run. Persisted as a TEXT column for
@@ -353,6 +393,20 @@ pub struct StepCheckpoint {
     /// Added in schema v3 (sprint `0.5-S2a`).
     #[serde(default)]
     pub claim_id: u64,
+    /// Content-addressed reference to the step's output bytes, when
+    /// the output exceeded [`BLOB_THRESHOLD`] and was offloaded to
+    /// the blob store. The ref equals [`Self::output_hash`] whenever
+    /// set (the ref IS the SHA-256 hash). **REPLAY-VERIFIED.**
+    ///
+    /// Mutually exclusive with [`Self::output_json`]: at most one of
+    /// the two columns may be populated for a row in any terminal
+    /// status. The mutual-exclusion invariant is enforced by
+    /// [`RunCheckpointStore::complete_step_cas`] and validated on
+    /// read by [`RunCheckpointStore::read_step_output`].
+    ///
+    /// Added in schema v4 (sprint `0.5-S7`).
+    #[serde(default)]
+    pub output_blob_ref: Option<String>,
 }
 
 // ─── Claim/lease outcome enums (sprint 0.5-S2a) ──────────────────
@@ -488,8 +542,14 @@ impl RequeueOutcome {
 /// rusqlite design — wrap in a `Mutex` if shared across threads (the
 /// orchestrator runs single-threaded today; future scheduler sprint
 /// (`0.3-S7`) will revisit).
+///
+/// Sprint 0.5-S7: also owns an optional [`BlobStore`] for offloading
+/// large step outputs. `None` for in-memory test stores;
+/// [`RunCheckpointStore::open`] populates it as a sibling
+/// `blobs/` directory next to the SQLite file.
 pub struct RunCheckpointStore {
     conn: Connection,
+    blob_store: Option<BlobStore>,
 }
 
 impl std::fmt::Debug for RunCheckpointStore {
@@ -504,15 +564,51 @@ impl std::fmt::Debug for RunCheckpointStore {
 impl RunCheckpointStore {
     /// Open or create a database file at `path`. Runs schema migration
     /// on first open. Idempotent on re-open.
+    ///
+    /// Sprint 0.5-S7: also opens a [`BlobStore`] at the sibling
+    /// directory `<dir-of-path>/blobs/` for offloading large step
+    /// outputs. The directory is created if absent.
     pub fn open(path: &Path) -> Result<Self, PersistenceError> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        let mut store = Self::init(conn)?;
+        let blobs_root = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("blobs");
+        let bs =
+            BlobStore::open(blobs_root).map_err(|e| PersistenceError::BlobStore(e.to_string()))?;
+        store.blob_store = Some(bs);
+        Ok(store)
     }
 
     /// Open an in-memory database (intended for tests).
+    ///
+    /// No blob store is attached — large outputs in tests should
+    /// either stay below [`BLOB_THRESHOLD`] or use
+    /// [`RunCheckpointStore::open_in_memory_with_blob_store`].
     pub fn open_in_memory() -> Result<Self, PersistenceError> {
         let conn = Connection::open_in_memory()?;
         Self::init(conn)
+    }
+
+    /// In-memory database with a real on-disk blob store at `blobs_root`.
+    /// Used by tests that need to exercise the blob path.
+    #[doc(hidden)]
+    pub fn open_in_memory_with_blob_store(
+        blobs_root: std::path::PathBuf,
+    ) -> Result<Self, PersistenceError> {
+        let conn = Connection::open_in_memory()?;
+        let mut store = Self::init(conn)?;
+        let bs =
+            BlobStore::open(blobs_root).map_err(|e| PersistenceError::BlobStore(e.to_string()))?;
+        store.blob_store = Some(bs);
+        Ok(store)
+    }
+
+    /// Returns a reference to the attached blob store, if any.
+    /// `None` for [`Self::open_in_memory`] (no on-disk path).
+    pub fn blob_store(&self) -> Option<&BlobStore> {
+        self.blob_store.as_ref()
     }
 
     fn init(conn: Connection) -> Result<Self, PersistenceError> {
@@ -582,6 +678,22 @@ impl RunCheckpointStore {
             )?;
             tx.commit()?;
         }
+        // v3 → v4 migration (sprint 0.5-S7): add output_blob_ref column
+        // to step_checkpoints. Same fresh-vs-existing pattern — fresh DBs
+        // get the column from SCHEMA_V1_SQL directly; existing v3 DBs go
+        // through the column-presence-guarded ALTER TABLE.
+        if on_disk < 4 {
+            let has_blob_ref = column_exists(&conn, "step_checkpoints", "output_blob_ref")?;
+            let tx = conn.unchecked_transaction()?;
+            if !has_blob_ref {
+                tx.execute_batch(SCHEMA_V3_TO_V4_SQL)?;
+            }
+            tx.execute(
+                "UPDATE schema_version SET version = ?1 WHERE id = 1",
+                params![4_i64],
+            )?;
+            tx.commit()?;
+        }
 
         // Final version check — refuses to open a database that
         // somehow ended up at a version we don't recognize (future
@@ -598,7 +710,10 @@ impl RunCheckpointStore {
             });
         }
 
-        Ok(RunCheckpointStore { conn })
+        Ok(RunCheckpointStore {
+            conn,
+            blob_store: None,
+        })
     }
 
     /// Insert a new run. Fails with the wrapped UNIQUE constraint error
@@ -1005,15 +1120,41 @@ impl RunCheckpointStore {
     /// (monotonic per step) so a future return to distributed mode
     /// continues counting from the last value.
     pub fn upsert_step_checkpoint(&self, cp: &StepCheckpoint) -> Result<(), PersistenceError> {
+        // Sprint 0.5-S7 invariant: at most one of (output_json,
+        // output_blob_ref) is populated on the input. Reject up-front
+        // to surface caller bugs (and never propagate a both-set state
+        // into the row).
+        if cp.output_json.is_some() && cp.output_blob_ref.is_some() {
+            return Err(PersistenceError::Inconsistent(format!(
+                "upsert_step_checkpoint called with both output_json \
+                 and output_blob_ref set for ({}, {})",
+                cp.run_id, cp.step_id
+            )));
+        }
         with_busy_retry(|| {
             let tx = self.conn.unchecked_transaction()?;
+            // The OUTPUT-COLUMN UPDATE clauses are deliberately
+            // asymmetric vs. COALESCE: when the caller provides EITHER
+            // output column non-null, the OTHER column must be cleared
+            // to NULL on the row to preserve the mutual-exclusion
+            // invariant. When both are None (the typical
+            // status-transition case), preserve whatever was there.
             tx.execute(
                 "INSERT INTO step_checkpoints \
-                 (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count, output_blob_ref) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
                  ON CONFLICT(run_id, step_id) DO UPDATE SET \
                    status            = excluded.status, \
-                   output_json       = COALESCE(excluded.output_json, step_checkpoints.output_json), \
+                   output_json       = CASE \
+                                         WHEN excluded.output_json     IS NOT NULL THEN excluded.output_json \
+                                         WHEN excluded.output_blob_ref IS NOT NULL THEN NULL \
+                                         ELSE step_checkpoints.output_json \
+                                       END, \
+                   output_blob_ref   = CASE \
+                                         WHEN excluded.output_blob_ref IS NOT NULL THEN excluded.output_blob_ref \
+                                         WHEN excluded.output_json     IS NOT NULL THEN NULL \
+                                         ELSE step_checkpoints.output_blob_ref \
+                                       END, \
                    output_hash       = COALESCE(excluded.output_hash, step_checkpoints.output_hash), \
                    started_at        = COALESCE(excluded.started_at,  step_checkpoints.started_at), \
                    ended_at          = excluded.ended_at, \
@@ -1031,6 +1172,7 @@ impl RunCheckpointStore {
                     cp.ended_at_ms,
                     cp.error_msg,
                     cp.attempt_count,
+                    cp.output_blob_ref,
                 ],
             )?;
             tx.commit()?;
@@ -1353,7 +1495,7 @@ impl RunCheckpointStore {
     ) -> Result<Vec<StepCheckpoint>, PersistenceError> {
         let mut stmt = self.conn.prepare(
             "SELECT run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count, \
-             worker_id, lease_expires_at, claim_id \
+             worker_id, lease_expires_at, claim_id, output_blob_ref \
              FROM step_checkpoints WHERE run_id = ?1 ORDER BY step_id",
         )?;
         let rows = stmt
@@ -1464,8 +1606,23 @@ impl RunCheckpointStore {
     /// expired-lease workers without changing persisted state.
     ///
     /// On success: transitions the row to `Completed`, sets
-    /// `output_json`, `output_hash`, `attempt_count`, `ended_at`;
-    /// clears `worker_id`, `lease_expires_at`, and `error_msg`.
+    /// `output_json` OR `output_blob_ref` (sprint 0.5-S7),
+    /// `output_hash`, `attempt_count`, `ended_at`; clears
+    /// `worker_id`, `lease_expires_at`, and `error_msg`.
+    ///
+    /// **Sprint 0.5-S7 — blob offload semantics:** if the attached
+    /// [`BlobStore`] is present (i.e. opened via [`Self::open`]) AND
+    /// `output_json.len() > `[`BLOB_THRESHOLD`], the bytes are written
+    /// to the blob store keyed by `output_hash` and the row's
+    /// `output_json` column is left NULL with `output_blob_ref` set
+    /// to `output_hash`. The blob is written BEFORE the CAS row
+    /// update, so a successful return implies the blob is already on
+    /// disk. A worker crash between blob write and CAS leaves an
+    /// orphan file; the next CAS retry rewrites the same hash
+    /// idempotently (same content → same path → no-op).
+    ///
+    /// In-memory test stores (no blob_store attached) always store
+    /// inline regardless of size.
     #[allow(clippy::too_many_arguments)]
     pub fn complete_step_cas(
         &self,
@@ -1477,17 +1634,103 @@ impl RunCheckpointStore {
         attempt_count: u32,
         ended_at_ms: i64,
     ) -> Result<TerminalOutcome, PersistenceError> {
+        // Decide inline vs. blob. The threshold is checked BEFORE
+        // the CAS so an offload write happens outside the BEGIN
+        // IMMEDIATE transaction (the SQLite writer lock is held for
+        // the absolute minimum window).
+        let use_blob = self.blob_store.is_some() && output_json.len() > BLOB_THRESHOLD;
+        let (inline, blob_ref) = if use_blob {
+            // Safe unwrap: use_blob implies blob_store is Some.
+            let bs = self.blob_store.as_ref().unwrap();
+            bs.write(output_hash, output_json.as_bytes())
+                .map_err(|e| PersistenceError::BlobStore(e.to_string()))?;
+            (None, Some(output_hash))
+        } else {
+            (Some(output_json), None)
+        };
         self.terminal_cas_inner(
             run_id,
             step_id,
             claim_id,
             StepStatus::Completed,
-            Some(output_json),
+            inline,
             Some(output_hash),
+            blob_ref,
             None,
             attempt_count,
             ended_at_ms,
         )
+    }
+
+    /// Returns `true` if any step checkpoint under `run_id` references
+    /// the given `blob_hash` via its `output_blob_ref` column. Used by
+    /// the coordinator's blob-fetch HTTP handler (sprint 0.5-S7) to
+    /// scope blob reads to runs the caller is asking about — prevents
+    /// the route from acting as a generic blob server.
+    pub fn run_owns_blob_ref(
+        &self,
+        run_id: &str,
+        blob_hash: &str,
+    ) -> Result<bool, PersistenceError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM step_checkpoints \
+             WHERE run_id = ?1 AND output_blob_ref = ?2",
+            params![run_id, blob_hash],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Resolve a step's output bytes by checking inline storage first,
+    /// then falling back to the blob store via the row's
+    /// `output_blob_ref`.
+    ///
+    /// Returns `Ok(None)` for steps that have not yet completed
+    /// (Pending/Running/paused). Returns
+    /// [`PersistenceError::Inconsistent`] if both `output_json` and
+    /// `output_blob_ref` are populated on the same row (mutual-exclusion
+    /// invariant violation — should never happen via the public API).
+    /// Returns [`PersistenceError::BlobStore`] if the row references a
+    /// blob that is missing or unreadable.
+    pub fn read_step_output(
+        &self,
+        run_id: &str,
+        step_id: &str,
+    ) -> Result<Option<String>, PersistenceError> {
+        let row: Option<(Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT output_json, output_blob_ref FROM step_checkpoints \
+                 WHERE run_id = ?1 AND step_id = ?2",
+                params![run_id, step_id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let (inline, blob_ref) = match row {
+            None => return Ok(None),
+            Some(t) => t,
+        };
+        match (inline, blob_ref) {
+            (Some(_), Some(_)) => Err(PersistenceError::Inconsistent(format!(
+                "step ({run_id}, {step_id}) has both output_json and output_blob_ref set"
+            ))),
+            (Some(json), None) => Ok(Some(json)),
+            (None, Some(hash)) => match &self.blob_store {
+                Some(bs) => bs
+                    .read_string(&hash)
+                    .map(Some)
+                    .map_err(|e| PersistenceError::BlobStore(e.to_string())),
+                None => Err(PersistenceError::BlobStore(format!(
+                    "row for ({run_id}, {step_id}) has output_blob_ref but no blob store is attached"
+                ))),
+            },
+            (None, None) => Ok(None),
+        }
     }
 
     /// CAS-protected failure. Atomic on
@@ -1511,6 +1754,7 @@ impl RunCheckpointStore {
             step_id,
             claim_id,
             StepStatus::Failed,
+            None,
             None,
             None,
             Some(error_msg),
@@ -1617,6 +1861,12 @@ impl RunCheckpointStore {
     }
 
     /// Shared CAS body for `complete_step_cas` and `fail_step_cas`.
+    ///
+    /// Sprint 0.5-S7: `output_blob_ref` is the new column. Exactly one
+    /// of `output_json` and `output_blob_ref` is populated for a
+    /// completion; both are `None` for a failure. The mutual-exclusion
+    /// invariant is enforced by callers (`complete_step_cas` and
+    /// `fail_step_cas`).
     #[allow(clippy::too_many_arguments)]
     fn terminal_cas_inner(
         &self,
@@ -1626,6 +1876,7 @@ impl RunCheckpointStore {
         new_status: StepStatus,
         output_json: Option<&str>,
         output_hash: Option<&str>,
+        output_blob_ref: Option<&str>,
         error_msg: Option<&str>,
         attempt_count: u32,
         ended_at_ms: i64,
@@ -1679,18 +1930,20 @@ impl RunCheckpointStore {
                      SET status            = ?3, \
                          output_json       = ?4, \
                          output_hash       = ?5, \
-                         attempt_count     = ?6, \
-                         ended_at          = ?7, \
-                         error_msg         = COALESCE(?8, error_msg), \
+                         output_blob_ref   = ?6, \
+                         attempt_count     = ?7, \
+                         ended_at          = ?8, \
+                         error_msg         = COALESCE(?9, error_msg), \
                          worker_id         = NULL, \
                          lease_expires_at  = NULL \
-                     WHERE run_id = ?1 AND step_id = ?2 AND claim_id = ?9",
+                     WHERE run_id = ?1 AND step_id = ?2 AND claim_id = ?10",
                     params![
                         run_id,
                         step_id,
                         new_status.as_str(),
                         output_json,
                         output_hash,
+                        output_blob_ref,
                         attempt_count,
                         ended_at_ms,
                         error_msg,
@@ -2006,6 +2259,9 @@ fn parse_step_checkpoint(row: &rusqlite::Row<'_>) -> Result<StepCheckpoint, SqlE
         worker_id: row.get(9)?,
         lease_expires_at_ms: row.get(10)?,
         claim_id: row.get::<_, i64>(11)? as u64,
+        // Schema v4 column (sprint 0.5-S7). NULL on existing rows
+        // (small or pre-S7 outputs are stored inline).
+        output_blob_ref: row.get(12)?,
     })
 }
 
@@ -2044,6 +2300,7 @@ mod tests {
             worker_id: None,
             lease_expires_at_ms: None,
             claim_id: 0,
+            output_blob_ref: None,
         }
     }
 
@@ -2746,7 +3003,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_3_after_init() {
+    fn schema_version_is_latest_after_init() {
         let store = fresh_store();
         let version: i64 = store
             .conn
@@ -2754,8 +3011,8 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 3);
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(version, 4);
+        assert_eq!(SCHEMA_VERSION, 4);
     }
 
     #[test]
@@ -2807,6 +3064,7 @@ mod tests {
                 worker_id: None,
                 lease_expires_at_ms: None,
                 claim_id: 0,
+                output_blob_ref: None,
             })
             .unwrap();
     }
@@ -3354,6 +3612,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
         }
@@ -3420,6 +3679,7 @@ mod tests {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
+                    output_blob_ref: None,
                 })
                 .unwrap();
             store.claim_step("R-cc", "s1", "A", 9_000, 1_000).unwrap();
@@ -3818,5 +4078,348 @@ mod tests {
             err,
             PersistenceError::NotFound { entity: "run", .. }
         ));
+    }
+
+    // ── sprint 0.5-S7: output blob refs ──
+
+    /// Open an in-memory store with a real on-disk blob store rooted at
+    /// a per-test tempdir. Tests that exercise the blob path use this.
+    fn fresh_store_with_blob_store() -> (RunCheckpointStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blobs_root = dir.path().join("blobs");
+        let store = RunCheckpointStore::open_in_memory_with_blob_store(blobs_root)
+            .expect("must open with blob store");
+        (store, dir)
+    }
+
+    fn sha256_hex(s: &str) -> String {
+        // Sprint 0.5-S7: tests use the SHA-256 over the JSON bytes,
+        // matching `complete_step_cas`'s contract. We avoid pulling
+        // sha2 directly here; instead we use the existing
+        // `DataStore::hash_value`-equivalent via a light dependency.
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(s.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+
+    fn schema_version_value(store: &RunCheckpointStore) -> i64 {
+        store
+            .conn
+            .query_row("SELECT version FROM schema_version WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .expect("schema_version row must exist")
+    }
+
+    fn complete_running_step(
+        store: &RunCheckpointStore,
+        run_id: &str,
+        step_id: &str,
+        output_json: &str,
+    ) -> TerminalOutcome {
+        store.insert_run(&sample_run(run_id)).ok();
+        store
+            .upsert_step_checkpoint(&sample_checkpoint(run_id, step_id, StepStatus::Pending))
+            .unwrap();
+        let claim = match store
+            .claim_step(run_id, step_id, "wkr-test", 9_999_999_999, 1_000)
+            .unwrap()
+        {
+            ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("expected Claimed, got {other:?}"),
+        };
+        let hash = sha256_hex(output_json);
+        store
+            .complete_step_cas(run_id, step_id, claim, output_json, &hash, 1, 2_000)
+            .unwrap()
+    }
+
+    #[test]
+    fn schema_version_is_4_after_init() {
+        let store = fresh_store();
+        assert_eq!(schema_version_value(&store), 4);
+        assert_eq!(SCHEMA_VERSION, 4);
+    }
+
+    #[test]
+    fn output_blob_ref_column_exists_after_init() {
+        let store = fresh_store();
+        assert!(super::column_exists(&store.conn, "step_checkpoints", "output_blob_ref").unwrap());
+    }
+
+    #[test]
+    fn complete_step_cas_inline_below_threshold() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        let small = "x".repeat(1024); // 1 KiB JSON-ish string
+        let small_quoted = format!("\"{small}\"");
+        let outcome = complete_running_step(&store, "R1", "s1", &small_quoted);
+        assert!(matches!(outcome, TerminalOutcome::Committed));
+        let cps = store.list_step_checkpoints("R1").unwrap();
+        let cp = &cps[0];
+        assert!(cp.output_json.is_some(), "small output must be inline");
+        assert!(
+            cp.output_blob_ref.is_none(),
+            "small output must NOT have blob ref"
+        );
+    }
+
+    #[test]
+    fn complete_step_cas_blob_above_threshold() {
+        let (store, dir) = fresh_store_with_blob_store();
+        // 100 KiB string content (greater than 64 KiB threshold).
+        let big_payload = "a".repeat(100 * 1024);
+        let big_quoted = format!("\"{big_payload}\"");
+        let expected_hash = sha256_hex(&big_quoted);
+        let outcome = complete_running_step(&store, "R1", "s1", &big_quoted);
+        assert!(matches!(outcome, TerminalOutcome::Committed));
+        let cps = store.list_step_checkpoints("R1").unwrap();
+        let cp = &cps[0];
+        assert!(cp.output_json.is_none(), "large output must be offloaded");
+        assert_eq!(cp.output_blob_ref.as_deref(), Some(expected_hash.as_str()));
+        // Blob file should be on disk under blobs/<aa>/<hash>.
+        let blob_path = dir
+            .path()
+            .join("blobs")
+            .join(&expected_hash[..2])
+            .join(&expected_hash);
+        assert!(blob_path.is_file(), "blob file missing at {blob_path:?}");
+    }
+
+    #[test]
+    fn complete_step_cas_at_threshold_boundary() {
+        // exactly 64 KiB total bytes for output_json string → inline.
+        // 64 KiB + 1 → blob. The check is on output_json.len(), so a
+        // string with content of size 64 KiB - 2 (plus 2 quote chars)
+        // serializes to exactly 64 KiB; we avoid quoting by using a JSON
+        // number form instead — wait, we want a precise byte count.
+        // Use a raw JSON null repeated to exact size won't work; we just
+        // build strings of exactly threshold and threshold+1 bytes.
+        let (store, _dir) = fresh_store_with_blob_store();
+
+        let exactly = "z".repeat(BLOB_THRESHOLD);
+        assert_eq!(exactly.len(), BLOB_THRESHOLD);
+        complete_running_step(&store, "R1", "s_exact", &exactly);
+        let cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        assert!(cp.output_json.is_some(), "at threshold must be inline");
+        assert!(cp.output_blob_ref.is_none());
+
+        let over = "z".repeat(BLOB_THRESHOLD + 1);
+        complete_running_step(&store, "R2", "s_over", &over);
+        let cp2 = &store.list_step_checkpoints("R2").unwrap()[0];
+        assert!(cp2.output_json.is_none(), "over threshold must be blob");
+        assert!(cp2.output_blob_ref.is_some());
+    }
+
+    #[test]
+    fn read_step_output_inline() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        let payload = "\"small\"";
+        complete_running_step(&store, "R1", "s1", payload);
+        let got = store.read_step_output("R1", "s1").unwrap();
+        assert_eq!(got.as_deref(), Some(payload));
+    }
+
+    #[test]
+    fn read_step_output_blob() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        let payload = "\"".to_string() + &"q".repeat(100 * 1024) + "\"";
+        complete_running_step(&store, "R1", "s1", &payload);
+        let got = store.read_step_output("R1", "s1").unwrap();
+        assert_eq!(got.unwrap(), payload);
+    }
+
+    #[test]
+    fn read_step_output_pending_returns_none() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        store
+            .upsert_step_checkpoint(&sample_checkpoint("R1", "s1", StepStatus::Pending))
+            .unwrap();
+        // pending row exists but has neither output column populated.
+        let got = store.read_step_output("R1", "s1").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn read_step_output_unknown_step_returns_none() {
+        let store = fresh_store();
+        let got = store.read_step_output("R-missing", "s-missing").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn read_step_output_inconsistent_returns_typed_error() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        // Force-insert a corrupted row via raw SQL: both columns set.
+        store.insert_run(&sample_run("R1")).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO step_checkpoints \
+                 (run_id, step_id, status, output_json, output_hash, output_blob_ref, attempt_count, claim_id) \
+                 VALUES (?1, ?2, 'completed', ?3, ?4, ?4, 1, 1)",
+                params![
+                    "R1",
+                    "s_bad",
+                    "\"x\"",
+                    "deadbeef".repeat(8), // 64 hex chars
+                ],
+            )
+            .unwrap();
+        let err = store.read_step_output("R1", "s_bad").unwrap_err();
+        assert!(
+            matches!(err, PersistenceError::Inconsistent(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn audit_hash_unchanged_inline_vs_blob() {
+        // Storing the same content as inline in one store and as blob
+        // in another must yield the same output_hash on both rows.
+        let (s_blob, _d1) = fresh_store_with_blob_store();
+        let s_inline = fresh_store(); // no blob_store → forced inline
+        let payload = "\"".to_string() + &"q".repeat(100 * 1024) + "\"";
+        complete_running_step(&s_blob, "R1", "s1", &payload);
+        complete_running_step(&s_inline, "R2", "s1", &payload);
+        let cp_blob = &s_blob.list_step_checkpoints("R1").unwrap()[0];
+        let cp_inline = &s_inline.list_step_checkpoints("R2").unwrap()[0];
+        assert_eq!(cp_blob.output_hash, cp_inline.output_hash);
+        // And the blob ref equals the hash (S7 invariant).
+        assert_eq!(cp_blob.output_blob_ref, cp_blob.output_hash);
+        // The inline row has no ref.
+        assert!(cp_inline.output_blob_ref.is_none());
+    }
+
+    #[test]
+    fn run_owns_blob_ref_true_for_referenced_hash() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        let payload = "\"".to_string() + &"q".repeat(100 * 1024) + "\"";
+        complete_running_step(&store, "R1", "s1", &payload);
+        let cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        let hash = cp.output_blob_ref.clone().unwrap();
+        assert!(store.run_owns_blob_ref("R1", &hash).unwrap());
+    }
+
+    #[test]
+    fn run_owns_blob_ref_false_for_unrelated_run() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        let payload = "\"".to_string() + &"q".repeat(100 * 1024) + "\"";
+        complete_running_step(&store, "R1", "s1", &payload);
+        let cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        let hash = cp.output_blob_ref.clone().unwrap();
+        // R2 doesn't even exist; cross-run query returns false.
+        assert!(!store.run_owns_blob_ref("R2", &hash).unwrap());
+    }
+
+    #[test]
+    fn run_owns_blob_ref_false_for_unknown_hash() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        let bogus = "0".repeat(64);
+        assert!(!store.run_owns_blob_ref("R1", &bogus).unwrap());
+    }
+
+    #[test]
+    fn upsert_rejects_both_output_columns_set() {
+        // H2 regression (sprint 0.5-S7 review): the upsert must surface
+        // a typed Inconsistent error rather than persist a row that
+        // violates the mutual-exclusion invariant.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        let mut cp = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        cp.output_json = Some("\"x\"".to_string());
+        cp.output_blob_ref = Some("a".repeat(64));
+        let err = store.upsert_step_checkpoint(&cp).unwrap_err();
+        assert!(
+            matches!(err, PersistenceError::Inconsistent(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn upsert_clears_inline_when_setting_blob_ref() {
+        // H2 regression: upserting a Completed row with output_blob_ref
+        // set must clear any pre-existing inline output_json on the row
+        // so the mutual-exclusion invariant always holds after the
+        // upsert returns.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        // Seed with inline.
+        let mut cp1 = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        cp1.output_json = Some("\"inline\"".to_string());
+        cp1.output_hash = Some("h1".to_string());
+        store.upsert_step_checkpoint(&cp1).unwrap();
+        // Re-upsert with a blob ref (no inline).
+        let mut cp2 = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        cp2.output_blob_ref = Some("a".repeat(64));
+        cp2.output_hash = Some("a".repeat(64));
+        store.upsert_step_checkpoint(&cp2).unwrap();
+        let final_cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        assert!(
+            final_cp.output_json.is_none(),
+            "inline must be cleared when blob ref is set; got {:?}",
+            final_cp.output_json
+        );
+        assert_eq!(final_cp.output_blob_ref, Some("a".repeat(64)));
+    }
+
+    #[test]
+    fn upsert_clears_blob_ref_when_setting_inline() {
+        // Symmetric to upsert_clears_inline_when_setting_blob_ref.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        let mut cp1 = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        cp1.output_blob_ref = Some("b".repeat(64));
+        cp1.output_hash = Some("b".repeat(64));
+        store.upsert_step_checkpoint(&cp1).unwrap();
+        let mut cp2 = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        cp2.output_json = Some("\"replaced\"".to_string());
+        cp2.output_hash = Some("h2".to_string());
+        store.upsert_step_checkpoint(&cp2).unwrap();
+        let final_cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        assert!(final_cp.output_blob_ref.is_none());
+        assert_eq!(final_cp.output_json.as_deref(), Some("\"replaced\""));
+    }
+
+    #[test]
+    fn upsert_preserves_outputs_when_both_inputs_none() {
+        // The status-transition case: caller upserts only a status
+        // change with output_json = None and output_blob_ref = None.
+        // Existing output (whichever shape) must be preserved.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        let mut seed = sample_checkpoint("R1", "s1", StepStatus::Completed);
+        seed.output_json = Some("\"keep\"".to_string());
+        seed.output_hash = Some("h-keep".to_string());
+        store.upsert_step_checkpoint(&seed).unwrap();
+        // Status transition without output.
+        let bare = sample_checkpoint("R1", "s1", StepStatus::Running);
+        store.upsert_step_checkpoint(&bare).unwrap();
+        let final_cp = &store.list_step_checkpoints("R1").unwrap()[0];
+        assert_eq!(final_cp.output_json.as_deref(), Some("\"keep\""));
+        assert!(final_cp.output_blob_ref.is_none());
+        assert_eq!(final_cp.status, StepStatus::Running);
+    }
+
+    #[test]
+    fn read_step_output_blob_ref_without_blob_store_errors() {
+        // In-memory store has no blob_store, but a row with
+        // output_blob_ref set will still surface an error rather than
+        // silently returning None.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO step_checkpoints \
+                 (run_id, step_id, status, output_blob_ref, attempt_count, claim_id) \
+                 VALUES ('R1', 's1', 'completed', ?1, 1, 1)",
+                params!["a".repeat(64)],
+            )
+            .unwrap();
+        let err = store.read_step_output("R1", "s1").unwrap_err();
+        assert!(matches!(err, PersistenceError::BlobStore(_)));
     }
 }
