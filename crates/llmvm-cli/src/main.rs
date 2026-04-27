@@ -596,8 +596,20 @@ enum WorkflowCommand {
         run_id: String,
         /// Step id of the approval gate to approve.
         step_id: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "coordinator")]
         data_dir: Option<PathBuf>,
+        /// Sprint 0.5-S6: drive a remote coordinator over HTTP instead
+        /// of mutating a local data-dir. POSTs to
+        /// `/api/runs/{run_id}/approve`. Mutually exclusive with
+        /// `--data-dir`. Bearer token via `--coord-token` or
+        /// `BORUNA_TOKEN` env var.
+        #[arg(long, value_name = "URL")]
+        coordinator: Option<String>,
+        /// Bearer token for the coordinator's auth middleware. Falls
+        /// back to the `BORUNA_TOKEN` env var. Only meaningful with
+        /// `--coordinator`.
+        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
+        coord_token: Option<String>,
     },
     /// Reject a paused approval-gate step. Records a rejection sentinel;
     /// `boruna workflow resume <run-id>` will then halt the run as
@@ -609,8 +621,14 @@ enum WorkflowCommand {
         /// resumed run's step error_msg.
         #[arg(long)]
         reason: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "coordinator")]
         data_dir: Option<PathBuf>,
+        /// Sprint 0.5-S6: drive a remote coordinator over HTTP. POSTs
+        /// to `/api/runs/{run_id}/approve` with `decision: "rejected"`.
+        #[arg(long, value_name = "URL")]
+        coordinator: Option<String>,
+        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
+        coord_token: Option<String>,
     },
     /// Trigger a paused external_trigger step (sprint 0.3-S15). Records
     /// the supplied payload as the step's output and primes resume to
@@ -641,8 +659,15 @@ enum WorkflowCommand {
         /// exclusive with `--payload`. Useful for large webhook bodies.
         #[arg(long)]
         payload_file: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "coordinator")]
         data_dir: Option<PathBuf>,
+        /// Sprint 0.5-S6: drive a remote coordinator over HTTP. POSTs
+        /// to `/api/runs/{run_id}/trigger`. Mutually exclusive with
+        /// `--data-dir`.
+        #[arg(long, value_name = "URL")]
+        coordinator: Option<String>,
+        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
+        coord_token: Option<String>,
     },
     /// Show the full state of a single run: row, step checkpoints, and
     /// approval-gate decisions. Use `--json` for machine-readable output
@@ -2500,29 +2525,56 @@ fn run_workflow(
             run_id,
             step_id,
             data_dir,
+            coordinator,
+            coord_token,
         } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                record_approval_decision(
-                    &resolved,
-                    &run_id,
-                    &step_id,
-                    ApprovalKind::Approved,
-                    None,
-                )
-                .map_err(|e| format!("{e}"))?;
-                println!("approval recorded for step '{step_id}' in run '{run_id}'.");
-                println!(
-                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
-                    resolved.display()
-                );
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (run_id, step_id, data_dir);
-                return Err("`workflow approve` requires the `persist-sqlite` feature".into());
+            if let Some(url) = coordinator {
+                #[cfg(feature = "serve")]
+                {
+                    crate::coordinator::send_approve_remote(
+                        &url,
+                        coord_token.as_deref(),
+                        &run_id,
+                        &step_id,
+                        "approved",
+                        None,
+                    )?;
+                    println!(
+                        "approval recorded for step '{step_id}' in run '{run_id}' \
+                         via coordinator {url}."
+                    );
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    let _ = (url, coord_token);
+                    return Err(
+                        "`workflow approve --coordinator` requires the `serve` feature".into(),
+                    );
+                }
+            } else {
+                #[cfg(feature = "persist-sqlite")]
+                {
+                    use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                    record_approval_decision(
+                        &resolved,
+                        &run_id,
+                        &step_id,
+                        ApprovalKind::Approved,
+                        None,
+                    )
+                    .map_err(|e| format!("{e}"))?;
+                    println!("approval recorded for step '{step_id}' in run '{run_id}'.");
+                    println!(
+                        "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                        resolved.display()
+                    );
+                }
+                #[cfg(not(feature = "persist-sqlite"))]
+                {
+                    let _ = (run_id, step_id, data_dir);
+                    return Err("`workflow approve` requires the `persist-sqlite` feature".into());
+                }
             }
         }
         WorkflowCommand::Reject {
@@ -2530,29 +2582,56 @@ fn run_workflow(
             step_id,
             reason,
             data_dir,
+            coordinator,
+            coord_token,
         } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                record_approval_decision(
-                    &resolved,
-                    &run_id,
-                    &step_id,
-                    ApprovalKind::Rejected,
-                    reason,
-                )
-                .map_err(|e| format!("{e}"))?;
-                println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
-                println!(
-                    "Run `boruna workflow resume {run_id} --data-dir {}` to halt the run.",
-                    resolved.display()
-                );
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (run_id, step_id, reason, data_dir);
-                return Err("`workflow reject` requires the `persist-sqlite` feature".into());
+            if let Some(url) = coordinator {
+                #[cfg(feature = "serve")]
+                {
+                    crate::coordinator::send_approve_remote(
+                        &url,
+                        coord_token.as_deref(),
+                        &run_id,
+                        &step_id,
+                        "rejected",
+                        reason.as_deref(),
+                    )?;
+                    println!(
+                        "rejection recorded for step '{step_id}' in run '{run_id}' \
+                         via coordinator {url}."
+                    );
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    let _ = (url, coord_token, reason);
+                    return Err(
+                        "`workflow reject --coordinator` requires the `serve` feature".into(),
+                    );
+                }
+            } else {
+                #[cfg(feature = "persist-sqlite")]
+                {
+                    use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                    record_approval_decision(
+                        &resolved,
+                        &run_id,
+                        &step_id,
+                        ApprovalKind::Rejected,
+                        reason,
+                    )
+                    .map_err(|e| format!("{e}"))?;
+                    println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
+                    println!(
+                        "Run `boruna workflow resume {run_id} --data-dir {}` to halt the run.",
+                        resolved.display()
+                    );
+                }
+                #[cfg(not(feature = "persist-sqlite"))]
+                {
+                    let _ = (run_id, step_id, reason, data_dir);
+                    return Err("`workflow reject` requires the `persist-sqlite` feature".into());
+                }
             }
         }
         WorkflowCommand::Trigger {
@@ -2562,46 +2641,70 @@ fn run_workflow(
             payload,
             payload_file,
             data_dir,
+            coordinator,
+            coord_token,
         } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                use boruna_orchestrator::workflow::record_external_trigger;
-                let payload_str = match (payload, payload_file) {
-                    (Some(p), None) => p,
-                    (None, Some(path)) => std::fs::read_to_string(&path).map_err(|e| {
-                        format!("cannot read --payload-file '{}': {e}", path.display())
-                    })?,
-                    (Some(_), Some(_)) => {
-                        // clap's `conflicts_with` should prevent this; defensive check.
-                        return Err("--payload and --payload-file are mutually exclusive".into());
-                    }
-                    (None, None) => {
-                        return Err(
-                            "either --payload or --payload-file is required for `workflow trigger`"
-                                .into(),
-                        );
-                    }
-                };
-                // Defense-in-depth: confirm the payload is well-formed
-                // JSON. The persistence layer treats it as opaque, but
-                // downstream `step_input` consumers will parse it — give
-                // operators an early failure rather than a confusing
-                // "step crashed parsing JSON" three layers down.
-                serde_json::from_str::<serde_json::Value>(&payload_str)
-                    .map_err(|e| format!("--payload is not valid JSON: {e}"))?;
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
-                    .map_err(|e| format!("{e}"))?;
-                println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
-                println!(
-                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
-                    resolved.display()
-                );
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (run_id, step_id, token, payload, payload_file, data_dir);
-                return Err("`workflow trigger` requires the `persist-sqlite` feature".into());
+            let payload_str = match (payload, payload_file) {
+                (Some(p), None) => p,
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .map_err(|e| format!("cannot read --payload-file '{}': {e}", path.display()))?,
+                (Some(_), Some(_)) => {
+                    return Err("--payload and --payload-file are mutually exclusive".into());
+                }
+                (None, None) => {
+                    return Err(
+                        "either --payload or --payload-file is required for `workflow trigger`"
+                            .into(),
+                    );
+                }
+            };
+            // Defense-in-depth: confirm the payload is well-formed JSON.
+            // Same posture for both local and remote paths so operators
+            // get the early failure regardless of mode.
+            serde_json::from_str::<serde_json::Value>(&payload_str)
+                .map_err(|e| format!("--payload is not valid JSON: {e}"))?;
+
+            if let Some(url) = coordinator {
+                #[cfg(feature = "serve")]
+                {
+                    crate::coordinator::send_trigger_remote(
+                        &url,
+                        coord_token.as_deref(),
+                        &run_id,
+                        &step_id,
+                        &token,
+                        &payload_str,
+                    )?;
+                    println!(
+                        "trigger recorded for step '{step_id}' in run '{run_id}' \
+                         via coordinator {url}."
+                    );
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    let _ = (url, coord_token);
+                    return Err(
+                        "`workflow trigger --coordinator` requires the `serve` feature".into(),
+                    );
+                }
+            } else {
+                #[cfg(feature = "persist-sqlite")]
+                {
+                    use boruna_orchestrator::workflow::record_external_trigger;
+                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                    record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
+                        .map_err(|e| format!("{e}"))?;
+                    println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
+                    println!(
+                        "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                        resolved.display()
+                    );
+                }
+                #[cfg(not(feature = "persist-sqlite"))]
+                {
+                    let _ = (run_id, step_id, token, data_dir);
+                    return Err("`workflow trigger` requires the `persist-sqlite` feature".into());
+                }
             }
         }
         WorkflowCommand::Show {

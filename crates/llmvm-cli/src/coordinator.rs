@@ -363,6 +363,11 @@ pub fn build_router(state: CoordinatorState) -> Router {
         // middleware as worker routes.
         .route("/api/runs/submit", post(handle_submit_run))
         .route("/api/runs/{run_id}/status", get(handle_run_status))
+        // Sprint 0.5-S6: operator-facing routes for human-in-the-loop
+        // and webhook-driven gates. Same bearer-token auth as the
+        // submit / status routes.
+        .route("/api/runs/{run_id}/approve", post(handle_approve_run))
+        .route("/api/runs/{run_id}/trigger", post(handle_trigger_run))
         // The 8 MiB DefaultBodyLimit applies to coord routes
         // ONLY (not dashboard routes) because Axum's per-
         // router layer scoping means layers attached pre-merge
@@ -482,6 +487,29 @@ pub struct SubmitRunResponse {
     pub protocol_version: u32,
     pub run_id: String,
     pub workflow_hash: String,
+}
+
+/// Sprint `0.5-S6` — `POST /api/runs/{run_id}/approve` body. Decision
+/// is the canonical lowercase string (`"approved"` | `"rejected"`)
+/// so the wire format matches the local CLI's argument shape.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ApproveRequest {
+    pub step_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Sprint `0.5-S6` — `POST /api/runs/{run_id}/trigger` body. The
+/// `token` field is the per-step trigger token stashed at gate-pause
+/// time (NOT the bearer token for the auth middleware — that goes
+/// in the `Authorization` header). Two separate secrets matches the
+/// 0.3-S15 trigger model unchanged.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TriggerRequest {
+    pub step_id: String,
+    pub token: String,
+    pub payload: String,
 }
 
 /// Sprint `0.5-S4` — `GET /api/runs/{run_id}/status` response.
@@ -1114,6 +1142,207 @@ async fn handle_run_status(
     .into_response()
 }
 
+// ── operator-facing approve + trigger (sprint 0.5-S6) ──
+
+/// `POST /api/runs/{run_id}/approve` — record an approval-gate
+/// decision (approved or rejected) for a paused step. Delegates to
+/// `record_approval_decision_in_store`. Decision string is
+/// lowercase `"approved"` / `"rejected"`. Auth: bearer-gated by
+/// `auth_middleware` like all other operator routes.
+async fn handle_approve_run(
+    State(state): State<CoordinatorState>,
+    Path(run_id): Path<String>,
+    Json(req): Json<ApproveRequest>,
+) -> Response {
+    use boruna_orchestrator::workflow::ApprovalKind;
+
+    let kind = match req.decision.as_str() {
+        "approved" => ApprovalKind::Approved,
+        "rejected" => ApprovalKind::Rejected,
+        other => {
+            return respond_err(
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new(
+                    "coord.approve.bad_payload",
+                    format!("decision must be \"approved\" or \"rejected\", got {other:?}"),
+                ),
+            );
+        }
+    };
+    let store = state.store.clone();
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
+    };
+    let result = boruna_orchestrator::workflow::record_approval_decision_in_store(
+        &store_guard,
+        &run_id,
+        &req.step_id,
+        kind,
+        req.reason.clone(),
+    );
+    drop(store_guard);
+    match result {
+        Ok(()) => Json(OkResponse {
+            protocol_version: PROTOCOL_VERSION,
+            ok: true,
+        })
+        .into_response(),
+        Err(e) => approve_error_response(e),
+    }
+}
+
+/// `POST /api/runs/{run_id}/trigger` — record an external-trigger
+/// payload for a paused step. Delegates to
+/// `record_external_trigger_in_store`. Bearer-gated.
+async fn handle_trigger_run(
+    State(state): State<CoordinatorState>,
+    Path(run_id): Path<String>,
+    Json(req): Json<TriggerRequest>,
+) -> Response {
+    let store = state.store.clone();
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
+    };
+    let result = boruna_orchestrator::workflow::record_external_trigger_in_store(
+        &store_guard,
+        &run_id,
+        &req.step_id,
+        &req.token,
+        &req.payload,
+    );
+    drop(store_guard);
+    match result {
+        Ok(()) => Json(OkResponse {
+            protocol_version: PROTOCOL_VERSION,
+            ok: true,
+        })
+        .into_response(),
+        Err(e) => trigger_error_response(e),
+    }
+}
+
+/// Map a `WorkflowRunError` from the approve path to an HTTP
+/// response with the locked `coord.approve.*` error_kind taxonomy.
+/// Sprint 0.5-S6.
+fn approve_error_response(e: boruna_orchestrator::workflow::WorkflowRunError) -> Response {
+    use boruna_orchestrator::workflow::WorkflowRunError;
+    match e {
+        WorkflowRunError::RunNotFound(id) => respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new("coord.runs.not_found", format!("no run with id '{id}'")),
+        ),
+        WorkflowRunError::RunNotResumable { run_id, terminal_status } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.approve.invalid_state",
+                format!("run '{run_id}' is in terminal status '{terminal_status}'"),
+            ),
+        ),
+        WorkflowRunError::StepNotFound { run_id, step_id } => respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new(
+                "coord.approve.invalid_state",
+                format!("step '{step_id}' not found in run '{run_id}'"),
+            ),
+        ),
+        WorkflowRunError::NotAnApprovalGateStep { run_id, step_id } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.approve.invalid_state",
+                format!("step '{step_id}' in run '{run_id}' is not an approval-gate step"),
+            ),
+        ),
+        WorkflowRunError::StepNotAtApprovalGate { run_id, step_id, current_status } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.approve.invalid_state",
+                format!(
+                    "step '{step_id}' in run '{run_id}' is in '{current_status}', not 'awaiting_approval'"
+                ),
+            ),
+        ),
+        WorkflowRunError::StepAlreadyDecided { run_id, step_id, prior_decision } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.approve.invalid_state",
+                format!(
+                    "step '{step_id}' in run '{run_id}' was already decided ({prior_decision})"
+                ),
+            ),
+        ),
+        other => internal_error(&format!("approve failed: {other}")),
+    }
+}
+
+/// Map a `WorkflowRunError` from the trigger path to an HTTP
+/// response with the locked `coord.trigger.*` error_kind taxonomy.
+fn trigger_error_response(e: boruna_orchestrator::workflow::WorkflowRunError) -> Response {
+    use boruna_orchestrator::workflow::WorkflowRunError;
+    match e {
+        WorkflowRunError::RunNotFound(id) => respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new("coord.runs.not_found", format!("no run with id '{id}'")),
+        ),
+        WorkflowRunError::RunNotResumable { run_id, terminal_status } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.trigger.invalid_state",
+                format!("run '{run_id}' is in terminal status '{terminal_status}'"),
+            ),
+        ),
+        WorkflowRunError::StepNotFound { run_id, step_id } => respond_err(
+            StatusCode::NOT_FOUND,
+            ErrorBody::new(
+                "coord.trigger.invalid_state",
+                format!("step '{step_id}' not found in run '{run_id}'"),
+            ),
+        ),
+        WorkflowRunError::NotAnExternalTriggerStep { run_id, step_id } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.trigger.invalid_state",
+                format!(
+                    "step '{step_id}' in run '{run_id}' is not an external-trigger step"
+                ),
+            ),
+        ),
+        WorkflowRunError::StepNotAtExternalTriggerGate { run_id, step_id, current_status } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.trigger.invalid_state",
+                format!(
+                    "step '{step_id}' in run '{run_id}' is in '{current_status}', not 'awaiting_external_event'"
+                ),
+            ),
+        ),
+        WorkflowRunError::InvalidTriggerToken { run_id, step_id } => respond_err(
+            StatusCode::UNAUTHORIZED,
+            ErrorBody::new(
+                "coord.trigger.bad_token",
+                format!(
+                    "trigger token mismatch for step '{step_id}' in run '{run_id}'"
+                ),
+            ),
+        ),
+        WorkflowRunError::StepAlreadyTriggered { run_id, step_id, prior_triggered_at_ms } => respond_err(
+            StatusCode::CONFLICT,
+            ErrorBody::new(
+                "coord.trigger.invalid_state",
+                format!(
+                    "step '{step_id}' in run '{run_id}' was already triggered at {prior_triggered_at_ms}"
+                ),
+            ),
+        ),
+        WorkflowRunError::Validation(msg) => respond_err(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::new("coord.trigger.bad_payload", msg),
+        ),
+        other => internal_error(&format!("trigger failed: {other}")),
+    }
+}
+
 // Helper accessors for tests / future dashboard merge.
 #[allow(dead_code)]
 impl CoordinatorState {
@@ -1291,6 +1520,84 @@ pub fn run_remote(
 
             tokio::time::sleep(Duration::from_millis(effective_poll_ms)).await;
         }
+    })
+}
+
+// ── workflow approve / reject / trigger client (sprint 0.5-S6) ──
+
+/// POST `/api/runs/{run_id}/approve` against a remote coordinator.
+/// Used by `boruna workflow approve --coordinator <url>` and
+/// `boruna workflow reject --coordinator <url>`. Returns `Ok(())` on
+/// success, an error with the coordinator's `error_kind` and
+/// message verbatim on a non-2xx response.
+pub fn send_approve_remote(
+    coord_url: &str,
+    coord_token: Option<&str>,
+    run_id: &str,
+    step_id: &str,
+    decision: &str,
+    reason: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = coord_url.trim_end_matches('/');
+    let url = format!("{base}/api/runs/{run_id}/approve");
+    let body = ApproveRequest {
+        step_id: step_id.to_string(),
+        decision: decision.to_string(),
+        reason: reason.map(|s| s.to_string()),
+    };
+    post_operator_command(&url, coord_token, &body)
+}
+
+/// POST `/api/runs/{run_id}/trigger` against a remote coordinator.
+/// Mirrors `send_approve_remote`'s shape; separate function only
+/// because the body type differs.
+pub fn send_trigger_remote(
+    coord_url: &str,
+    coord_token: Option<&str>,
+    run_id: &str,
+    step_id: &str,
+    trigger_token: &str,
+    payload: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let base = coord_url.trim_end_matches('/');
+    let url = format!("{base}/api/runs/{run_id}/trigger");
+    let body = TriggerRequest {
+        step_id: step_id.to_string(),
+        token: trigger_token.to_string(),
+        payload: payload.to_string(),
+    };
+    post_operator_command(&url, coord_token, &body)
+}
+
+/// Shared POST helper for the operator-side mutation routes.
+/// Builds a tokio runtime, sends the request, surfaces non-2xx
+/// responses with the coordinator's full error body so operators
+/// get a clear `coord.*` error_kind without us re-parsing here.
+fn post_operator_command<T: serde::Serialize + ?Sized>(
+    url: &str,
+    coord_token: Option<&str>,
+    body: &T,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+    rt.block_on(async move {
+        let mut req = client.post(url).json(body);
+        if let Some(tok) = coord_token {
+            req = req.bearer_auth(tok);
+        }
+        let resp = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok::<(), Box<dyn std::error::Error>>(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err::<(), Box<dyn std::error::Error>>(format!("{status}: {body}").into())
     })
 }
 
@@ -1943,6 +2250,163 @@ mod tests {
         assert_eq!(snap.status, "running");
         assert_eq!(snap.step_statuses.get("s1").unwrap(), "pending");
         assert!(snap.error_msg.is_none());
+    }
+
+    // ── Sprint 0.5-S6 — approve + trigger handler tests ──
+
+    fn make_approval_workflow() -> serde_json::Value {
+        // Two-step workflow: a Source step "analyze" feeds an
+        // ApprovalGate "human_review". Submit drives `analyze` to
+        // Pending; we manually mark it Completed in tests, then a
+        // tick opens the gate, then approve/reject closes it.
+        serde_json::json!({
+            "name": "wf-s6-approve",
+            "version": "1.0.0",
+            "steps": {
+                "analyze": {
+                    "kind": "source",
+                    "source": "analyze.ax"
+                },
+                "human_review": {
+                    "kind": "approval_gate",
+                    "required_role": "reviewer",
+                    "depends_on": ["analyze"]
+                }
+            },
+            "edges": [["analyze", "human_review"]]
+        })
+    }
+
+    async fn submit_with_open_gate(state: &CoordinatorState) -> String {
+        // Helper for the approve handler tests: submit, drive analyze
+        // Completed, tick to open the gate, return run_id.
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "workflow": make_approval_workflow(),
+            "step_sources": { "analyze": "fn main() -> Int { 1 }" }
+        });
+        let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
+        assert_eq!(status, StatusCode::OK, "submit failed: {v}");
+        let run_id = v["run_id"].as_str().unwrap().to_string();
+
+        {
+            let store = state.store.lock().unwrap();
+            let claim = store
+                .claim_step(&run_id, "analyze", "w", 1_000_000_000, 0)
+                .unwrap();
+            let claim_id = match claim {
+                boruna_orchestrator::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+                other => panic!("{other:?}"),
+            };
+            store
+                .complete_step_cas(&run_id, "analyze", claim_id, "{}", "0", 1, 1)
+                .unwrap();
+        }
+
+        // Tick via the status endpoint (which calls advance) so the
+        // gate opens.
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/runs/{run_id}/status"))
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+        run_id
+    }
+
+    #[tokio::test]
+    async fn approve_run_advances_gate_to_completed() {
+        let state = fresh_state();
+        let run_id = submit_with_open_gate(&state).await;
+        let app = build_router(state.clone());
+
+        let body = serde_json::json!({
+            "step_id": "human_review",
+            "decision": "approved"
+        });
+        let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(status, StatusCode::OK, "approve failed: {v}");
+        assert_eq!(v["ok"], true);
+
+        // Next status read advances the run; the gate is now Completed.
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/runs/{run_id}/status"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let snap: RunStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            snap.step_statuses.get("human_review").map(|s| s.as_str()),
+            Some("completed"),
+            "gate should be Completed after approve, got: {snap:?}"
+        );
+        // The run is itself Completed because all steps reached terminal.
+        assert_eq!(snap.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn approve_run_rejects_invalid_decision_string() {
+        let state = fresh_state();
+        let run_id = submit_with_open_gate(&state).await;
+        let app = build_router(state.clone());
+
+        let body = serde_json::json!({
+            "step_id": "human_review",
+            "decision": "maybe"
+        });
+        let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.approve.bad_payload");
+    }
+
+    #[tokio::test]
+    async fn approve_run_returns_404_for_unknown_run_id() {
+        let state = fresh_state();
+        let app = build_router(state);
+        let body = serde_json::json!({
+            "step_id": "x",
+            "decision": "approved"
+        });
+        let (status, v) = post_json(&app, "/api/runs/deadbeef0badcafe/approve", &body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(v["error_kind"], "coord.runs.not_found");
+    }
+
+    #[tokio::test]
+    async fn approve_run_rejects_double_decision() {
+        let state = fresh_state();
+        let run_id = submit_with_open_gate(&state).await;
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "step_id": "human_review",
+            "decision": "approved"
+        });
+        let (s1, _) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(s1, StatusCode::OK);
+        // Second approval on the same step must be rejected.
+        let (s2, v2) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(s2, StatusCode::CONFLICT);
+        assert_eq!(v2["error_kind"], "coord.approve.invalid_state");
+    }
+
+    #[tokio::test]
+    async fn approve_run_rejects_unauthenticated_when_secret_configured() {
+        // Symmetric to the submit-run auth check: the approve route
+        // must inherit the bearer-gating from auth_middleware.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("super-secret".into());
+        let app = build_router(state);
+        let body = serde_json::json!({
+            "step_id": "x",
+            "decision": "approved"
+        });
+        let (status, v) = post_json(&app, "/api/runs/abcd0123abcd0123/approve", &body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(v["error_kind"], "coord.unauthorized");
     }
 
     #[tokio::test]

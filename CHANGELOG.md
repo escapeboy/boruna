@@ -8,6 +8,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Distributed approval-gate / external-trigger** (sprint
+  `0.5-S6`). Two new operator-facing routes — `POST
+  /api/runs/{run_id}/approve` and `POST /api/runs/{run_id}/trigger`
+  — bearer-gated by the same auth middleware as worker endpoints.
+  CLI flags `--coordinator <url>` + `--coord-token` added to
+  `boruna workflow approve|reject|trigger` so CI runners can
+  drive remote runs without shared `data-dir`. The wait driver
+  (`advance_run_one_tick`) now opens approval / trigger gates
+  when their dependencies complete, and closes them when the
+  decision sentinel arrives in `metadata.approvals` /
+  `metadata.triggers` — same synthesized output shape as the
+  in-process resume sentinel pass so a run approved via either
+  route hashes to the same evidence bundle. Five handler unit
+  tests + three advance-loop unit tests + one end-to-end CLI
+  integration test. New `error_kind` taxonomy entries:
+  `coord.approve.invalid_state`, `coord.approve.bad_payload`,
+  `coord.trigger.invalid_state`, `coord.trigger.bad_token`,
+  `coord.trigger.bad_payload`. See
+  `docs/design-0.5-s6-distributed-approval-trigger.md`.
+
 - **`boruna workflow run --coordinator <url>`** (sprint
   `0.5-S4`). Submits a workflow over HTTP to a remote
   coordinator and polls for terminal status — eliminates the

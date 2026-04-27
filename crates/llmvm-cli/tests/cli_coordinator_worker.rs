@@ -1535,6 +1535,114 @@ fn cli_workflow_run_coordinator_exits_1_on_step_failure() {
 }
 
 #[test]
+fn cli_workflow_approve_via_coordinator_advances_remote_run() {
+    // Sprint 0.5-S6: end-to-end approval gate over HTTP.
+    // 1. Submit a workflow with an approval gate via --coordinator.
+    //    The CLI submits + polls; while it polls in the foreground,
+    //    a worker drives `analyze` to Completed; the gate then
+    //    opens (AwaitingApproval) and the foreground CLI keeps
+    //    polling.
+    // 2. From a separate process we run `workflow approve --coordinator`
+    //    against the open gate.
+    // 3. The foreground CLI sees Completed and exits 0.
+    let tmp = tempfile::tempdir().unwrap();
+    let coord_data = tmp.path().join("coord-data");
+    std::fs::create_dir_all(&coord_data).unwrap();
+    drop(RunCheckpointStore::open(&coord_data.join("runs.db")).unwrap());
+    let wf_dir = tmp.path().join("wf");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("analyze.ax"), "fn main() -> Int { 1 }\n").unwrap();
+    std::fs::write(
+        wf_dir.join("workflow.json"),
+        r#"{
+            "schema_version": 1,
+            "name": "approve-test",
+            "version": "1.0.0",
+            "steps": {
+                "analyze": {"kind": "source", "source": "analyze.ax", "capabilities": [], "outputs": {"result": "Int"}},
+                "human_review": {"kind": "approval_gate", "required_role": "reviewer", "depends_on": ["analyze"], "capabilities": [], "outputs": {}}
+            },
+            "edges": [["analyze", "human_review"]]
+        }"#,
+    )
+    .unwrap();
+
+    let (coord_child, port) = spawn_coordinator(&coord_data, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "approve-worker", 30_000);
+
+    // Spawn the foreground `workflow run --coordinator` in the
+    // background so the approval can race-in while it polls.
+    let mut run_child = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--coordinator",
+            &coord_url,
+            "--coord-poll-interval-ms",
+            "200",
+            "--coord-max-wait-secs",
+            "30",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn workflow run");
+
+    // Wait for analyze to finish + gate to open (poll the dashboard
+    // store directly to find the run_id).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut run_id = String::new();
+    while Instant::now() < deadline {
+        let store = RunCheckpointStore::open(&coord_data.join("runs.db")).unwrap();
+        let runs = store.list_runs().unwrap();
+        if let Some(r) = runs.first() {
+            let cps = store.list_step_checkpoints(&r.run_id).unwrap();
+            if cps
+                .iter()
+                .any(|c| c.step_id == "human_review" && c.status == StepStatus::AwaitingApproval)
+            {
+                run_id = r.run_id.clone();
+                break;
+            }
+        }
+        drop(store);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!run_id.is_empty(), "gate never opened within 20s");
+
+    // Approve via remote CLI.
+    let approve = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "approve",
+            &run_id,
+            "human_review",
+            "--coordinator",
+            &coord_url,
+        ])
+        .output()
+        .expect("invoke workflow approve --coordinator");
+    assert!(
+        approve.status.success(),
+        "approve failed: stderr={}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    // Foreground CLI should now exit 0.
+    let exit = run_child.wait().expect("wait foreground run");
+    kill_child(worker);
+    kill_child(coord_child);
+    assert_eq!(
+        exit.code(),
+        Some(0),
+        "foreground CLI did not exit 0 (got {:?})",
+        exit.code()
+    );
+}
+
+#[test]
 fn cli_workflow_run_coordinator_rejects_data_dir_combo() {
     // --coordinator and --data-dir are mutually exclusive at the
     // clap level. clap should refuse before any side effect.

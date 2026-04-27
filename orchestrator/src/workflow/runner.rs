@@ -911,6 +911,16 @@ impl WorkflowRunner {
                  (run was submitted before 0.5-S2f or via in-process mode)"
             ))
         })?;
+
+        // Sprint 0.5-S6: close resolved approval / trigger gates *first*.
+        // Doing this before the checkpoint read and ready-step computation
+        // means the gate's transition (e.g. AwaitingApproval → Completed)
+        // is visible to compute_ready_steps in the same tick — downstream
+        // steps unblock immediately rather than after another poll.
+        // Idempotent: if no sentinels match, this is a cheap metadata
+        // read + bail.
+        let _gate_closures = Self::close_resolved_gates(store, run_id, def)?;
+
         let checkpoints = store
             .list_step_checkpoints(run_id)
             .map_err(WorkflowRunError::from)?;
@@ -992,23 +1002,79 @@ impl WorkflowRunner {
                 ))
             })?;
             match &step_def.kind {
-                StepKind::Source { .. } => {}
-                StepKind::ApprovalGate { .. } | StepKind::ExternalTrigger { .. } => {
-                    return Err(WorkflowRunError::Validation(format!(
-                        "coordinator wait does not support {:?}-kind step '{step_id}' \
-                         in non-first wave; resume in-process via `boruna workflow resume`",
-                        step_def.kind
-                    )));
+                StepKind::Source { .. } => {
+                    let inserted = store
+                        .insert_pending_step_if_absent(run_id, step_id)
+                        .map_err(WorkflowRunError::from)?;
+                    if inserted {
+                        newly_pending.push(step_id.clone());
+                        status_map.insert(step_id.clone(), PersistStepStatus::Pending);
+                    }
+                }
+                StepKind::ApprovalGate { .. } => {
+                    // Sprint 0.5-S6: open the approval gate by writing
+                    // an AwaitingApproval checkpoint. The operator
+                    // closes the gate via `boruna workflow approve|reject`
+                    // (local data-dir or remote `--coordinator`); the
+                    // sentinel-pass below picks up the decision on a
+                    // later tick. Idempotent: `upsert_step_checkpoint`
+                    // is a no-op if the checkpoint already exists with
+                    // the same status.
+                    let exists = checkpoint_by_id.contains_key(step_id);
+                    if !exists {
+                        store
+                            .upsert_step_checkpoint(&StepCheckpoint {
+                                run_id: run_id.to_string(),
+                                step_id: step_id.clone(),
+                                status: PersistStepStatus::AwaitingApproval,
+                                output_json: None,
+                                output_hash: None,
+                                started_at_ms: Some(now_unix_ms()),
+                                ended_at_ms: None,
+                                error_msg: None,
+                                attempt_count: 1,
+                                worker_id: None,
+                                lease_expires_at_ms: None,
+                                claim_id: 0,
+                            })
+                            .map_err(WorkflowRunError::from)?;
+                        status_map.insert(step_id.clone(), PersistStepStatus::AwaitingApproval);
+                    }
+                }
+                StepKind::ExternalTrigger { .. } => {
+                    // Sprint 0.5-S6: open the trigger gate. Acquire (or
+                    // recover) the per-step trigger token, then write
+                    // the AwaitingExternalEvent checkpoint. The
+                    // sentinel-pass below advances the step once the
+                    // operator (or webhook bridge) calls
+                    // `boruna workflow trigger` with a non-empty
+                    // payload.
+                    let exists = checkpoint_by_id.contains_key(step_id);
+                    if !exists {
+                        let _token = acquire_trigger_token(store, run_id, step_id)?;
+                        store
+                            .upsert_step_checkpoint(&StepCheckpoint {
+                                run_id: run_id.to_string(),
+                                step_id: step_id.clone(),
+                                status: PersistStepStatus::AwaitingExternalEvent,
+                                output_json: None,
+                                output_hash: None,
+                                started_at_ms: Some(now_unix_ms()),
+                                ended_at_ms: None,
+                                error_msg: None,
+                                attempt_count: 1,
+                                worker_id: None,
+                                lease_expires_at_ms: None,
+                                claim_id: 0,
+                            })
+                            .map_err(WorkflowRunError::from)?;
+                        status_map
+                            .insert(step_id.clone(), PersistStepStatus::AwaitingExternalEvent);
+                    }
                 }
             }
-            let inserted = store
-                .insert_pending_step_if_absent(run_id, step_id)
-                .map_err(WorkflowRunError::from)?;
-            if inserted {
-                newly_pending.push(step_id.clone());
-                status_map.insert(step_id.clone(), PersistStepStatus::Pending);
-            }
         }
+
         // 0.5-S5: Failed → run_status=Failed only if at least one Failed
         // step has no retry budget remaining. A Failed-with-budget step
         // was requeued above (status_map flipped to Pending), so the
@@ -1033,6 +1099,193 @@ impl WorkflowRunner {
             run_status,
             all_step_statuses: status_map,
         })
+    }
+
+    /// Sprint 0.5-S6: close approval / external-trigger gates whose
+    /// sentinel has been written to `metadata.approvals` /
+    /// `metadata.triggers`. Synthesizes `Completed` (approved or
+    /// triggered) or `Failed` (rejected) checkpoints, mirroring the
+    /// in-process resume sentinel pass — but lives here so the
+    /// distributed wait driver advances past gates without requiring
+    /// a separate `boruna workflow resume` call.
+    ///
+    /// Returns the (step_id, new_status) pairs that were transitioned
+    /// so the caller can update its in-memory `status_map`.
+    ///
+    /// **Idempotent** — re-running on a chain that already has the
+    /// terminal checkpoint + audit event is a no-op. Synthetic
+    /// approval output matches the in-process path: a JSON-encoded
+    /// empty `Map`. Synthetic trigger output is the operator's
+    /// payload as the step's `result`, again matching in-process
+    /// resume semantics.
+    #[cfg(feature = "persist-sqlite")]
+    fn close_resolved_gates(
+        store: &RunCheckpointStore,
+        run_id: &str,
+        def: &WorkflowDef,
+    ) -> Result<Vec<(String, PersistStepStatus)>, WorkflowRunError> {
+        use crate::workflow::definition::StepKind;
+
+        let metadata_json = match store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+        {
+            Some(j) => j,
+            None => return Ok(Vec::new()),
+        };
+        let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata parse: {e}")))?;
+        let checkpoints = store
+            .list_step_checkpoints(run_id)
+            .map_err(WorkflowRunError::from)?;
+        let mut transitions: Vec<(String, PersistStepStatus)> = Vec::new();
+
+        // Approval sentinels: each metadata.approvals entry advances
+        // its AwaitingApproval checkpoint to Completed (approved) or
+        // Failed (rejected). Already-terminal checkpoints (Completed
+        // or Failed) are no-ops. Out-of-state checkpoints (Pending /
+        // Running etc.) are skipped with a warning — same posture as
+        // resume's sentinel pass.
+        for (step_id, approval) in &metadata.approvals {
+            let cp = match checkpoints.iter().find(|c| &c.step_id == step_id) {
+                Some(cp) => cp,
+                None => continue,
+            };
+            if matches!(
+                cp.status,
+                PersistStepStatus::Completed | PersistStepStatus::Failed
+            ) {
+                continue;
+            }
+            if cp.status != PersistStepStatus::AwaitingApproval {
+                continue;
+            }
+            let step_def = def.steps.get(step_id).ok_or_else(|| {
+                WorkflowRunError::Internal(format!(
+                    "approval sentinel for step '{step_id}' but step not in def"
+                ))
+            })?;
+            if !matches!(step_def.kind, StepKind::ApprovalGate { .. }) {
+                return Err(WorkflowRunError::Internal(format!(
+                    "approval sentinel for non-ApprovalGate step '{step_id}'"
+                )));
+            }
+
+            let now = now_unix_ms();
+            match approval.decision {
+                ApprovalKind::Approved => {
+                    // Synthetic empty-map output, byte-identical to
+                    // the in-process resume sentinel path so a run
+                    // approved via either route hashes to the same
+                    // bundle.
+                    let synthetic = boruna_bytecode::Value::Map(BTreeMap::new());
+                    let output_json = serde_json::to_string(&synthetic).map_err(|e| {
+                        WorkflowRunError::Internal(format!("synthetic output serialize: {e}"))
+                    })?;
+                    let output_hash = DataStore::hash_value(&synthetic);
+                    store
+                        .upsert_step_checkpoint(&StepCheckpoint {
+                            run_id: run_id.to_string(),
+                            step_id: step_id.clone(),
+                            status: PersistStepStatus::Completed,
+                            output_json: Some(output_json),
+                            output_hash: Some(output_hash.clone()),
+                            started_at_ms: None, // COALESCE preserves
+                            ended_at_ms: Some(now),
+                            error_msg: None,
+                            attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
+                        })
+                        .map_err(WorkflowRunError::from)?;
+                    transitions.push((step_id.clone(), PersistStepStatus::Completed));
+                }
+                ApprovalKind::Rejected => {
+                    let reason = approval
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "rejected".to_string());
+                    store
+                        .upsert_step_checkpoint(&StepCheckpoint {
+                            run_id: run_id.to_string(),
+                            step_id: step_id.clone(),
+                            status: PersistStepStatus::Failed,
+                            output_json: None,
+                            output_hash: None,
+                            started_at_ms: None,
+                            ended_at_ms: Some(now),
+                            error_msg: Some(format!("rejected: {reason}")),
+                            attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
+                        })
+                        .map_err(WorkflowRunError::from)?;
+                    transitions.push((step_id.clone(), PersistStepStatus::Failed));
+                }
+            }
+        }
+
+        // Trigger sentinels: AwaitingExternalEvent + non-empty payload
+        // in metadata.triggers → advance Completed with payload as the
+        // step's `result` output value. Pause-time placeholder
+        // (empty payload) is skipped — gate stays open.
+        for (step_id, trigger) in &metadata.triggers {
+            if trigger.payload.is_empty() {
+                continue;
+            }
+            let cp = match checkpoints.iter().find(|c| &c.step_id == step_id) {
+                Some(cp) => cp,
+                None => continue,
+            };
+            if matches!(
+                cp.status,
+                PersistStepStatus::Completed | PersistStepStatus::Failed
+            ) {
+                continue;
+            }
+            if cp.status != PersistStepStatus::AwaitingExternalEvent {
+                continue;
+            }
+            let step_def = def.steps.get(step_id).ok_or_else(|| {
+                WorkflowRunError::Internal(format!(
+                    "trigger sentinel for step '{step_id}' but step not in def"
+                ))
+            })?;
+            if !matches!(step_def.kind, StepKind::ExternalTrigger { .. }) {
+                return Err(WorkflowRunError::Internal(format!(
+                    "trigger sentinel for non-ExternalTrigger step '{step_id}'"
+                )));
+            }
+
+            // Output is the trigger payload as a String value, same as
+            // the in-process resume path's synthesis.
+            let synthetic = boruna_bytecode::Value::String(trigger.payload.clone());
+            let output_json = serde_json::to_string(&synthetic).map_err(|e| {
+                WorkflowRunError::Internal(format!("trigger output serialize: {e}"))
+            })?;
+            let output_hash = DataStore::hash_value(&synthetic);
+            store
+                .upsert_step_checkpoint(&StepCheckpoint {
+                    run_id: run_id.to_string(),
+                    step_id: step_id.clone(),
+                    status: PersistStepStatus::Completed,
+                    output_json: Some(output_json),
+                    output_hash: Some(output_hash),
+                    started_at_ms: None,
+                    ended_at_ms: Some(now_unix_ms()),
+                    error_msg: None,
+                    attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
+                })
+                .map_err(WorkflowRunError::from)?;
+            transitions.push((step_id.clone(), PersistStepStatus::Completed));
+        }
+
+        Ok(transitions)
     }
 
     /// Append a `WorkflowCompleted` audit event to the run's
@@ -3563,6 +3816,38 @@ fn persist_one_pause(
     Ok(ax_status)
 }
 
+/// Load a `WorkflowDef` for a run by inspecting its persisted metadata.
+/// Sprint `0.5-S6`: prefers `metadata.workflow_def` (always populated for
+/// remote-submit + submit-only runs) over the `<workflow_dir>/workflow.json`
+/// disk path (the original pre-0.5-S2f source). Falling back to disk
+/// keeps in-process runs working — they don't carry an embedded def.
+///
+/// The `run_id` is threaded through purely for error-message context.
+#[cfg(feature = "persist-sqlite")]
+fn load_def_from_metadata(
+    metadata: &PersistedRunMetadata,
+    run_id: &str,
+) -> Result<WorkflowDef, WorkflowRunError> {
+    if let Some(def) = &metadata.workflow_def {
+        return Ok(def.clone());
+    }
+    if metadata.workflow_dir.is_empty() {
+        return Err(WorkflowRunError::Internal(format!(
+            "run '{run_id}' has neither embedded workflow_def nor a \
+             workflow_dir in its metadata; this is a corrupt run record"
+        )));
+    }
+    let def_path = Path::new(&metadata.workflow_dir).join("workflow.json");
+    let def_json = std::fs::read_to_string(&def_path).map_err(|e| {
+        WorkflowRunError::Io(format!(
+            "cannot read {} (workflow_dir from run '{run_id}' metadata): {e}",
+            def_path.display()
+        ))
+    })?;
+    serde_json::from_str(&def_json)
+        .map_err(|e| WorkflowRunError::Internal(format!("invalid workflow.json: {e}")))
+}
+
 /// Record an approval-gate decision for a paused workflow run.
 ///
 /// Public entry for the `boruna workflow approve` / `reject` CLI handlers.
@@ -3607,7 +3892,27 @@ pub fn record_approval_decision(
     reason: Option<String>,
 ) -> Result<(), WorkflowRunError> {
     let store = open_store(data_dir)?;
+    record_approval_decision_in_store(&store, run_id, step_id, decision, reason)
+}
 
+/// Store-scoped variant of [`record_approval_decision`] for callers
+/// that hold an existing `RunCheckpointStore` lock (sprint `0.5-S6`:
+/// the coordinator's `POST /api/runs/{run_id}/approve` HTTP handler).
+/// Behaviorally identical to [`record_approval_decision`]; the only
+/// difference is the store source.
+///
+/// Loads the workflow def from `metadata.workflow_def` when present
+/// (covers remote-submit + submit-only modes), falling back to
+/// reading `<workflow_dir>/workflow.json` for in-process runs that
+/// paused at an approval gate.
+#[cfg(feature = "persist-sqlite")]
+pub fn record_approval_decision_in_store(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    decision: ApprovalKind,
+    reason: Option<String>,
+) -> Result<(), WorkflowRunError> {
     // Bounded CAS retry budget. Happy path is 1 iteration; second iteration
     // fires only on a race. After the second re-read, either we surface
     // StepAlreadyDecided or our CAS succeeds.
@@ -3633,18 +3938,7 @@ pub fn record_approval_decision(
                 WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
             })?;
 
-        // Validate against the workflow def (loaded from the persisted
-        // workflow_dir, NOT from CLI overrides — the operator's intent
-        // is "decide this step within THIS run's recorded definition").
-        let def_path = Path::new(&metadata.workflow_dir).join("workflow.json");
-        let def_json = std::fs::read_to_string(&def_path).map_err(|e| {
-            WorkflowRunError::Io(format!(
-                "cannot read {} (workflow_dir from run metadata): {e}",
-                def_path.display()
-            ))
-        })?;
-        let def: WorkflowDef = serde_json::from_str(&def_json)
-            .map_err(|e| WorkflowRunError::Internal(format!("invalid workflow.json: {e}")))?;
+        let def = load_def_from_metadata(&metadata, run_id)?;
 
         let step_def = def
             .steps
@@ -3785,6 +4079,27 @@ pub fn record_external_trigger(
     token: &str,
     payload: &str,
 ) -> Result<(), WorkflowRunError> {
+    let store = open_store(data_dir)?;
+    record_external_trigger_in_store(&store, run_id, step_id, token, payload)
+}
+
+/// Store-scoped variant of [`record_external_trigger`] for callers
+/// that hold an existing `RunCheckpointStore` lock (sprint `0.5-S6`:
+/// the coordinator's `POST /api/runs/{run_id}/trigger` HTTP handler).
+/// Behaviorally identical to [`record_external_trigger`]; only the
+/// store source differs.
+///
+/// Loads the workflow def from `metadata.workflow_def` when present
+/// (covers remote-submit + submit-only modes), falling back to
+/// reading `<workflow_dir>/workflow.json` for in-process runs.
+#[cfg(feature = "persist-sqlite")]
+pub fn record_external_trigger_in_store(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    token: &str,
+    payload: &str,
+) -> Result<(), WorkflowRunError> {
     // Defense-in-depth contract: the resume sentinel pass uses
     // `payload.is_empty()` to discriminate "pause-time placeholder"
     // from "trigger arrived." An empty payload here would leave the
@@ -3798,7 +4113,6 @@ pub fn record_external_trigger(
             "trigger payload must not be empty".into(),
         ));
     }
-    let store = open_store(data_dir)?;
 
     const CAS_RETRY_BUDGET: usize = 5;
     for _ in 0..CAS_RETRY_BUDGET {
@@ -3822,15 +4136,7 @@ pub fn record_external_trigger(
                 WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
             })?;
 
-        let def_path = Path::new(&metadata.workflow_dir).join("workflow.json");
-        let def_json = std::fs::read_to_string(&def_path).map_err(|e| {
-            WorkflowRunError::Io(format!(
-                "cannot read {} (workflow_dir from run metadata): {e}",
-                def_path.display()
-            ))
-        })?;
-        let def: WorkflowDef = serde_json::from_str(&def_json)
-            .map_err(|e| WorkflowRunError::Internal(format!("invalid workflow.json: {e}")))?;
+        let def = load_def_from_metadata(&metadata, run_id)?;
 
         let step_def = def
             .steps
@@ -4878,6 +5184,158 @@ mod tests {
         }
         let r = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
         assert_eq!(r.run_status, AdvanceRunStatus::Completed);
+    }
+
+    #[test]
+    fn advance_run_one_tick_opens_approval_gate_when_deps_complete() {
+        // Sprint 0.5-S6: when an approval-gate step's deps complete,
+        // advance must transition the gate from "no checkpoint" →
+        // AwaitingApproval (was: rejected with non-first-wave error).
+        let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+        let data_dir = tempfile::tempdir().unwrap();
+        let r = WorkflowRunner::run_persistent(
+            &def,
+            &RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: true,
+            },
+            data_dir.path(),
+        )
+        .unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // Drive `analyze` (the only first-wave source step) to Completed.
+        let claim = store
+            .claim_step(&r.run_id, "analyze", "w", 1_000_000_000, 0)
+            .unwrap();
+        let claim_id = match claim {
+            crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("{other:?}"),
+        };
+        store
+            .complete_step_cas(&r.run_id, "analyze", claim_id, "{}", "0", 1, 1)
+            .unwrap();
+        // Now tick — the gate must open.
+        let advanced = WorkflowRunner::advance_run_one_tick(&store, &r.run_id).unwrap();
+        assert_eq!(advanced.run_status, AdvanceRunStatus::Running);
+        let cps = store.list_step_checkpoints(&r.run_id).unwrap();
+        let gate_cp = cps
+            .iter()
+            .find(|c| c.step_id == "human_review")
+            .expect("human_review checkpoint inserted");
+        assert_eq!(gate_cp.status, PersistStepStatus::AwaitingApproval);
+    }
+
+    #[test]
+    fn advance_run_one_tick_closes_approved_gate() {
+        // After `record_approval_decision_in_store` writes the
+        // sentinel, the next tick must transition the gate
+        // checkpoint from AwaitingApproval → Completed and unblock
+        // downstream steps.
+        let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+        let data_dir = tempfile::tempdir().unwrap();
+        let r = WorkflowRunner::run_persistent(
+            &def,
+            &RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: true,
+            },
+            data_dir.path(),
+        )
+        .unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // Wave 1: analyze.
+        let claim = store
+            .claim_step(&r.run_id, "analyze", "w", 1_000_000_000, 0)
+            .unwrap();
+        let claim_id = match claim {
+            crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("{other:?}"),
+        };
+        store
+            .complete_step_cas(&r.run_id, "analyze", claim_id, "{}", "0", 1, 1)
+            .unwrap();
+        WorkflowRunner::advance_run_one_tick(&store, &r.run_id).unwrap();
+
+        // Operator approves.
+        record_approval_decision_in_store(
+            &store,
+            &r.run_id,
+            "human_review",
+            ApprovalKind::Approved,
+            None,
+        )
+        .unwrap();
+
+        // Next tick: gate closes, publish becomes Pending.
+        WorkflowRunner::advance_run_one_tick(&store, &r.run_id).unwrap();
+        let cps = store.list_step_checkpoints(&r.run_id).unwrap();
+        let gate = cps.iter().find(|c| c.step_id == "human_review").unwrap();
+        assert_eq!(gate.status, PersistStepStatus::Completed);
+        assert!(gate.output_hash.is_some());
+        let publish = cps.iter().find(|c| c.step_id == "publish").unwrap();
+        assert_eq!(publish.status, PersistStepStatus::Pending);
+    }
+
+    #[test]
+    fn advance_run_one_tick_closes_rejected_gate_to_failed() {
+        // Symmetric to the approved case: rejection sentinel
+        // transitions the gate to Failed and the run reaches Failed.
+        let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+        let data_dir = tempfile::tempdir().unwrap();
+        let r = WorkflowRunner::run_persistent(
+            &def,
+            &RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: true,
+            },
+            data_dir.path(),
+        )
+        .unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        let claim = store
+            .claim_step(&r.run_id, "analyze", "w", 1_000_000_000, 0)
+            .unwrap();
+        let claim_id = match claim {
+            crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("{other:?}"),
+        };
+        store
+            .complete_step_cas(&r.run_id, "analyze", claim_id, "{}", "0", 1, 1)
+            .unwrap();
+        WorkflowRunner::advance_run_one_tick(&store, &r.run_id).unwrap();
+        record_approval_decision_in_store(
+            &store,
+            &r.run_id,
+            "human_review",
+            ApprovalKind::Rejected,
+            Some("compliance issue".into()),
+        )
+        .unwrap();
+        let advanced = WorkflowRunner::advance_run_one_tick(&store, &r.run_id).unwrap();
+        assert_eq!(advanced.run_status, AdvanceRunStatus::Failed);
+        let cps = store.list_step_checkpoints(&r.run_id).unwrap();
+        let gate = cps.iter().find(|c| c.step_id == "human_review").unwrap();
+        assert_eq!(gate.status, PersistStepStatus::Failed);
+        assert!(gate
+            .error_msg
+            .as_deref()
+            .unwrap_or("")
+            .contains("compliance issue"));
     }
 
     #[test]
