@@ -480,19 +480,28 @@ fn coord_bg_sweep_requeues_expired_lease() {
     ));
     drop(store);
 
-    // Wait long enough for at least one sweep tick.
-    std::thread::sleep(Duration::from_millis(600));
-
-    // Verify the row is back to Pending without any external
-    // sweep call.
-    let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
-    let cp = store
-        .list_step_checkpoints("run-bg")
-        .unwrap()
-        .pop()
-        .unwrap();
-    drop(store);
+    // Poll for status flip (deadline 5s — plenty of margin
+    // even under parallel-test CPU contention; sweep interval
+    // is 200 ms).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut cp = None;
+    while Instant::now() < deadline {
+        let store = RunCheckpointStore::open(&dir.path().join("runs.db")).unwrap();
+        let candidate = store
+            .list_step_checkpoints("run-bg")
+            .unwrap()
+            .pop()
+            .unwrap();
+        drop(store);
+        if candidate.status == StepStatus::Pending {
+            cp = Some(candidate);
+            break;
+        }
+        cp = Some(candidate);
+        std::thread::sleep(Duration::from_millis(100));
+    }
     kill_child(coord_child);
+    let cp = cp.expect("step row not found");
 
     assert_eq!(
         cp.status,
@@ -503,6 +512,106 @@ fn coord_bg_sweep_requeues_expired_lease() {
     assert_eq!(cp.lease_expires_at_ms, None);
     // claim_id is preserved across requeue (per 0.5-S2a contract).
     assert_eq!(cp.claim_id, 1);
+}
+
+#[test]
+fn coord_serve_responds_to_dashboard_index() {
+    // Sprint 0.5-S2d: the coordinator now serves the
+    // dashboard's read routes on the same listener.
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(
+        dir.path(),
+        "run-merged",
+        "step1",
+        "fn main() -> Int { 1 }\n",
+    );
+    let (child, port) = spawn_coordinator(dir.path(), 60_000, 200);
+    let (code, body) = http_request(port, "GET", "/", None);
+    kill_child(child);
+    assert_eq!(code, 200, "body: {body}");
+    assert!(body.contains("<html"), "body: {body}");
+    assert!(body.contains("Boruna runs"), "body: {body}");
+    assert!(body.contains("run-merged"), "body: {body}");
+}
+
+#[test]
+fn coord_serve_responds_to_dashboard_api_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-api", "step1", "fn main() -> Int { 1 }\n");
+    let (child, port) = spawn_coordinator(dir.path(), 60_000, 200);
+    let (code, body) = http_request(port, "GET", "/api/runs", None);
+    kill_child(child);
+    assert_eq!(code, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert!(v["runs"].is_array());
+    assert_eq!(v["runs"][0]["run_id"], "run-api");
+    // Slim RunSummary contract from 0.4-S16: no policy/metadata
+    // leakage even on the merged listener.
+    let json = body.clone();
+    assert!(!json.contains("policy_json"));
+    assert!(!json.contains("metadata_json"));
+}
+
+#[test]
+fn coord_serve_handles_both_coord_and_dashboard_routes_on_same_listener() {
+    // Adversarial-review gap: existing tests exercise coord
+    // routes OR dashboard routes against a coord process,
+    // never both against the same running instance. This
+    // test proves the merge actually works at runtime — both
+    // route trees coexist on one port.
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-merge", "step1", "fn main() -> Int { 1 }\n");
+    let (child, port) = spawn_coordinator(dir.path(), 60_000, 200);
+
+    // 1. Hit a coord route — register a worker.
+    let cap_hash = boruna_bytecode::compute_capability_set_hash(
+        boruna_bytecode::Capability::ALL
+            .iter()
+            .map(|c| (c.name().to_string(), c.version().to_string()))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str())),
+    );
+    let body = serde_json::json!({"capability_set_hash": cap_hash}).to_string();
+    let (coord_code, coord_resp) = http_request(port, "POST", "/api/workers/register", Some(&body));
+    assert_eq!(coord_code, 200, "coord route failed: {coord_resp}");
+
+    // 2. Hit a dashboard route — list runs — on the SAME
+    //    listener. Note: same port; new connection (our HTTP
+    //    helper closes after each request).
+    let (dash_code, dash_resp) = http_request(port, "GET", "/api/runs", None);
+    assert_eq!(dash_code, 200, "dashboard route failed: {dash_resp}");
+    let v: serde_json::Value = serde_json::from_str(&dash_resp).expect("json");
+    assert_eq!(v["runs"][0]["run_id"], "run-merge");
+
+    // 3. Hit both again to ensure neither broke the other's
+    //    state.
+    let (h_code, _) = http_request(
+        port,
+        "POST",
+        "/api/workers/heartbeat",
+        Some(&serde_json::json!({
+            "worker_id": serde_json::from_str::<serde_json::Value>(&coord_resp).unwrap()["worker_id"],
+            "session_token": serde_json::from_str::<serde_json::Value>(&coord_resp).unwrap()["session_token"],
+        }).to_string()),
+    );
+    assert_eq!(h_code, 200, "heartbeat failed after dashboard call");
+    let (idx_code, _) = http_request(port, "GET", "/", None);
+    assert_eq!(idx_code, 200, "index failed after coord call");
+
+    kill_child(child);
+}
+
+#[test]
+fn coord_serve_dashboard_404_for_unknown_run() {
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-x", "step1", "fn main() -> Int { 1 }\n");
+    let (child, port) = spawn_coordinator(dir.path(), 60_000, 200);
+    let (code, _) = http_request(port, "GET", "/runs/no-such-id", None);
+    let (api_code, _) = http_request(port, "GET", "/api/runs/no-such-id", None);
+    kill_child(child);
+    assert_eq!(code, 404);
+    assert_eq!(api_code, 404);
 }
 
 #[test]

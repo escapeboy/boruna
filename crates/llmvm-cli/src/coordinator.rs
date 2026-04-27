@@ -74,9 +74,9 @@ struct WorkerSession {
 pub struct CoordinatorConfig {
     pub max_lease_ttl_ms: u64,
     pub poll_timeout_ms: u64,
-    /// Reserved for the future dashboard listener-merge so the
-    /// banner appears on coordinator-served pages too.
-    #[allow(dead_code)]
+    /// Forwarded to the merged dashboard's HTML banner so the
+    /// red WARNING block appears on coordinator-served pages
+    /// when bound to a non-loopback address (sprint 0.5-S2d).
     pub bind_warning: Option<String>,
 }
 
@@ -242,18 +242,39 @@ async fn background_sweep_loop(state: CoordinatorState, interval_ms: u64) {
 }
 
 pub fn build_router(state: CoordinatorState) -> Router {
-    // Coordinator-only routes for this MVP. Listener-merge with
-    // the dashboard's read-only routes is deferred — operators
-    // run the dashboard separately on a different port for now.
-    Router::new()
+    // Sprint 0.5-S2d: merge the dashboard's read-only routes
+    // (/, /runs/:id, /api/runs, /api/runs/:id) onto the
+    // coordinator's listener so operators get fleet visibility
+    // + distributed dispatch from a single port.
+    //
+    // Route paths don't overlap by design (per ADR 002): the
+    // coordinator owns /api/work/* and /api/workers/*; the
+    // dashboard owns /api/runs and /api/runs/:id. The HTML
+    // routes (/ and /runs/:id) are dashboard-only.
+    //
+    // The coordinator's bind_warning flows into the dashboard
+    // builder so the red HTML banner appears on coordinator-
+    // served pages too.
+    let dashboard_router =
+        crate::dashboard::dashboard_routes(state.store.clone(), state.config.bind_warning.clone());
+    let coord_router = Router::new()
         .route("/api/workers/register", post(handle_register))
         .route("/api/workers/heartbeat", post(handle_heartbeat))
         .route("/api/work/claim", get(handle_claim))
         .route("/api/work/complete", post(handle_complete))
         .route("/api/work/fail", post(handle_fail))
         .route("/api/work/extend-lease", post(handle_extend_lease))
+        // The 8 MiB DefaultBodyLimit applies to coord routes
+        // ONLY (not dashboard routes) because Axum's per-
+        // router layer scoping means layers attached pre-merge
+        // stay bound to their own routes. Dashboard is
+        // GET-only today, so no body-limit need. If a future
+        // sprint adds a mutating dashboard route (e.g. "cancel
+        // run"), it must opt into a body limit explicitly OR
+        // be added to coord_router instead.
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(state)
+        .with_state(state);
+    coord_router.merge(dashboard_router)
 }
 
 // ── Wire shapes ──
