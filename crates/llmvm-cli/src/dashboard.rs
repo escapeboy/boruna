@@ -509,6 +509,9 @@ mod tests {
             ended_at_ms: Some(1_700_000_002_000),
             error_msg: None,
             attempt_count: 1,
+            worker_id: None,
+            lease_expires_at_ms: None,
+            claim_id: 0,
         }
     }
 

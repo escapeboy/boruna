@@ -51,19 +51,26 @@ use serde::{Deserialize, Serialize};
 /// fresh databases, [`SCHEMA_V1_SQL`] is the canonical creation
 /// script and reflects the latest schema; older versions matter
 /// only for the migration chain.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Canonical creation script for fresh databases. Reflects the
-/// LATEST schema (currently v2 — includes `attempt_count`). Applied
-/// via `IF NOT EXISTS`, so re-opens are idempotent and existing
+/// LATEST schema (currently v3 — includes `attempt_count` and the
+/// claim/lease columns from sprint 0.5-S2a). Applied via
+/// `IF NOT EXISTS`, so re-opens are idempotent and existing
 /// databases see no DDL from this script. Migrations from older
-/// versions (v1 → v2 etc.) run separately via the
+/// versions (v1 → v2 → v3) run separately via the
 /// `SCHEMA_V*_TO_V*_SQL` chain in `init()`.
 const SCHEMA_V1_SQL: &str = include_str!("schema_v1.sql");
 
 /// v1 → v2 migration: adds `step_checkpoints.attempt_count`. Applied
 /// in [`RunCheckpointStore::init`] when opening a v1 database.
 const SCHEMA_V1_TO_V2_SQL: &str = include_str!("schema_v1_to_v2.sql");
+
+/// v2 → v3 migration: adds `step_checkpoints.{worker_id,
+/// lease_expires_at, claim_id}` for distributed-execution claim/lease
+/// state per ADR 002. Applied in [`RunCheckpointStore::init`] when
+/// opening a v2 database.
+const SCHEMA_V2_TO_V3_SQL: &str = include_str!("schema_v2_to_v3.sql");
 
 /// Errors surfaced by the persistence layer. Distinct kinds so callers can
 /// react differently (retry on `Busy`, abort on `SchemaVersionMismatch`,
@@ -328,6 +335,107 @@ pub struct StepCheckpoint {
     /// (sprint `0.3-S11`). For pre-v2 rows, the migration defaults
     /// to `1`.
     pub attempt_count: u32,
+    /// Opaque worker handle holding the current lease, if any.
+    /// **OPERATIONAL ONLY.** `None` when no lease is held (status
+    /// is Pending / Completed / Failed / pause states).
+    /// Added in schema v3 (sprint `0.5-S2a`).
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    /// Unix epoch ms when the current lease expires.
+    /// **OPERATIONAL ONLY.** `None` when no lease is held.
+    /// Added in schema v3 (sprint `0.5-S2a`).
+    #[serde(default)]
+    pub lease_expires_at_ms: Option<i64>,
+    /// Monotonic claim counter per `(run_id, step_id)`. `0` =
+    /// never claimed; [`RunCheckpointStore::claim_step`] always
+    /// allocates `claim_id >= 1`. CAS key for the
+    /// `*_step_cas` methods. **OPERATIONAL ONLY.**
+    /// Added in schema v3 (sprint `0.5-S2a`).
+    #[serde(default)]
+    pub claim_id: u64,
+}
+
+// ─── Claim/lease outcome enums (sprint 0.5-S2a) ──────────────────
+// All three enums implement `kind() -> &'static str` returning a
+// stable string per project convention #2. The HTTP layer that
+// ships in 0.5-S2b maps these to wire-level `error_kind` strings.
+
+/// Result of [`RunCheckpointStore::claim_step`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// Step claimed; carry this `claim_id` to the completion call.
+    Claimed { claim_id: u64 },
+    /// Step is not in `Pending` status (already running, completed,
+    /// failed, or in a pause state). Caller should pick another
+    /// step.
+    NotClaimable { current_status: StepStatus },
+    /// The (run_id, step_id) row doesn't exist.
+    StepNotFound,
+}
+
+impl ClaimOutcome {
+    /// Stable kind string for telemetry / HTTP error mapping.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Claimed { .. } => "claim.claimed",
+            Self::NotClaimable { .. } => "claim.not_claimable",
+            Self::StepNotFound => "claim.step_not_found",
+        }
+    }
+}
+
+/// Result of [`RunCheckpointStore::complete_step_cas`] and
+/// [`RunCheckpointStore::fail_step_cas`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalOutcome {
+    /// Status transition committed.
+    Committed,
+    /// CAS failed because `claim_id` does not match the row's
+    /// current `claim_id`, or the row's status is not `Running`.
+    /// Carries the row's current state for observability.
+    LeaseExpired {
+        current_claim_id: u64,
+        current_status: StepStatus,
+    },
+    /// The (run_id, step_id) row doesn't exist.
+    StepNotFound,
+}
+
+impl TerminalOutcome {
+    /// Stable kind string for telemetry / HTTP error mapping.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Committed => "terminal.committed",
+            Self::LeaseExpired { .. } => "terminal.lease_expired",
+            Self::StepNotFound => "terminal.step_not_found",
+        }
+    }
+}
+
+/// Result of [`RunCheckpointStore::extend_lease_cas`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtendOutcome {
+    /// Lease extended; new deadline returned for caller's records.
+    Extended { new_lease_expires_at_ms: i64 },
+    /// CAS failed; the lease is no longer held by the calling
+    /// `claim_id`.
+    LeaseExpired {
+        current_claim_id: u64,
+        current_status: StepStatus,
+    },
+    /// The (run_id, step_id) row doesn't exist.
+    StepNotFound,
+}
+
+impl ExtendOutcome {
+    /// Stable kind string for telemetry / HTTP error mapping.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Extended { .. } => "extend.extended",
+            Self::LeaseExpired { .. } => "extend.lease_expired",
+            Self::StepNotFound => "extend.step_not_found",
+        }
+    }
 }
 
 /// SQLite-backed checkpoint store.
@@ -411,6 +519,22 @@ impl RunCheckpointStore {
             tx.execute(
                 "UPDATE schema_version SET version = ?1 WHERE id = 1",
                 params![2_i64],
+            )?;
+            tx.commit()?;
+        }
+        // v2 → v3 migration (sprint 0.5-S2a): add claim/lease columns
+        // to step_checkpoints. Same fresh-vs-existing pattern as v1→v2 —
+        // SCHEMA_V1_SQL on a fresh DB already includes the v3 columns,
+        // so we check column presence before re-running ALTER TABLE.
+        if on_disk < 3 {
+            let has_claim_id = column_exists(&conn, "step_checkpoints", "claim_id")?;
+            let tx = conn.unchecked_transaction()?;
+            if !has_claim_id {
+                tx.execute_batch(SCHEMA_V2_TO_V3_SQL)?;
+            }
+            tx.execute(
+                "UPDATE schema_version SET version = ?1 WHERE id = 1",
+                params![3_i64],
             )?;
             tx.commit()?;
         }
@@ -824,6 +948,18 @@ impl RunCheckpointStore {
     /// `started_at` to NULL — a silent data-loss bug the review caught.
     /// `status`, `error_msg`, and `ended_at` always reflect the latest
     /// caller-supplied value (callers SHOULD manage them themselves).
+    ///
+    /// **Mixed-mode interaction with claim/lease columns (sprint
+    /// `0.5-S2a`):** this method clears `worker_id` and
+    /// `lease_expires_at` on every upsert. The single-process runner
+    /// owns its dispatch lifecycle; if a step is re-written via
+    /// upsert, any prior lease is by definition no longer held. Not
+    /// clearing them would leave a stale `lease_expires_at` that
+    /// `expire_leases_and_requeue` could then re-trigger, racing with
+    /// the live single-process attempt — a corruption hazard the
+    /// adversarial review surfaced (F3). `claim_id` is preserved
+    /// (monotonic per step) so a future return to distributed mode
+    /// continues counting from the last value.
     pub fn upsert_step_checkpoint(&self, cp: &StepCheckpoint) -> Result<(), PersistenceError> {
         with_busy_retry(|| {
             let tx = self.conn.unchecked_transaction()?;
@@ -832,13 +968,15 @@ impl RunCheckpointStore {
                  (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT(run_id, step_id) DO UPDATE SET \
-                   status        = excluded.status, \
-                   output_json   = COALESCE(excluded.output_json, step_checkpoints.output_json), \
-                   output_hash   = COALESCE(excluded.output_hash, step_checkpoints.output_hash), \
-                   started_at    = COALESCE(excluded.started_at,  step_checkpoints.started_at), \
-                   ended_at      = excluded.ended_at, \
-                   error_msg     = excluded.error_msg, \
-                   attempt_count = excluded.attempt_count",
+                   status            = excluded.status, \
+                   output_json       = COALESCE(excluded.output_json, step_checkpoints.output_json), \
+                   output_hash       = COALESCE(excluded.output_hash, step_checkpoints.output_hash), \
+                   started_at        = COALESCE(excluded.started_at,  step_checkpoints.started_at), \
+                   ended_at          = excluded.ended_at, \
+                   error_msg         = excluded.error_msg, \
+                   attempt_count     = excluded.attempt_count, \
+                   worker_id         = NULL, \
+                   lease_expires_at  = NULL",
                 params![
                     cp.run_id,
                     cp.step_id,
@@ -1135,13 +1273,369 @@ impl RunCheckpointStore {
         run_id: &str,
     ) -> Result<Vec<StepCheckpoint>, PersistenceError> {
         let mut stmt = self.conn.prepare(
-            "SELECT run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count \
+            "SELECT run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count, \
+             worker_id, lease_expires_at, claim_id \
              FROM step_checkpoints WHERE run_id = ?1 ORDER BY step_id",
         )?;
         let rows = stmt
             .query_map(params![run_id], parse_step_checkpoint)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Claim/lease state machine (sprint 0.5-S2a). Powers the
+    // distributed-execution work-queue protocol from ADR 002.
+    // See docs/design-claim-lease-persistence.md for the contract.
+    // ────────────────────────────────────────────────────────────
+
+    /// Atomically claim the named step on behalf of `worker_id`.
+    /// Caller (the coordinator) must already know the step is the
+    /// next one ready to run; this method only handles the
+    /// claim-vs-not-claimable transition.
+    ///
+    /// On success: transitions the row from `Pending` to `Running`,
+    /// stamps `worker_id`, `lease_expires_at`, and increments
+    /// `claim_id` by 1. Preserves `started_at` if it was already
+    /// set (first-attempt's started_at survives reclaims).
+    ///
+    /// Per project convention #1, refuses to silently no-op:
+    /// rejected claims return a typed [`ClaimOutcome`] variant
+    /// describing the current state.
+    pub fn claim_step(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        worker_id: &str,
+        lease_expires_at_ms: i64,
+        now_ms: i64,
+    ) -> Result<ClaimOutcome, PersistenceError> {
+        with_busy_retry(|| {
+            // BEGIN IMMEDIATE acquires the writer lock upfront so
+            // contention surfaces at lock-acquire time (matching
+            // commit_external_trigger and the project-conventions §13
+            // pattern), not via SQLITE_BUSY_SNAPSHOT at commit. The
+            // SELECT-then-UPDATE inside the transaction is then
+            // serialized against any other writer on this database.
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<ClaimOutcome, PersistenceError> {
+                let row: Option<(String, i64)> = self
+                    .conn
+                    .query_row(
+                        "SELECT status, claim_id FROM step_checkpoints \
+                         WHERE run_id = ?1 AND step_id = ?2",
+                        params![run_id, step_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let (status_str, current_claim_id) = match row {
+                    None => return Ok(ClaimOutcome::StepNotFound),
+                    Some(t) => t,
+                };
+                let current_status = StepStatus::parse_str(&status_str).ok_or_else(|| {
+                    PersistenceError::Sqlite(SqlError::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("unknown step status '{status_str}'"),
+                        )),
+                    ))
+                })?;
+                if current_status != StepStatus::Pending {
+                    return Ok(ClaimOutcome::NotClaimable { current_status });
+                }
+                let new_claim_id = current_claim_id + 1;
+                self.conn.execute(
+                    "UPDATE step_checkpoints \
+                     SET status            = 'running', \
+                         worker_id         = ?3, \
+                         lease_expires_at  = ?4, \
+                         claim_id          = ?5, \
+                         started_at        = COALESCE(started_at, ?6) \
+                     WHERE run_id = ?1 AND step_id = ?2",
+                    params![
+                        run_id,
+                        step_id,
+                        worker_id,
+                        lease_expires_at_ms,
+                        new_claim_id,
+                        now_ms
+                    ],
+                )?;
+                Ok(ClaimOutcome::Claimed {
+                    claim_id: new_claim_id as u64,
+                })
+            };
+            match body() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// CAS-protected completion. Atomic on
+    /// `(run_id, step_id, claim_id)`. Rejects late writes from
+    /// expired-lease workers without changing persisted state.
+    ///
+    /// On success: transitions the row to `Completed`, sets
+    /// `output_json`, `output_hash`, `attempt_count`, `ended_at`;
+    /// clears `worker_id`, `lease_expires_at`, and `error_msg`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_step_cas(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        claim_id: u64,
+        output_json: &str,
+        output_hash: &str,
+        attempt_count: u32,
+        ended_at_ms: i64,
+    ) -> Result<TerminalOutcome, PersistenceError> {
+        self.terminal_cas_inner(
+            run_id,
+            step_id,
+            claim_id,
+            StepStatus::Completed,
+            Some(output_json),
+            Some(output_hash),
+            None,
+            attempt_count,
+            ended_at_ms,
+        )
+    }
+
+    /// CAS-protected failure. Atomic on
+    /// `(run_id, step_id, claim_id)`. Caller's retry-policy logic
+    /// decides whether to mark the step `Failed` permanently
+    /// (terminal failure) or to re-enqueue as `Pending` for retry —
+    /// this method only handles the terminal-`Failed` case. For
+    /// retry-re-enqueue, call [`Self::expire_leases_and_requeue`]
+    /// or write a future `requeue_step_cas` helper.
+    pub fn fail_step_cas(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        claim_id: u64,
+        error_msg: &str,
+        attempt_count: u32,
+        ended_at_ms: i64,
+    ) -> Result<TerminalOutcome, PersistenceError> {
+        self.terminal_cas_inner(
+            run_id,
+            step_id,
+            claim_id,
+            StepStatus::Failed,
+            None,
+            None,
+            Some(error_msg),
+            attempt_count,
+            ended_at_ms,
+        )
+    }
+
+    /// Shared CAS body for `complete_step_cas` and `fail_step_cas`.
+    #[allow(clippy::too_many_arguments)]
+    fn terminal_cas_inner(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        claim_id: u64,
+        new_status: StepStatus,
+        output_json: Option<&str>,
+        output_hash: Option<&str>,
+        error_msg: Option<&str>,
+        attempt_count: u32,
+        ended_at_ms: i64,
+    ) -> Result<TerminalOutcome, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<TerminalOutcome, PersistenceError> {
+                let row: Option<(String, i64)> = self
+                    .conn
+                    .query_row(
+                        "SELECT status, claim_id FROM step_checkpoints \
+                         WHERE run_id = ?1 AND step_id = ?2",
+                        params![run_id, step_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let (current_status_str, current_claim_id) = match row {
+                    None => return Ok(TerminalOutcome::StepNotFound),
+                    Some(t) => t,
+                };
+                let current_status =
+                    StepStatus::parse_str(&current_status_str).ok_or_else(|| {
+                        PersistenceError::Sqlite(SqlError::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unknown step status '{current_status_str}'"),
+                            )),
+                        ))
+                    })?;
+                // CAS: matching claim_id AND status=Running.
+                // claim_id alone is NOT sufficient — a step that was
+                // already completed (status != Running) keeps its
+                // last claim_id, and a late-arriving complete with
+                // matching claim_id should still be rejected.
+                if current_claim_id as u64 != claim_id || current_status != StepStatus::Running {
+                    return Ok(TerminalOutcome::LeaseExpired {
+                        current_claim_id: current_claim_id as u64,
+                        current_status,
+                    });
+                }
+                // error_msg uses COALESCE so a successful completion
+                // does NOT clobber a transient error_msg from a prior
+                // upsert (e.g., a single-process retry attempt that
+                // recorded a transient failure before succeeding).
+                // Failure paths still overwrite via the explicit
+                // Some(error_msg) path.
+                self.conn.execute(
+                    "UPDATE step_checkpoints \
+                     SET status            = ?3, \
+                         output_json       = ?4, \
+                         output_hash       = ?5, \
+                         attempt_count     = ?6, \
+                         ended_at          = ?7, \
+                         error_msg         = COALESCE(?8, error_msg), \
+                         worker_id         = NULL, \
+                         lease_expires_at  = NULL \
+                     WHERE run_id = ?1 AND step_id = ?2 AND claim_id = ?9",
+                    params![
+                        run_id,
+                        step_id,
+                        new_status.as_str(),
+                        output_json,
+                        output_hash,
+                        attempt_count,
+                        ended_at_ms,
+                        error_msg,
+                        claim_id as i64,
+                    ],
+                )?;
+                Ok(TerminalOutcome::Committed)
+            };
+            match body() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Sweep `step_checkpoints` for expired leases and transition
+    /// them back to `Pending` so the next [`claim_step`] succeeds.
+    /// Idempotent — running twice on the same expired set returns
+    /// `0` the second time.
+    ///
+    /// `claim_id` is NOT incremented by the sweep — the next
+    /// successful `claim_step` allocates the new value.
+    pub fn expire_leases_and_requeue(&self, now_ms: i64) -> Result<usize, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<usize, PersistenceError> {
+                let n = self.conn.execute(
+                    "UPDATE step_checkpoints \
+                     SET status            = 'pending', \
+                         worker_id         = NULL, \
+                         lease_expires_at  = NULL \
+                     WHERE status = 'running' \
+                       AND lease_expires_at IS NOT NULL \
+                       AND lease_expires_at < ?1",
+                    params![now_ms],
+                )?;
+                Ok(n)
+            };
+            match body() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// Push out an existing claim's lease deadline. CAS-protected
+    /// against `claim_id` so an expired-and-reclaimed step rejects
+    /// extension attempts from the original worker.
+    pub fn extend_lease_cas(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        claim_id: u64,
+        new_lease_expires_at_ms: i64,
+    ) -> Result<ExtendOutcome, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<ExtendOutcome, PersistenceError> {
+                let row: Option<(String, i64)> = self
+                    .conn
+                    .query_row(
+                        "SELECT status, claim_id FROM step_checkpoints \
+                         WHERE run_id = ?1 AND step_id = ?2",
+                        params![run_id, step_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let (current_status_str, current_claim_id) = match row {
+                    None => return Ok(ExtendOutcome::StepNotFound),
+                    Some(t) => t,
+                };
+                let current_status =
+                    StepStatus::parse_str(&current_status_str).ok_or_else(|| {
+                        PersistenceError::Sqlite(SqlError::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("unknown step status '{current_status_str}'"),
+                            )),
+                        ))
+                    })?;
+                if current_claim_id as u64 != claim_id || current_status != StepStatus::Running {
+                    return Ok(ExtendOutcome::LeaseExpired {
+                        current_claim_id: current_claim_id as u64,
+                        current_status,
+                    });
+                }
+                self.conn.execute(
+                    "UPDATE step_checkpoints \
+                     SET lease_expires_at = ?3 \
+                     WHERE run_id = ?1 AND step_id = ?2 AND claim_id = ?4",
+                    params![run_id, step_id, new_lease_expires_at_ms, claim_id as i64],
+                )?;
+                Ok(ExtendOutcome::Extended {
+                    new_lease_expires_at_ms,
+                })
+            };
+            match body() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
     }
 }
 
@@ -1331,6 +1825,11 @@ fn parse_step_checkpoint(row: &rusqlite::Row<'_>) -> Result<StepCheckpoint, SqlE
         // The default-1 in the schema and the migration ensures
         // every row has a value.
         attempt_count: row.get::<_, i64>(8)? as u32,
+        // Schema v3 columns. Existing rows have NULL/0 defaults
+        // from the migration which all parse as "never claimed."
+        worker_id: row.get(9)?,
+        lease_expires_at_ms: row.get(10)?,
+        claim_id: row.get::<_, i64>(11)? as u64,
     })
 }
 
@@ -1366,6 +1865,9 @@ mod tests {
             ended_at_ms: None,
             error_msg: None,
             attempt_count: 1,
+            worker_id: None,
+            lease_expires_at_ms: None,
+            claim_id: 0,
         }
     }
 
@@ -2010,7 +2512,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_2_after_init() {
+    fn schema_version_is_3_after_init() {
         let store = fresh_store();
         let version: i64 = store
             .conn
@@ -2018,8 +2520,575 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 2);
-        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(version, 3);
+        assert_eq!(SCHEMA_VERSION, 3);
+    }
+
+    #[test]
+    fn fresh_db_has_claim_lease_columns() {
+        let store = fresh_store();
+        for col in &["worker_id", "lease_expires_at", "claim_id"] {
+            assert!(
+                column_exists(&store.conn, "step_checkpoints", col).unwrap(),
+                "expected column {col} to exist"
+            );
+        }
+    }
+
+    #[test]
+    fn upsert_path_does_not_set_claim_id() {
+        // upsert_step_checkpoint is the single-process runner's
+        // path. It must NOT touch claim/lease columns; those stay
+        // at their schema defaults (None / 0).
+        let store = fresh_store();
+        let run = sample_run("R-c");
+        store.insert_run(&run).unwrap();
+        store
+            .upsert_step_checkpoint(&sample_checkpoint("R-c", "s1", StepStatus::Completed))
+            .unwrap();
+        let cps = store.list_step_checkpoints("R-c").unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].worker_id, None);
+        assert_eq!(cps[0].lease_expires_at_ms, None);
+        assert_eq!(cps[0].claim_id, 0);
+    }
+
+    // ── claim_step ──
+
+    fn pending_step(store: &RunCheckpointStore, run_id: &str, step_id: &str) {
+        let run = sample_run(run_id);
+        // sample_run sets the same run_id across calls; insert only if absent.
+        let _ = store.insert_run(&run);
+        store
+            .upsert_step_checkpoint(&StepCheckpoint {
+                run_id: run_id.into(),
+                step_id: step_id.into(),
+                status: StepStatus::Pending,
+                output_json: None,
+                output_hash: None,
+                started_at_ms: None,
+                ended_at_ms: None,
+                error_msg: None,
+                attempt_count: 1,
+                worker_id: None,
+                lease_expires_at_ms: None,
+                claim_id: 0,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn claim_step_first_claim_returns_one() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        let outcome = store
+            .claim_step("R-1", "s1", "worker-A", 9_000, 1_000)
+            .unwrap();
+        assert_eq!(outcome, ClaimOutcome::Claimed { claim_id: 1 });
+    }
+
+    #[test]
+    fn claim_step_writes_worker_and_lease() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store
+            .claim_step("R-1", "s1", "worker-A", 9_000, 1_000)
+            .unwrap();
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Running);
+        assert_eq!(cp.worker_id.as_deref(), Some("worker-A"));
+        assert_eq!(cp.lease_expires_at_ms, Some(9_000));
+        assert_eq!(cp.claim_id, 1);
+        assert_eq!(cp.started_at_ms, Some(1_000));
+    }
+
+    #[test]
+    fn claim_step_preserves_started_at_on_reclaim() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "worker-A", 100, 50).unwrap();
+        store.expire_leases_and_requeue(200).unwrap();
+        store.claim_step("R-1", "s1", "worker-B", 500, 300).unwrap();
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        // started_at preserved from first claim.
+        assert_eq!(cp.started_at_ms, Some(50));
+    }
+
+    #[test]
+    fn claim_step_increments_claim_id_on_reclaim() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        let c1 = store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store.expire_leases_and_requeue(200).unwrap();
+        let c2 = store.claim_step("R-1", "s1", "B", 500, 300).unwrap();
+        assert_eq!(c1, ClaimOutcome::Claimed { claim_id: 1 });
+        assert_eq!(c2, ClaimOutcome::Claimed { claim_id: 2 });
+    }
+
+    #[test]
+    fn claim_step_step_not_found() {
+        let store = fresh_store();
+        // No row inserted.
+        let outcome = store.claim_step("R-x", "s-x", "A", 100, 50).unwrap();
+        assert_eq!(outcome, ClaimOutcome::StepNotFound);
+        assert_eq!(outcome.kind(), "claim.step_not_found");
+    }
+
+    #[test]
+    fn claim_step_already_running() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let outcome = store.claim_step("R-1", "s1", "B", 200, 100).unwrap();
+        assert_eq!(
+            outcome,
+            ClaimOutcome::NotClaimable {
+                current_status: StepStatus::Running
+            }
+        );
+        assert_eq!(outcome.kind(), "claim.not_claimable");
+    }
+
+    #[test]
+    fn claim_step_already_completed() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store
+            .complete_step_cas("R-1", "s1", 1, "{}", "h", 1, 60)
+            .unwrap();
+        let outcome = store.claim_step("R-1", "s1", "B", 200, 100).unwrap();
+        assert_eq!(
+            outcome,
+            ClaimOutcome::NotClaimable {
+                current_status: StepStatus::Completed
+            }
+        );
+    }
+
+    // ── complete_step_cas ──
+
+    #[test]
+    fn complete_step_cas_committed() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let outcome = store
+            .complete_step_cas("R-1", "s1", 1, "{\"ok\":true}", "hash", 1, 99)
+            .unwrap();
+        assert_eq!(outcome, TerminalOutcome::Committed);
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Completed);
+        assert_eq!(cp.output_json.as_deref(), Some("{\"ok\":true}"));
+        assert_eq!(cp.output_hash.as_deref(), Some("hash"));
+        assert_eq!(cp.ended_at_ms, Some(99));
+        // worker_id and lease_expires_at cleared on completion.
+        assert_eq!(cp.worker_id, None);
+        assert_eq!(cp.lease_expires_at_ms, None);
+        // claim_id stays at the successful claim's value.
+        assert_eq!(cp.claim_id, 1);
+    }
+
+    #[test]
+    fn complete_step_cas_step_not_found() {
+        let store = fresh_store();
+        let outcome = store
+            .complete_step_cas("R-x", "s-x", 1, "{}", "h", 1, 99)
+            .unwrap();
+        assert_eq!(outcome, TerminalOutcome::StepNotFound);
+        assert_eq!(outcome.kind(), "terminal.step_not_found");
+    }
+
+    #[test]
+    fn complete_step_cas_after_already_completed_returns_lease_expired() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store
+            .complete_step_cas("R-1", "s1", 1, "{}", "h", 1, 99)
+            .unwrap();
+        let outcome = store
+            .complete_step_cas("R-1", "s1", 1, "{}", "h2", 1, 100)
+            .unwrap();
+        // Status is Completed (not Running) → CAS rejects.
+        assert!(matches!(
+            outcome,
+            TerminalOutcome::LeaseExpired {
+                current_claim_id: 1,
+                current_status: StepStatus::Completed,
+            }
+        ));
+        // First completion's data is preserved.
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.output_hash.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn complete_step_cas_zero_claim_id_rejected_when_pending() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        // Caller supplies claim_id=0; row is Pending with claim_id=0
+        // but status is not Running, so CAS rejects.
+        let outcome = store
+            .complete_step_cas("R-1", "s1", 0, "{}", "h", 1, 99)
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            TerminalOutcome::LeaseExpired {
+                current_claim_id: 0,
+                current_status: StepStatus::Pending,
+            }
+        ));
+    }
+
+    // ── fail_step_cas ──
+
+    #[test]
+    fn fail_step_cas_committed() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let outcome = store.fail_step_cas("R-1", "s1", 1, "boom", 1, 99).unwrap();
+        assert_eq!(outcome, TerminalOutcome::Committed);
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Failed);
+        assert_eq!(cp.error_msg.as_deref(), Some("boom"));
+        assert_eq!(cp.worker_id, None);
+        assert_eq!(cp.lease_expires_at_ms, None);
+    }
+
+    #[test]
+    fn fail_step_cas_lease_expired() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store.expire_leases_and_requeue(200).unwrap();
+        store.claim_step("R-1", "s1", "B", 500, 300).unwrap();
+        // Worker A's late fail with stale claim_id=1.
+        let outcome = store
+            .fail_step_cas("R-1", "s1", 1, "A's error", 1, 99)
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            TerminalOutcome::LeaseExpired {
+                current_claim_id: 2,
+                current_status: StepStatus::Running,
+            }
+        ));
+        // Row is still Running under worker B; A's error_msg NOT written.
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Running);
+        assert_eq!(cp.error_msg, None);
+    }
+
+    // ── expire_leases_and_requeue ──
+
+    #[test]
+    fn expire_leases_zero_when_no_expired() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 1_000, 50).unwrap();
+        // now=500 < lease=1000 → not expired.
+        let n = store.expire_leases_and_requeue(500).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn expire_leases_finds_only_running_with_expired_lease() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s-pending");
+        pending_step(&store, "R-1", "s-running-fresh");
+        pending_step(&store, "R-1", "s-running-expired");
+        pending_step(&store, "R-1", "s-completed");
+
+        store
+            .claim_step("R-1", "s-running-fresh", "A", 5_000, 10)
+            .unwrap();
+        store
+            .claim_step("R-1", "s-running-expired", "B", 100, 10)
+            .unwrap();
+        store
+            .claim_step("R-1", "s-completed", "C", 500, 10)
+            .unwrap();
+        store
+            .complete_step_cas("R-1", "s-completed", 1, "{}", "h", 1, 50)
+            .unwrap();
+
+        let n = store.expire_leases_and_requeue(1_000).unwrap();
+        assert_eq!(n, 1);
+
+        let cps = store.list_step_checkpoints("R-1").unwrap();
+        let by_id = |id: &str| cps.iter().find(|c| c.step_id == id).unwrap();
+        assert_eq!(by_id("s-pending").status, StepStatus::Pending);
+        assert_eq!(by_id("s-running-fresh").status, StepStatus::Running);
+        assert_eq!(by_id("s-running-expired").status, StepStatus::Pending);
+        assert_eq!(by_id("s-running-expired").worker_id, None);
+        assert_eq!(by_id("s-running-expired").lease_expires_at_ms, None);
+        // claim_id stays — the next claim_step bumps it.
+        assert_eq!(by_id("s-running-expired").claim_id, 1);
+        assert_eq!(by_id("s-completed").status, StepStatus::Completed);
+    }
+
+    #[test]
+    fn expire_leases_idempotent() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let n1 = store.expire_leases_and_requeue(1_000).unwrap();
+        let n2 = store.expire_leases_and_requeue(1_000).unwrap();
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 0);
+    }
+
+    // ── extend_lease_cas ──
+
+    #[test]
+    fn extend_lease_cas_extended() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let outcome = store.extend_lease_cas("R-1", "s1", 1, 5_000).unwrap();
+        assert_eq!(
+            outcome,
+            ExtendOutcome::Extended {
+                new_lease_expires_at_ms: 5_000
+            }
+        );
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.lease_expires_at_ms, Some(5_000));
+    }
+
+    #[test]
+    fn extend_lease_cas_lease_expired_after_requeue() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store.expire_leases_and_requeue(200).unwrap();
+        store.claim_step("R-1", "s1", "B", 500, 300).unwrap();
+        // Worker A tries to extend with stale claim_id=1.
+        let outcome = store.extend_lease_cas("R-1", "s1", 1, 9_000).unwrap();
+        assert!(matches!(
+            outcome,
+            ExtendOutcome::LeaseExpired {
+                current_claim_id: 2,
+                current_status: StepStatus::Running,
+            }
+        ));
+    }
+
+    #[test]
+    fn extend_lease_cas_step_not_found() {
+        let store = fresh_store();
+        let outcome = store.extend_lease_cas("R-x", "s-x", 1, 9_000).unwrap();
+        assert_eq!(outcome, ExtendOutcome::StepNotFound);
+        assert_eq!(outcome.kind(), "extend.step_not_found");
+    }
+
+    #[test]
+    fn extend_lease_cas_pending_status_rejected() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        // Step never claimed. Try extend with claim_id=0.
+        let outcome = store.extend_lease_cas("R-1", "s1", 0, 9_000).unwrap();
+        assert!(matches!(
+            outcome,
+            ExtendOutcome::LeaseExpired {
+                current_claim_id: 0,
+                current_status: StepStatus::Pending,
+            }
+        ));
+    }
+
+    // ── End-to-end race regression ──
+
+    #[test]
+    fn slow_worker_race_late_completion_rejected() {
+        // The flagship test from the ADR's adversarial review:
+        //   1. Insert step Pending.
+        //   2. claim_step(worker=A) → claim_id=1.
+        //   3. Time passes; lease expires.
+        //   4. expire_leases_and_requeue → row → Pending.
+        //   5. claim_step(worker=B) → claim_id=2.
+        //   6. Worker A's POST: complete_step_cas(claim_id=1, ...)
+        //      → LeaseExpired { current_claim_id: 2 }.
+        //   7. Row UNCHANGED — A's output not persisted.
+        //   8. Worker B completes: complete_step_cas(claim_id=2, ...)
+        //      → Committed. B's output persisted.
+        //
+        // If this test ever fails, the state machine is broken
+        // and the entire distributed-execution surface is
+        // unsafe to ship.
+        let store = fresh_store();
+        pending_step(&store, "R-race", "s1");
+
+        // 1, 2: A claims.
+        let c_a = store.claim_step("R-race", "s1", "A", 100, 10).unwrap();
+        assert_eq!(c_a, ClaimOutcome::Claimed { claim_id: 1 });
+
+        // 3, 4: lease expires, sweep requeues.
+        let n = store.expire_leases_and_requeue(200).unwrap();
+        assert_eq!(n, 1);
+
+        // 5: B claims.
+        let c_b = store.claim_step("R-race", "s1", "B", 1_000, 300).unwrap();
+        assert_eq!(c_b, ClaimOutcome::Claimed { claim_id: 2 });
+
+        // 6: A's late complete with stale claim_id=1.
+        let outcome_a = store
+            .complete_step_cas("R-race", "s1", 1, "\"A's output\"", "hash-a", 1, 350)
+            .unwrap();
+        assert!(matches!(
+            outcome_a,
+            TerminalOutcome::LeaseExpired {
+                current_claim_id: 2,
+                current_status: StepStatus::Running,
+            }
+        ));
+
+        // 7: row unchanged — A's output rejected.
+        let cp = &store.list_step_checkpoints("R-race").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Running);
+        assert_eq!(cp.output_json, None);
+        assert_eq!(cp.output_hash, None);
+        assert_eq!(cp.worker_id.as_deref(), Some("B"));
+        assert_eq!(cp.claim_id, 2);
+
+        // 8: B completes successfully.
+        let outcome_b = store
+            .complete_step_cas("R-race", "s1", 2, "\"B's output\"", "hash-b", 1, 400)
+            .unwrap();
+        assert_eq!(outcome_b, TerminalOutcome::Committed);
+        let cp = &store.list_step_checkpoints("R-race").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Completed);
+        assert_eq!(cp.output_json.as_deref(), Some("\"B's output\""));
+        assert_eq!(cp.output_hash.as_deref(), Some("hash-b"));
+    }
+
+    #[test]
+    fn concurrent_claim_step_exactly_one_wins() {
+        // Adversarial-review finding (F4): the deterministic race
+        // tests run on a single connection, which never exercises
+        // the actual cross-process CAS guarantee. Open N connections
+        // to the same DB file via tempfile, hammer claim_step from
+        // N threads, assert exactly one wins.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        // Setup: insert run + pending step using one connection,
+        // then close it.
+        {
+            let store = RunCheckpointStore::open(&db_path).unwrap();
+            store.insert_run(&sample_run("R-conc")).unwrap();
+            store
+                .upsert_step_checkpoint(&StepCheckpoint {
+                    run_id: "R-conc".into(),
+                    step_id: "s1".into(),
+                    status: StepStatus::Pending,
+                    output_json: None,
+                    output_hash: None,
+                    started_at_ms: None,
+                    ended_at_ms: None,
+                    error_msg: None,
+                    attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
+                })
+                .unwrap();
+        }
+
+        // 8 threads, each opens its own connection, races to claim.
+        let n_threads = 8;
+        let path = db_path.clone();
+        let handles: Vec<_> = (0..n_threads)
+            .map(|i| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store = RunCheckpointStore::open(&p).unwrap();
+                    store.claim_step("R-conc", "s1", &format!("worker-{i}"), 9_000, 1_000)
+                })
+            })
+            .collect();
+
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap())
+            .collect();
+        let claimed = outcomes
+            .iter()
+            .filter(|o| matches!(o, ClaimOutcome::Claimed { .. }))
+            .count();
+        let not_claimable = outcomes
+            .iter()
+            .filter(|o| matches!(o, ClaimOutcome::NotClaimable { .. }))
+            .count();
+        assert_eq!(claimed, 1, "outcomes: {outcomes:?}");
+        assert_eq!(not_claimable, n_threads - 1, "outcomes: {outcomes:?}");
+
+        // The row's claim_id is exactly 1 (only one successful claim).
+        let store = RunCheckpointStore::open(&db_path).unwrap();
+        let cp = &store.list_step_checkpoints("R-conc").unwrap()[0];
+        assert_eq!(cp.claim_id, 1);
+        assert_eq!(cp.status, StepStatus::Running);
+    }
+
+    #[test]
+    fn concurrent_complete_with_same_claim_id_exactly_one_wins() {
+        // F4 part 2: under multi-connection contention,
+        // complete_step_cas with the same claim_id can only succeed
+        // once. Subsequent attempts (whether on the same or
+        // different connection) see status != Running and return
+        // LeaseExpired.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("runs.db");
+
+        {
+            let store = RunCheckpointStore::open(&db_path).unwrap();
+            store.insert_run(&sample_run("R-cc")).unwrap();
+            store
+                .upsert_step_checkpoint(&StepCheckpoint {
+                    run_id: "R-cc".into(),
+                    step_id: "s1".into(),
+                    status: StepStatus::Pending,
+                    output_json: None,
+                    output_hash: None,
+                    started_at_ms: None,
+                    ended_at_ms: None,
+                    error_msg: None,
+                    attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
+                })
+                .unwrap();
+            store.claim_step("R-cc", "s1", "A", 9_000, 1_000).unwrap();
+        }
+
+        let n_threads = 8;
+        let path = db_path.clone();
+        let handles: Vec<_> = (0..n_threads)
+            .map(|i| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let store = RunCheckpointStore::open(&p).unwrap();
+                    store.complete_step_cas("R-cc", "s1", 1, &format!("\"out-{i}\""), "h", 1, 9_999)
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap())
+            .collect();
+        let committed = outcomes
+            .iter()
+            .filter(|o| matches!(o, TerminalOutcome::Committed))
+            .count();
+        let lease_expired = outcomes
+            .iter()
+            .filter(|o| matches!(o, TerminalOutcome::LeaseExpired { .. }))
+            .count();
+        assert_eq!(committed, 1, "outcomes: {outcomes:?}");
+        assert_eq!(lease_expired, n_threads - 1, "outcomes: {outcomes:?}");
     }
 
     #[test]
