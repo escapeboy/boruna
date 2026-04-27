@@ -438,6 +438,50 @@ impl ExtendOutcome {
     }
 }
 
+/// Result of [`RunCheckpointStore::requeue_failed_step_for_retry`]
+/// (sprint `0.5-S5`). Distinguishes the three observable outcomes of
+/// a wait-driver retry-requeue: a real Failed→Pending transition, a
+/// concurrent observation that the row is no longer Failed (idempotent
+/// no-op for racing wait clients), or a missing row.
+///
+/// Per project convention §1, this enum is the typed reject path —
+/// the caller (the wait driver) MUST inspect the outcome and emit
+/// either a "requeued" or a "skipped" log line; the persistence layer
+/// never silently no-ops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequeueOutcome {
+    /// Status transitioned from `Failed` to `Pending`.
+    /// `new_attempt_count` is the freshly-incremented attempt counter
+    /// stamped on the row; the next worker that claims this step
+    /// passes this count back via `complete_step_cas` /
+    /// `fail_step_cas`. Carries the value purely for the wait
+    /// driver's progress log; the persisted row is the source of
+    /// truth.
+    Requeued { new_attempt_count: u32 },
+    /// The row exists but is not in `Failed` status. Returned when:
+    /// - a concurrent wait client just requeued (status is now
+    ///   `Pending`), or
+    /// - a worker just claimed (status is now `Running`), or
+    /// - the row reached a terminal/pause state we should not touch.
+    ///
+    /// The wait driver treats this as a benign idempotent observation.
+    NotFailed { current_status: StepStatus },
+    /// The (run_id, step_id) row doesn't exist.
+    NotFound,
+}
+
+impl RequeueOutcome {
+    /// Stable kind string for telemetry / log mapping. Mirrors the
+    /// `claim.*` / `terminal.*` / `extend.*` family.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Requeued { .. } => "requeue.requeued",
+            Self::NotFailed { .. } => "requeue.not_failed",
+            Self::NotFound => "requeue.not_found",
+        }
+    }
+}
+
 /// SQLite-backed checkpoint store.
 ///
 /// Owns one `rusqlite::Connection`. The connection is single-threaded by
@@ -1473,6 +1517,103 @@ impl RunCheckpointStore {
             attempt_count,
             ended_at_ms,
         )
+    }
+
+    /// Atomically requeue a `Failed` step for a retry attempt
+    /// (sprint `0.5-S5`). Used by the `boruna coordinator wait`
+    /// driver when a step's `RetryPolicy` would have allowed a
+    /// retry in in-process mode but distributed mode marked the
+    /// step `Failed` after a single worker attempt.
+    ///
+    /// Inside one `BEGIN IMMEDIATE` transaction:
+    /// 1. Read the row's current `status` and `attempt_count`.
+    /// 2. If `status != Failed` → return
+    ///    [`RequeueOutcome::NotFailed`] (no write). Idempotent
+    ///    against concurrent wait clients.
+    /// 3. Else: transition to `Pending`, increment
+    ///    `attempt_count` by 1, clear `error_msg`, `ended_at`,
+    ///    `worker_id`, and `lease_expires_at`. **Leave
+    ///    `claim_id` alone** — the next [`Self::claim_step`]
+    ///    allocates a higher value, which is what subsequent
+    ///    CAS calls compare against. `started_at` is also
+    ///    preserved so first-attempt's start time survives
+    ///    requeues, matching the `claim_step` `COALESCE`
+    ///    convention.
+    ///
+    /// **Race semantics (project convention §14).** Two wait
+    /// clients may concurrently observe the same `Failed` row
+    /// and both invoke this method. The `BEGIN IMMEDIATE` writer
+    /// lock + status-check-inside-tx make exactly one win:
+    /// - Winner: transitions `Failed → Pending`, returns
+    ///   `Requeued { new_attempt_count: prev + 1 }`.
+    /// - Loser: serializes behind the writer lock, then
+    ///   observes the row is now `Pending`, returns
+    ///   `NotFailed { current_status: Pending }`. **No double
+    ///   increment** of `attempt_count`.
+    ///
+    /// Locked by `requeue_failed_step_for_retry_idempotent_against_race`
+    /// regression test in this module.
+    pub fn requeue_failed_step_for_retry(
+        &self,
+        run_id: &str,
+        step_id: &str,
+    ) -> Result<RequeueOutcome, PersistenceError> {
+        with_busy_retry(|| {
+            self.conn.execute_batch("BEGIN IMMEDIATE")?;
+            let body = || -> Result<RequeueOutcome, PersistenceError> {
+                let row: Option<(String, i64)> = self
+                    .conn
+                    .query_row(
+                        "SELECT status, attempt_count FROM step_checkpoints \
+                         WHERE run_id = ?1 AND step_id = ?2",
+                        params![run_id, step_id],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                let (status_str, current_attempt) = match row {
+                    None => return Ok(RequeueOutcome::NotFound),
+                    Some(t) => t,
+                };
+                let current_status = StepStatus::parse_str(&status_str).ok_or_else(|| {
+                    PersistenceError::Sqlite(SqlError::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("unknown step status '{status_str}'"),
+                        )),
+                    ))
+                })?;
+                if current_status != StepStatus::Failed {
+                    return Ok(RequeueOutcome::NotFailed { current_status });
+                }
+                let new_attempt = (current_attempt as u32).saturating_add(1);
+                self.conn.execute(
+                    "UPDATE step_checkpoints \
+                     SET status            = 'pending', \
+                         attempt_count     = ?3, \
+                         error_msg         = NULL, \
+                         ended_at          = NULL, \
+                         worker_id         = NULL, \
+                         lease_expires_at  = NULL \
+                     WHERE run_id = ?1 AND step_id = ?2",
+                    params![run_id, step_id, new_attempt],
+                )?;
+                Ok(RequeueOutcome::Requeued {
+                    new_attempt_count: new_attempt,
+                })
+            };
+            match body() {
+                Ok(v) => {
+                    self.conn.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
     }
 
     /// Shared CAS body for `complete_step_cas` and `fail_step_cas`.
@@ -2872,6 +3013,133 @@ mod tests {
         let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
         assert_eq!(cp.status, StepStatus::Running);
         assert_eq!(cp.error_msg, None);
+    }
+
+    // ── requeue_failed_step_for_retry (sprint 0.5-S5) ──
+
+    #[test]
+    fn requeue_failed_step_for_retry_transitions_failed_to_pending() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store.fail_step_cas("R-1", "s1", 1, "boom", 1, 99).unwrap();
+        let outcome = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        assert_eq!(
+            outcome,
+            RequeueOutcome::Requeued {
+                new_attempt_count: 2
+            }
+        );
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.status, StepStatus::Pending);
+        assert_eq!(cp.attempt_count, 2);
+        assert_eq!(cp.error_msg, None);
+        assert_eq!(cp.ended_at_ms, None);
+        assert_eq!(cp.worker_id, None);
+        assert_eq!(cp.lease_expires_at_ms, None);
+        // claim_id is left alone — next claim_step allocates higher.
+        assert_eq!(cp.claim_id, 1);
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_returns_not_found_for_missing_row() {
+        let store = fresh_store();
+        let outcome = store.requeue_failed_step_for_retry("R-X", "s-x").unwrap();
+        assert_eq!(outcome, RequeueOutcome::NotFound);
+        assert_eq!(outcome.kind(), "requeue.not_found");
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_returns_not_failed_when_pending() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        let outcome = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        assert_eq!(
+            outcome,
+            RequeueOutcome::NotFailed {
+                current_status: StepStatus::Pending,
+            }
+        );
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_returns_not_failed_when_running() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        let outcome = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        assert_eq!(
+            outcome,
+            RequeueOutcome::NotFailed {
+                current_status: StepStatus::Running,
+            }
+        );
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_returns_not_failed_when_completed() {
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store
+            .complete_step_cas("R-1", "s1", 1, "1", "sha256:abc", 1, 99)
+            .unwrap();
+        let outcome = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        assert_eq!(
+            outcome,
+            RequeueOutcome::NotFailed {
+                current_status: StepStatus::Completed,
+            }
+        );
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_idempotent_against_race() {
+        // Convention §14: two wait clients observing the same Failed
+        // row both call requeue. BEGIN IMMEDIATE + status-check-inside-tx
+        // serializes them: winner transitions Failed→Pending, loser
+        // observes Pending and returns NotFailed. attempt_count is
+        // incremented exactly once.
+        let store = fresh_store();
+        pending_step(&store, "R-1", "s1");
+        store.claim_step("R-1", "s1", "A", 100, 50).unwrap();
+        store.fail_step_cas("R-1", "s1", 1, "boom", 1, 99).unwrap();
+        let first = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        let second = store.requeue_failed_step_for_retry("R-1", "s1").unwrap();
+        assert_eq!(
+            first,
+            RequeueOutcome::Requeued {
+                new_attempt_count: 2,
+            }
+        );
+        assert_eq!(
+            second,
+            RequeueOutcome::NotFailed {
+                current_status: StepStatus::Pending,
+            }
+        );
+        // Exactly-one increment.
+        let cp = &store.list_step_checkpoints("R-1").unwrap()[0];
+        assert_eq!(cp.attempt_count, 2);
+    }
+
+    #[test]
+    fn requeue_failed_step_for_retry_kind_strings() {
+        assert_eq!(
+            RequeueOutcome::Requeued {
+                new_attempt_count: 2
+            }
+            .kind(),
+            "requeue.requeued"
+        );
+        assert_eq!(
+            RequeueOutcome::NotFailed {
+                current_status: StepStatus::Pending,
+            }
+            .kind(),
+            "requeue.not_failed"
+        );
+        assert_eq!(RequeueOutcome::NotFound.kind(), "requeue.not_found");
     }
 
     // ── expire_leases_and_requeue ──

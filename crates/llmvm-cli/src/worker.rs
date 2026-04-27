@@ -19,6 +19,17 @@ use crate::coordinator::{
 
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 
+/// Conditionally attach the `Authorization: Bearer <secret>` header
+/// to a reqwest request when a shared-secret is configured. When
+/// `secret` is `None`, the request is returned unchanged — the
+/// pre-0.5-S3 no-auth behavior. Sprint `0.5-S3`.
+fn add_bearer(req: reqwest::RequestBuilder, secret: &Option<String>) -> reqwest::RequestBuilder {
+    match secret {
+        Some(s) => req.bearer_auth(s),
+        None => req,
+    }
+}
+
 #[derive(Clone)]
 struct WorkerHandle {
     coord_url: String,
@@ -32,6 +43,12 @@ struct WorkerHandle {
     /// timeout is poll_timeout_ms + 30 s buffer.
     #[allow(dead_code)]
     poll_timeout_ms: u64,
+    /// Shared-secret bearer token (sprint `0.5-S3`). When
+    /// `Some`, every HTTP request to the coordinator carries
+    /// `Authorization: Bearer <secret>`. When `None`, no
+    /// auth header is sent — only works when the coordinator
+    /// has no secret configured (legacy/loopback deployments).
+    shared_secret: Option<String>,
 }
 
 #[tokio::main]
@@ -40,6 +57,7 @@ pub async fn run_worker(
     worker_id: Option<String>,
     lease_ttl_ms: u64,
     poll_timeout_ms: u64,
+    shared_secret: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         // Long-poll buffer: client timeout MUST be greater than
@@ -59,14 +77,15 @@ pub async fn run_worker(
 
     // Register.
     let register_url = format!("{}/api/workers/register", coordinator.trim_end_matches('/'));
-    let reg_resp = client
-        .post(&register_url)
-        .json(&RegisterRequest {
+    let reg_resp = add_bearer(
+        client.post(&register_url).json(&RegisterRequest {
             worker_id: worker_id.clone(),
             capability_set_hash,
-        })
-        .send()
-        .await?;
+        }),
+        &shared_secret,
+    )
+    .send()
+    .await?;
     let status = reg_resp.status();
     if !status.is_success() {
         let body: ErrorBody = reg_resp.json().await.unwrap_or(ErrorBody {
@@ -93,6 +112,7 @@ pub async fn run_worker(
         client,
         lease_ttl_ms,
         poll_timeout_ms,
+        shared_secret,
     };
 
     // Spawn heartbeat task.
@@ -103,15 +123,14 @@ pub async fn run_worker(
         tick.tick().await;
         loop {
             tick.tick().await;
-            let _ = hb
+            let req = hb
                 .client
                 .post(format!("{}/api/workers/heartbeat", hb.coord_url))
                 .json(&HeartbeatRequest {
                     worker_id: hb.worker_id.clone(),
                     session_token: hb.session_token.clone(),
-                })
-                .send()
-                .await;
+                });
+            let _ = add_bearer(req, &hb.shared_secret).send().await;
         }
     });
 
@@ -161,7 +180,9 @@ async fn claim_one(handle: &WorkerHandle) -> Result<Option<WorkItem>, Box<dyn st
         urlencoding_simple(&handle.session_token),
         handle.lease_ttl_ms
     );
-    let resp = handle.client.get(&url).send().await?;
+    let resp = add_bearer(handle.client.get(&url), &handle.shared_secret)
+        .send()
+        .await?;
     let status = resp.status();
     if status.as_u16() == 204 {
         return Ok(None);
@@ -242,7 +263,9 @@ async fn report_complete(
         output_hash,
         attempt_count: 1,
     };
-    let resp = handle.client.post(&url).json(&body).send().await?;
+    let resp = add_bearer(handle.client.post(&url).json(&body), &handle.shared_secret)
+        .send()
+        .await?;
     if resp.status().is_success() {
         return Ok(());
     }
@@ -309,7 +332,9 @@ async fn report_fail(
         error_msg,
         attempt_count: 1,
     };
-    let resp = handle.client.post(&url).json(&body).send().await?;
+    let resp = add_bearer(handle.client.post(&url).json(&body), &handle.shared_secret)
+        .send()
+        .await?;
     if !resp.status().is_success() {
         let status = resp.status();
         eprintln!("worker {} fail returned {}", handle.worker_id, status);

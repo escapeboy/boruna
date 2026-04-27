@@ -172,6 +172,71 @@ fn kill_child(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Spawn a coordinator with an auth shared-secret. Sprint 0.5-S3.
+fn spawn_coordinator_with_secret(data_dir: &Path, secret: &str) -> (Child, u16) {
+    let port = pick_free_port();
+    let child = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "serve",
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--port",
+            &port.to_string(),
+            "--max-lease-ttl-ms",
+            "60000",
+            "--poll-timeout-ms",
+            "200",
+            "--shared-secret",
+            secret,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coordinator with secret");
+    wait_for_server(port);
+    (child, port)
+}
+
+fn http_request_with_auth(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    bearer: Option<&str>,
+) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let body = body.unwrap_or("");
+    let auth_header = match bearer {
+        Some(b) => format!("Authorization: Bearer {b}\r\n"),
+        None => String::new(),
+    };
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{auth_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).expect("write");
+    let mut reader = BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).expect("read status");
+    let parts: Vec<&str> = status_line.split_whitespace().collect();
+    let code: u16 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).unwrap_or(0);
+        if n == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+    }
+    let mut body = String::new();
+    let _ = reader.read_to_string(&mut body);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    (code, body)
+}
+
 #[test]
 fn coord_register_returns_worker_id_and_session_token() {
     let dir = tempfile::tempdir().unwrap();
@@ -1127,4 +1192,114 @@ fn worker_completes_two_step_linear_dag() {
         both_completed,
         "expected both steps Completed within 15s; last state: {last_state}"
     );
+}
+
+// ── shared-secret auth (sprint 0.5-S3) ──
+
+#[test]
+fn coord_with_secret_rejects_request_without_bearer() {
+    // Coord configured with --shared-secret. A naked request to
+    // /api/workers/register without Authorization header → 401.
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-init", "noop", "fn main() -> Int { 0 }\n");
+    let secret = "test-secret-32-hex-chars-aaaa";
+    let (child, port) = spawn_coordinator_with_secret(dir.path(), secret);
+    let cap_hash = boruna_bytecode::compute_capability_set_hash(
+        boruna_bytecode::Capability::ALL
+            .iter()
+            .map(|c| (c.name().to_string(), c.version().to_string()))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str())),
+    );
+    let body = serde_json::json!({ "capability_set_hash": cap_hash }).to_string();
+    let (code, resp) =
+        http_request_with_auth(port, "POST", "/api/workers/register", Some(&body), None);
+    kill_child(child);
+    assert_eq!(code, 401, "resp: {resp}");
+    let v: serde_json::Value = serde_json::from_str(&resp).expect("json");
+    assert_eq!(v["error_kind"], "coord.unauthorized");
+    assert_eq!(v["protocol_version"], 1);
+}
+
+#[test]
+fn coord_with_secret_rejects_request_with_wrong_bearer() {
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-init", "noop", "fn main() -> Int { 0 }\n");
+    let secret = "the-real-secret-aaaaaaaaaaaa";
+    let wrong = "the-wrong-secret-bbbbbbbbbbbb";
+    let (child, port) = spawn_coordinator_with_secret(dir.path(), secret);
+    let cap_hash = boruna_bytecode::compute_capability_set_hash(
+        boruna_bytecode::Capability::ALL
+            .iter()
+            .map(|c| (c.name().to_string(), c.version().to_string()))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str())),
+    );
+    let body = serde_json::json!({ "capability_set_hash": cap_hash }).to_string();
+    let (code, resp) = http_request_with_auth(
+        port,
+        "POST",
+        "/api/workers/register",
+        Some(&body),
+        Some(wrong),
+    );
+    kill_child(child);
+    assert_eq!(code, 401, "resp: {resp}");
+    let v: serde_json::Value = serde_json::from_str(&resp).expect("json");
+    assert_eq!(v["error_kind"], "coord.unauthorized");
+}
+
+#[test]
+fn coord_with_secret_accepts_request_with_correct_bearer() {
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-init", "noop", "fn main() -> Int { 0 }\n");
+    let secret = "matching-secret-xxxxxxxxxxx";
+    let (child, port) = spawn_coordinator_with_secret(dir.path(), secret);
+    let cap_hash = boruna_bytecode::compute_capability_set_hash(
+        boruna_bytecode::Capability::ALL
+            .iter()
+            .map(|c| (c.name().to_string(), c.version().to_string()))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str())),
+    );
+    let body = serde_json::json!({ "capability_set_hash": cap_hash }).to_string();
+    let (code, resp) = http_request_with_auth(
+        port,
+        "POST",
+        "/api/workers/register",
+        Some(&body),
+        Some(secret),
+    );
+    kill_child(child);
+    assert_eq!(code, 200, "resp: {resp}");
+    let v: serde_json::Value = serde_json::from_str(&resp).expect("json");
+    assert_eq!(v["protocol_version"], 1);
+    assert!(v["worker_id"].as_str().unwrap().starts_with("wkr-"));
+}
+
+#[test]
+fn coord_without_secret_accepts_unauth_request_no_regression() {
+    // Existing test surface: when no --shared-secret, no auth required.
+    // This duplicates `coord_register_returns_worker_id_and_session_token`
+    // explicitly via the auth-aware HTTP helper to lock the no-regression
+    // contract. Sprint 0.5-S3 must not break loopback-only deployments.
+    let dir = tempfile::tempdir().unwrap();
+    populate_pending_step(dir.path(), "run-init", "noop", "fn main() -> Int { 0 }\n");
+    let (child, port) = spawn_coordinator(dir.path(), 60_000, 200);
+    let cap_hash = boruna_bytecode::compute_capability_set_hash(
+        boruna_bytecode::Capability::ALL
+            .iter()
+            .map(|c| (c.name().to_string(), c.version().to_string()))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str())),
+    );
+    let body = serde_json::json!({ "capability_set_hash": cap_hash }).to_string();
+    let (code, _resp) =
+        http_request_with_auth(port, "POST", "/api/workers/register", Some(&body), None);
+    kill_child(child);
+    assert_eq!(code, 200);
 }

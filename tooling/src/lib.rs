@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod format;
 pub mod repair;
 pub mod stdlib;
 pub mod templates;
