@@ -6,6 +6,44 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Claim/lease persistence API** (sprint `0.5-S2a`). The
+  persistence-layer half of ADR 002. Schema v3 adds three
+  operational columns to `step_checkpoints`: `worker_id` (opaque
+  worker handle), `lease_expires_at` (unix ms), and `claim_id`
+  (monotonic per `(run_id, step_id)`, CAS key for terminal-state
+  transitions). Five new methods on `RunCheckpointStore`:
+  - `claim_step` — atomic Pending → Running transition with
+    incremented `claim_id`.
+  - `complete_step_cas` — CAS-protected completion. Rejects late
+    writes from expired-lease workers without changing persisted
+    state.
+  - `fail_step_cas` — CAS-protected terminal failure.
+  - `expire_leases_and_requeue` — sweep expired leases back to
+    Pending. Idempotent.
+  - `extend_lease_cas` — push out the lease deadline, CAS-protected
+    against the original `claim_id`.
+- New outcome enums: `ClaimOutcome`, `TerminalOutcome`,
+  `ExtendOutcome`. Each carries a stable `kind() -> &'static str`
+  per project convention #2 (`claim.*`, `terminal.*`, `extend.*`).
+  These map to the wire-level `coord.*` `error_kind` strings the
+  HTTP coordinator will lock in 0.5-S2b.
+- Schema v2 → v3 migration via the existing migration runner.
+  Idempotent — re-opens are no-ops; fresh databases get the
+  full v3 schema directly from `SCHEMA_V1_SQL`.
+- 32 new persistence tests including the load-bearing
+  `slow_worker_race_late_completion_rejected` regression that
+  exercises the slow-but-not-dead worker race the ADR's
+  adversarial review caught: claim → expire → reclaim →
+  original worker's late completion → `LeaseExpired` rejection
+  → row state unchanged. If this test ever fails, the state
+  machine is broken.
+- The single-process `WorkflowRunner` path is unchanged.
+  `upsert_step_checkpoint` does not write the new columns; they
+  stay at their defaults (`None`, `0`) for steps that flow
+  through the in-process scheduler.
+
 ### Decided
 
 - **ADR 002 — Distributed step execution.** The 0.5.0 ("Scale")

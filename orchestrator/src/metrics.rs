@@ -364,6 +364,9 @@ mod tests {
                     ended_at_ms: None,
                     error_msg: None,
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
         }
@@ -612,6 +615,9 @@ mod tests {
                 ended_at_ms: None,
                 error_msg: None,
                 attempt_count: 1,
+                worker_id: None,
+                lease_expires_at_ms: None,
+                claim_id: 0,
             })
             .unwrap();
         drop(store);

@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS step_checkpoints (
     -- clock-keyed (depends on whether transient failures happened),
     -- never feeds an audit hash.
     attempt_count INTEGER NOT NULL DEFAULT 1,     -- OPERATIONAL ONLY
+    -- 0.5-S2a (schema v3 columns, included here for fresh databases;
+    -- existing v2 databases get these via the v2->v3 migration in
+    -- init()). Claim/lease state for distributed execution per
+    -- ADR 002. All three are OPERATIONAL ONLY — never feed audit
+    -- hashes.
+    --   worker_id        — opaque worker handle holding the lease;
+    --                      NULL when no lease held.
+    --   lease_expires_at — unix epoch ms; NULL when no lease held.
+    --   claim_id         — monotonic per (run_id, step_id); 0 means
+    --                      never claimed. claim_step always bumps
+    --                      to >=1. CAS key for complete_step_cas /
+    --                      fail_step_cas / extend_lease_cas.
+    worker_id        TEXT,                        -- OPERATIONAL ONLY
+    lease_expires_at INTEGER,                     -- OPERATIONAL ONLY
+    claim_id         INTEGER NOT NULL DEFAULT 0,  -- OPERATIONAL ONLY
     PRIMARY KEY (run_id, step_id)
 );
 

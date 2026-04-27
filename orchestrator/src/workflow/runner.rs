@@ -815,6 +815,9 @@ impl WorkflowRunner {
                             ended_at_ms: Some(now_unix_ms()),
                             error_msg: None,
                             attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
                         })
                         .map_err(WorkflowRunError::from)?;
                     data_store
@@ -850,6 +853,9 @@ impl WorkflowRunner {
                             ended_at_ms: Some(now_unix_ms()),
                             error_msg: Some(err_msg.clone()),
                             attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
                         })
                         .map_err(WorkflowRunError::from)?;
                     prior_results.insert(
@@ -956,6 +962,9 @@ impl WorkflowRunner {
                     ended_at_ms: Some(now_unix_ms()),
                     error_msg: None,
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .map_err(WorkflowRunError::from)?;
             data_store
@@ -1354,6 +1363,9 @@ impl WorkflowRunner {
                                 ended_at_ms: Some(now_unix_ms()),
                                 error_msg: Some(err_msg.clone()),
                                 attempt_count: 1,
+                                worker_id: None,
+                                lease_expires_at_ms: None,
+                                claim_id: 0,
                             })
                             .map_err(WorkflowRunError::from)?;
                         step_results.insert(
@@ -1508,6 +1520,9 @@ impl WorkflowRunner {
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: None,
                                     attempt_count,
+                                    worker_id: None,
+                                    lease_expires_at_ms: None,
+                                    claim_id: 0,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -1545,6 +1560,9 @@ impl WorkflowRunner {
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg.clone()),
                                     attempt_count,
+                                    worker_id: None,
+                                    lease_expires_at_ms: None,
+                                    claim_id: 0,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -1597,6 +1615,9 @@ impl WorkflowRunner {
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg.clone()),
                                     attempt_count: 1,
+                                    worker_id: None,
+                                    lease_expires_at_ms: None,
+                                    claim_id: 0,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -1717,6 +1738,9 @@ impl WorkflowRunner {
                             ended_at_ms: None,
                             error_msg: None,
                             attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
                         })
                         .map_err(WorkflowRunError::from)?;
                     }
@@ -1781,6 +1805,9 @@ impl WorkflowRunner {
                             ended_at_ms: None,
                             error_msg: None,
                             attempt_count: 1,
+                            worker_id: None,
+                            lease_expires_at_ms: None,
+                            claim_id: 0,
                         })
                         .map_err(WorkflowRunError::from)?;
                         break;
@@ -1831,6 +1858,9 @@ impl WorkflowRunner {
                                     // attempt count from the StepResult
                                     // (set by compile_and_run_step_with_retry).
                                     attempt_count: sr.attempt_count,
+                                    worker_id: None,
+                                    lease_expires_at_ms: None,
+                                    claim_id: 0,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                                 emit_step_terminal_audit(
@@ -1873,6 +1903,9 @@ impl WorkflowRunner {
                                     ended_at_ms: Some(now_unix_ms()),
                                     error_msg: Some(err_msg.clone()),
                                     attempt_count,
+                                    worker_id: None,
+                                    lease_expires_at_ms: None,
+                                    claim_id: 0,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                                 emit_step_terminal_audit(
@@ -2704,6 +2737,9 @@ fn persist_one_pause(
             ended_at_ms: None,
             error_msg: None,
             attempt_count: 1,
+            worker_id: None,
+            lease_expires_at_ms: None,
+            claim_id: 0,
         })
         .map_err(WorkflowRunError::from)?;
     eprintln!("{message}");
@@ -4607,6 +4643,9 @@ mod tests {
                     ended_at_ms: Some(2),
                     error_msg: None,
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
 
@@ -4692,6 +4731,9 @@ mod tests {
                     ended_at_ms: None,
                     error_msg: None,
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
 
@@ -4775,6 +4817,9 @@ mod tests {
                     ended_at_ms: Some(2),
                     error_msg: Some("simulated step1 failure".into()),
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
 
@@ -5949,6 +5994,9 @@ mod tests {
                     ended_at_ms: Some(2),
                     error_msg: Some("analyze died".into()),
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
             // gate is awaiting approval (sentinel will rejection-halt).
@@ -5963,6 +6011,9 @@ mod tests {
                     ended_at_ms: None,
                     error_msg: None,
                     attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
                 })
                 .unwrap();
 
