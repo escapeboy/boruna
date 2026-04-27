@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [features]
 default = ["persist-sqlite"]
-serve = ["dep:axum", "dep:tokio"]
+serve = ["dep:axum", "dep:tokio", "dep:reqwest", "dep:uuid"]
 http = ["boruna-vm/http"]
 telemetry = ["boruna-vm/telemetry", "dep:tokio"]
 # Forwards to boruna-orchestrator's persist-sqlite feature so the CLI's
@@ -32,3 +32,12 @@ serde_json = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
+# `reqwest` for the worker's HTTP client. `default-features = false`
+# drops `openssl` so we don't pull a system dep; `rustls-tls` gives
+# us TLS via a Rust impl, `json` is the body shape.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", optional = true, features = ["v4"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
