@@ -185,6 +185,13 @@ enum CoordinatorCommand {
         /// (default 30 s).
         #[arg(long, default_value = "30000")]
         poll_timeout_ms: u64,
+        /// Background lease-expiry sweep interval in
+        /// milliseconds (default 30 s). Lower = faster
+        /// recovery from worker crashes; higher = less DB
+        /// churn under steady-state. Minimum 100 ms (lower
+        /// values are clamped + a warning is logged).
+        #[arg(long, default_value = "30000")]
+        sweep_interval_ms: u64,
     },
 }
 
@@ -951,6 +958,7 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
             bind,
             max_lease_ttl_ms,
             poll_timeout_ms,
+            sweep_interval_ms,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
@@ -964,11 +972,19 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
                     bind_addr,
                     max_lease_ttl_ms,
                     poll_timeout_ms,
+                    sweep_interval_ms,
                 )?;
             }
             #[cfg(not(feature = "persist-sqlite"))]
             {
-                let _ = (data_dir, port, bind, max_lease_ttl_ms, poll_timeout_ms);
+                let _ = (
+                    data_dir,
+                    port,
+                    bind,
+                    max_lease_ttl_ms,
+                    poll_timeout_ms,
+                    sweep_interval_ms,
+                );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
             }
         }

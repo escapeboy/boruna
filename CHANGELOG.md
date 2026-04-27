@@ -8,6 +8,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Coordinator background lease-expiry sweep** (sprint
+  `0.5-S2c`). The coordinator now runs a tokio interval task
+  that wakes up every `--sweep-interval-ms` (default 30 s)
+  and calls `expire_leases_and_requeue`. Stale leases from
+  worker crashes are now recovered without restarting the
+  coordinator. Best-effort failure semantics: errors log +
+  continue to the next tick.
+
+  New CLI flag on `boruna coordinator serve`:
+  `--sweep-interval-ms <ms>` (default 30000, minimum 100;
+  values below the floor are clamped with a warning).
+
+  New CLI integration tests:
+  - `coord_bg_sweep_requeues_expired_lease` proves the sweep
+    fires periodically and requeues stale leases without a
+    coordinator restart.
+  - `worker_completes_two_step_linear_dag` proves the
+    protocol scales beyond a single step. (DAG advancement
+    by the coordinator itself is deferred to 0.5-S2d; this
+    test pre-populates both steps as Pending up front.)
+
+  Architectural note documented in
+  `docs/design-coord-bg-sweep.md`: in v0.5.x the coordinator
+  is a "dumb transport" — it dispatches what's in Pending
+  and persists what completes. Wave advancement (deciding
+  which step is Pending after a successful completion based
+  on DAG dependencies) lives in the client. The
+  `boruna workflow run --coordinator <url>` client mode
+  ships in 0.5-S2d.
+
 - **Coordinator/worker HTTP MVP** (sprint `0.5-S2b`). The HTTP
   layer over the persistence-layer state machine from 0.5-S2a.
   Two new CLI subcommands behind the `serve` feature flag:
