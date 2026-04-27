@@ -169,6 +169,53 @@ struct PersistedRunMetadata {
     /// not a replay-verified record.
     #[serde(default)]
     step_sources: BTreeMap<String, String>,
+    /// Full workflow DAG embedded for client-side multi-wave
+    /// advancement (sprint `0.5-S2f`). Populated only when
+    /// `RunOptions::submit_only` is true; in-process
+    /// `run_persistent` keeps this `None` to avoid bloating
+    /// metadata. Read by `WorkflowRunner::advance_run_one_tick`
+    /// (the `boruna coordinator wait` driver) to compute
+    /// downstream-ready successors as steps complete.
+    /// Defaulted so pre-0.5-S2f databases parse cleanly.
+    ///
+    /// **OPERATIONAL ONLY.** `workflow_hash` is the
+    /// replay-verified record of workflow content; this field
+    /// is a transport convenience for the wait client, identical
+    /// to the on-disk `workflow.json` at submit time. Capped at
+    /// 1 MiB serialized JSON; oversize fails at submit time
+    /// with a typed `Validation` error.
+    #[serde(default)]
+    workflow_def: Option<crate::workflow::definition::WorkflowDef>,
+}
+
+/// Per-tick result of [`WorkflowRunner::advance_run_one_tick`].
+/// Sprint `0.5-S2f`: returned to `boruna coordinator wait` for
+/// progress display + terminal-status decision.
+#[cfg(feature = "persist-sqlite")]
+#[derive(Debug, Clone)]
+pub struct AdvanceResult {
+    /// Step IDs that transitioned Unknown → Pending in this tick.
+    /// Sorted ascending. Empty when no new steps became ready.
+    pub newly_pending: Vec<String>,
+    /// Overall run status as derived from the checkpoint set:
+    /// - `Failed` if any step is in `Failed` status (terminal).
+    /// - `Completed` if all steps in the workflow def are in
+    ///   `Completed` status (terminal).
+    /// - `Running` otherwise (transient).
+    pub run_status: AdvanceRunStatus,
+    /// Per-step status map after the tick. Keys are step IDs from
+    /// the workflow def; values are the persisted status. Steps
+    /// with no checkpoint row are absent from the map (Unknown).
+    pub all_step_statuses: BTreeMap<String, PersistStepStatus>,
+}
+
+/// Terminal-vs-transient run status surfaced to wait clients.
+#[cfg(feature = "persist-sqlite")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvanceRunStatus {
+    Running,
+    Completed,
+    Failed,
 }
 
 /// Per-step approval decision recorded by `boruna workflow approve` /
@@ -436,6 +483,7 @@ impl WorkflowRunner {
             triggers: BTreeMap::new(),
             audit_log: Vec::new(),
             step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
+            workflow_def: Self::embed_workflow_def_for_metadata(def, options)?,
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -456,6 +504,44 @@ impl WorkflowRunner {
                 Self::execute_after_insert(def, options, data_dir, &store, run_id).map(Some)
             }
         }
+    }
+
+    /// Embed the full `WorkflowDef` into metadata when running in
+    /// submit-only mode. Sprint `0.5-S2f`: read by
+    /// `advance_run_one_tick` (the `boruna coordinator wait` driver)
+    /// to compute downstream-ready successors as steps complete.
+    ///
+    /// Returns `None` when `options.submit_only` is false (in-process
+    /// runs don't need the embedded def — the runner already holds it
+    /// in memory). When `submit_only` is true, serializes the def to
+    /// estimate size and rejects defs whose serialized JSON exceeds
+    /// `MAX_WORKFLOW_DEF_BYTES`. The cap mirrors the per-step
+    /// `MAX_PER_STEP_BYTES` pattern from 0.5-S2e: variable-size
+    /// embedded payloads must have an explicit ceiling so a
+    /// pathological workflow can't blow up `metadata_json`.
+    #[cfg(feature = "persist-sqlite")]
+    fn embed_workflow_def_for_metadata(
+        def: &WorkflowDef,
+        options: &RunOptions,
+    ) -> Result<Option<WorkflowDef>, WorkflowRunError> {
+        if !options.submit_only {
+            return Ok(None);
+        }
+        // 1 MiB ceiling on serialized def. Real workflows top out at
+        // a few hundred KiB even with verbose `with_input` blocks;
+        // this cap is generous but bounded.
+        const MAX_WORKFLOW_DEF_BYTES: usize = 1024 * 1024;
+        let bytes = serde_json::to_string(def)
+            .map_err(|e| WorkflowRunError::Internal(format!("workflow_def serialize: {e}")))?
+            .len();
+        if bytes > MAX_WORKFLOW_DEF_BYTES {
+            return Err(WorkflowRunError::Validation(format!(
+                "workflow_def serialized to {bytes} bytes; exceeds cap of \
+                 {MAX_WORKFLOW_DEF_BYTES} bytes (submit-only mode embeds the \
+                 def in metadata for the coordinator wait driver)"
+            )));
+        }
+        Ok(Some(def.clone()))
     }
 
     /// Read the `.ax` source for every `Source`-kind step in
@@ -568,6 +654,146 @@ impl WorkflowRunner {
         Ok(())
     }
 
+    /// Compute the set of steps that are ready to dispatch given the
+    /// workflow DAG and the current per-step status map. Sprint
+    /// `0.5-S2f`: pure helper used by [`advance_run_one_tick`] for
+    /// client-side multi-wave advancement.
+    ///
+    /// A step is "ready" iff:
+    /// - It has no checkpoint row yet (i.e. its status is Unknown,
+    ///   represented here by absence from `status_map`).
+    /// - Every upstream dependency (via explicit `edges` or
+    ///   `depends_on`) has status `Completed` in `status_map`.
+    ///
+    /// Returns step IDs sorted ascending for deterministic dispatch
+    /// order. Pure function; no side effects.
+    #[cfg(feature = "persist-sqlite")]
+    pub fn compute_ready_steps(
+        def: &WorkflowDef,
+        status_map: &BTreeMap<String, PersistStepStatus>,
+    ) -> Vec<String> {
+        let mut upstream: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for id in def.steps.keys() {
+            upstream.insert(id.clone(), BTreeSet::new());
+        }
+        for (from, to) in &def.edges {
+            upstream.entry(to.clone()).or_default().insert(from.clone());
+        }
+        for (id, step) in &def.steps {
+            for dep in &step.depends_on {
+                upstream.entry(id.clone()).or_default().insert(dep.clone());
+            }
+        }
+        let mut ready: Vec<String> = Vec::new();
+        for step_id in def.steps.keys() {
+            if status_map.contains_key(step_id) {
+                continue;
+            }
+            let deps = match upstream.get(step_id) {
+                Some(d) => d,
+                None => continue,
+            };
+            let all_completed = deps
+                .iter()
+                .all(|d| matches!(status_map.get(d), Some(PersistStepStatus::Completed)));
+            if all_completed {
+                ready.push(step_id.clone());
+            }
+        }
+        ready.sort();
+        ready
+    }
+
+    /// One polling tick of the client-side wave-advancement driver.
+    /// Sprint `0.5-S2f`: invoked repeatedly by `boruna coordinator wait`.
+    ///
+    /// Reads the run's metadata + checkpoints, computes ready steps via
+    /// [`Self::compute_ready_steps`], and writes a Pending checkpoint for
+    /// each ready step using [`RunCheckpointStore::insert_pending_step_if_absent`]
+    /// (the race-safe primitive — it leaves Running rows untouched if
+    /// the coordinator concurrently claimed a sibling step).
+    ///
+    /// Returns an [`AdvanceResult`] summarizing the tick.
+    ///
+    /// Errors:
+    /// - The run is not found in the store.
+    /// - The run's metadata has no embedded `workflow_def` (was
+    ///   submitted before 0.5-S2f or via in-process mode that didn't
+    ///   embed the def).
+    /// - A non-first-wave step is `ApprovalGate` or `ExternalTrigger`
+    ///   kind — distributed mode does not yet support those step kinds.
+    #[cfg(feature = "persist-sqlite")]
+    pub fn advance_run_one_tick(
+        store: &RunCheckpointStore,
+        run_id: &str,
+    ) -> Result<AdvanceResult, WorkflowRunError> {
+        let row = store
+            .get_run(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::Validation(format!("run not found: {run_id}")))?;
+        let metadata: PersistedRunMetadata = serde_json::from_str(&row.metadata_json)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata parse: {e}")))?;
+        let def = metadata.workflow_def.as_ref().ok_or_else(|| {
+            WorkflowRunError::Validation(format!(
+                "run '{run_id}' has no embedded workflow_def in metadata; \
+                 coordinator wait requires a submit-only-mode run \
+                 (run was submitted before 0.5-S2f or via in-process mode)"
+            ))
+        })?;
+        let checkpoints = store
+            .list_step_checkpoints(run_id)
+            .map_err(WorkflowRunError::from)?;
+        let mut status_map: BTreeMap<String, PersistStepStatus> = BTreeMap::new();
+        for cp in &checkpoints {
+            status_map.insert(cp.step_id.clone(), cp.status);
+        }
+        let ready = Self::compute_ready_steps(def, &status_map);
+        let mut newly_pending: Vec<String> = Vec::new();
+        for step_id in &ready {
+            let step_def = def.steps.get(step_id).ok_or_else(|| {
+                WorkflowRunError::Internal(format!(
+                    "step '{step_id}' in ready set but missing from workflow_def"
+                ))
+            })?;
+            match &step_def.kind {
+                StepKind::Source { .. } => {}
+                StepKind::ApprovalGate { .. } | StepKind::ExternalTrigger { .. } => {
+                    return Err(WorkflowRunError::Validation(format!(
+                        "coordinator wait does not support {:?}-kind step '{step_id}' \
+                         in non-first wave; resume in-process via `boruna workflow resume`",
+                        step_def.kind
+                    )));
+                }
+            }
+            let inserted = store
+                .insert_pending_step_if_absent(run_id, step_id)
+                .map_err(WorkflowRunError::from)?;
+            if inserted {
+                newly_pending.push(step_id.clone());
+                status_map.insert(step_id.clone(), PersistStepStatus::Pending);
+            }
+        }
+        let any_failed = status_map
+            .values()
+            .any(|s| matches!(s, PersistStepStatus::Failed));
+        let all_completed = def
+            .steps
+            .keys()
+            .all(|s| matches!(status_map.get(s), Some(PersistStepStatus::Completed)));
+        let run_status = if any_failed {
+            AdvanceRunStatus::Failed
+        } else if all_completed {
+            AdvanceRunStatus::Completed
+        } else {
+            AdvanceRunStatus::Running
+        };
+        Ok(AdvanceResult {
+            newly_pending,
+            run_status,
+            all_step_statuses: status_map,
+        })
+    }
+
     /// Internal shared body for `run_persistent` and
     /// `run_persistent_or_skip`. Validates, opens the store, and
     /// inserts a new run row via `insert_run_with_derived_id`.
@@ -602,6 +828,7 @@ impl WorkflowRunner {
             triggers: BTreeMap::new(),
             audit_log: Vec::new(),
             step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
+            workflow_def: Self::embed_workflow_def_for_metadata(def, options)?,
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -3946,6 +4173,450 @@ mod tests {
         assert_eq!(sources.len(), 2);
         assert!(sources["step1"].as_str().unwrap().contains("99"));
         assert!(sources["step2"].as_str().unwrap().contains("100"));
+    }
+
+    // ── Multi-wave advancement (sprint 0.5-S2f) ──
+
+    /// Fan-out / fan-in DAG used by the advance-loop tests:
+    ///
+    /// ```text
+    ///   s1 ──┐
+    ///   s2 ──┼──▶ s4 ──▶ s5
+    ///   s3 ──┘
+    /// ```
+    ///
+    /// Wave 1: {s1, s2, s3} (no upstream).
+    /// Wave 2: {s4} (depends on s1, s2, s3).
+    /// Wave 3: {s5} (depends on s4).
+    fn make_fan_in_workflow() -> (WorkflowDef, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = dir.path().join("steps");
+        std::fs::create_dir_all(&steps_dir).unwrap();
+        let mut steps = BTreeMap::new();
+        for (id, body) in [
+            ("s1", "fn main() -> Int { 1 }"),
+            ("s2", "fn main() -> Int { 2 }"),
+            ("s3", "fn main() -> Int { 3 }"),
+            ("s4", "fn main() -> Int { 4 }"),
+            ("s5", "fn main() -> Int { 5 }"),
+        ] {
+            let filename = format!("steps/{id}.ax");
+            std::fs::write(dir.path().join(&filename), body).unwrap();
+            steps.insert(
+                id.to_string(),
+                StepDef {
+                    kind: StepKind::Source { source: filename },
+                    capabilities: vec![],
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    depends_on: vec![],
+                    timeout_ms: None,
+                    retry: None,
+                    budget: None,
+                },
+            );
+        }
+        let edges = vec![
+            ("s1".into(), "s4".into()),
+            ("s2".into(), "s4".into()),
+            ("s3".into(), "s4".into()),
+            ("s4".into(), "s5".into()),
+        ];
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "fan-in".into(),
+            version: "1.0.0".into(),
+            description: "fan-in test".into(),
+            steps,
+            edges,
+        };
+        (def, dir)
+    }
+
+    #[test]
+    fn compute_ready_steps_initial_state_returns_source_steps() {
+        let (def, _dir) = make_fan_in_workflow();
+        let status_map = BTreeMap::new();
+        let ready = WorkflowRunner::compute_ready_steps(&def, &status_map);
+        assert_eq!(
+            ready,
+            vec!["s1".to_string(), "s2".to_string(), "s3".to_string()]
+        );
+    }
+
+    #[test]
+    fn compute_ready_steps_after_first_wave_returns_downstream() {
+        let (def, _dir) = make_fan_in_workflow();
+        let mut status_map = BTreeMap::new();
+        status_map.insert("s1".to_string(), PersistStepStatus::Completed);
+        status_map.insert("s2".to_string(), PersistStepStatus::Completed);
+        status_map.insert("s3".to_string(), PersistStepStatus::Completed);
+        let ready = WorkflowRunner::compute_ready_steps(&def, &status_map);
+        assert_eq!(ready, vec!["s4".to_string()]);
+    }
+
+    #[test]
+    fn compute_ready_steps_partial_completion_returns_empty() {
+        let (def, _dir) = make_fan_in_workflow();
+        let mut status_map = BTreeMap::new();
+        status_map.insert("s1".to_string(), PersistStepStatus::Completed);
+        status_map.insert("s2".to_string(), PersistStepStatus::Pending);
+        status_map.insert("s3".to_string(), PersistStepStatus::Completed);
+        let ready = WorkflowRunner::compute_ready_steps(&def, &status_map);
+        assert!(
+            ready.is_empty(),
+            "s4 should NOT be ready while s2 is still Pending; got {ready:?}"
+        );
+    }
+
+    #[test]
+    fn compute_ready_steps_skips_already_pending_steps() {
+        let (def, _dir) = make_fan_in_workflow();
+        let mut status_map = BTreeMap::new();
+        // First wave already Pending — wait client wrote them last tick.
+        status_map.insert("s1".to_string(), PersistStepStatus::Pending);
+        status_map.insert("s2".to_string(), PersistStepStatus::Pending);
+        status_map.insert("s3".to_string(), PersistStepStatus::Pending);
+        let ready = WorkflowRunner::compute_ready_steps(&def, &status_map);
+        assert!(
+            ready.is_empty(),
+            "Pending steps should not be re-marked ready; got {ready:?}"
+        );
+    }
+
+    #[test]
+    fn compute_ready_steps_sort_is_deterministic() {
+        // Build a workflow where step IDs would naturally enumerate
+        // out of order if we relied on insertion order. BTreeMap
+        // already iterates sorted; this test locks the contract.
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = dir.path().join("steps");
+        std::fs::create_dir_all(&steps_dir).unwrap();
+        let mut steps = BTreeMap::new();
+        for id in ["zeta", "alpha", "mu"] {
+            let filename = format!("steps/{id}.ax");
+            std::fs::write(dir.path().join(&filename), "fn main() -> Int { 0 }").unwrap();
+            steps.insert(
+                id.to_string(),
+                StepDef {
+                    kind: StepKind::Source { source: filename },
+                    capabilities: vec![],
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    depends_on: vec![],
+                    timeout_ms: None,
+                    retry: None,
+                    budget: None,
+                },
+            );
+        }
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "sort-test".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            steps,
+            edges: vec![],
+        };
+        let status_map = BTreeMap::new();
+        let ready = WorkflowRunner::compute_ready_steps(&def, &status_map);
+        assert_eq!(ready, vec!["alpha", "mu", "zeta"]);
+    }
+
+    #[test]
+    fn advance_run_one_tick_inserts_pending_checkpoints() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+
+        // First tick: s1, s2, s3 are already Pending (submit-only). No new
+        // Pending should be added; run is Running.
+        let r0 = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert!(r0.newly_pending.is_empty());
+        assert_eq!(r0.run_status, AdvanceRunStatus::Running);
+
+        // Simulate workers completing s1, s2, s3.
+        for sid in ["s1", "s2", "s3"] {
+            let claim = store
+                .claim_step(&result.run_id, sid, "worker-A", 1_000_000_000, 0)
+                .unwrap();
+            let claim_id = match claim {
+                crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+                other => panic!("expected Claimed, got {other:?}"),
+            };
+            let _ = store
+                .complete_step_cas(&result.run_id, sid, claim_id, "{}", "0", 1, 1)
+                .unwrap();
+        }
+
+        // Second tick: s4 becomes Pending.
+        let r1 = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert_eq!(r1.newly_pending, vec!["s4".to_string()]);
+        assert_eq!(r1.run_status, AdvanceRunStatus::Running);
+    }
+
+    #[test]
+    fn advance_run_one_tick_is_idempotent() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+
+        // No worker activity between ticks → both ticks return zero new pending.
+        let r0 = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        let r1 = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert!(r0.newly_pending.is_empty());
+        assert!(r1.newly_pending.is_empty());
+    }
+
+    #[test]
+    fn advance_run_one_tick_preserves_running_status_on_concurrent_claim() {
+        // Race: between ticks, the coordinator claims a Pending step.
+        // The next tick's compute_ready_steps must NOT include that step
+        // (it's no longer Unknown — it's Running), so no clobbering write.
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // Coordinator claims s1.
+        let claim = store
+            .claim_step(&result.run_id, "s1", "worker-A", 1_000_000_000, 0)
+            .unwrap();
+        assert!(matches!(
+            claim,
+            crate::persistence::ClaimOutcome::Claimed { .. }
+        ));
+        // Wait tick runs.
+        let r = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert!(r.newly_pending.is_empty());
+        // s1 is still Running with worker-A.
+        let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+        let s1 = cps.iter().find(|c| c.step_id == "s1").unwrap();
+        assert_eq!(s1.status, PersistStepStatus::Running);
+        assert_eq!(s1.worker_id.as_deref(), Some("worker-A"));
+    }
+
+    #[test]
+    fn advance_run_one_tick_returns_completed_when_all_done() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // Drive all 5 steps to Completed.
+        for sid in ["s1", "s2", "s3", "s4", "s5"] {
+            // Ensure it has a Pending row (advance ticks fill in waves 2/3 incrementally).
+            loop {
+                let cps = store.list_step_checkpoints(&result.run_id).unwrap();
+                if cps.iter().any(|c| c.step_id == sid) {
+                    break;
+                }
+                WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+            }
+            let claim = store
+                .claim_step(&result.run_id, sid, "w", 1_000_000_000, 0)
+                .unwrap();
+            let claim_id = match claim {
+                crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+                other => panic!("claim {sid}: {other:?}"),
+            };
+            store
+                .complete_step_cas(&result.run_id, sid, claim_id, "{}", "0", 1, 1)
+                .unwrap();
+        }
+        let r = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Completed);
+    }
+
+    #[test]
+    fn advance_run_one_tick_returns_failed_when_any_failed() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        // s1 fails.
+        let claim = store
+            .claim_step(&result.run_id, "s1", "w", 1_000_000_000, 0)
+            .unwrap();
+        let claim_id = match claim {
+            crate::persistence::ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("{other:?}"),
+        };
+        store
+            .fail_step_cas(&result.run_id, "s1", claim_id, "boom", 1, 1)
+            .unwrap();
+        let r = WorkflowRunner::advance_run_one_tick(&store, &result.run_id).unwrap();
+        assert_eq!(r.run_status, AdvanceRunStatus::Failed);
+    }
+
+    #[test]
+    fn submit_only_embeds_workflow_def_in_metadata() {
+        let (def, dir) = make_fan_in_workflow();
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        let metadata_json = store.get_run_metadata(&result.run_id).unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        let wf = parsed
+            .get("workflow_def")
+            .expect("workflow_def key present")
+            .as_object()
+            .expect("workflow_def is object");
+        assert_eq!(wf.get("name").unwrap().as_str().unwrap(), "fan-in");
+        let steps = wf.get("steps").unwrap().as_object().unwrap();
+        assert_eq!(steps.len(), 5);
+    }
+
+    #[test]
+    fn non_submit_only_does_not_embed_workflow_def() {
+        let (def, dir) = make_workflow_with_steps(&[("step1", "fn main() -> Int { 1 }")]);
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: false,
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        let metadata_json = store.get_run_metadata(&result.run_id).unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&metadata_json).unwrap();
+        // workflow_def should be absent or null.
+        let wf = parsed.get("workflow_def");
+        assert!(
+            matches!(wf, None | Some(&serde_json::Value::Null)),
+            "in-process runs should not embed workflow_def; got: {wf:?}"
+        );
+    }
+
+    #[test]
+    fn submit_only_rejects_oversized_workflow_def() {
+        // Build a workflow whose serialized def exceeds 1 MiB by stuffing
+        // a giant description.
+        let dir = tempfile::tempdir().unwrap();
+        let steps_dir = dir.path().join("steps");
+        std::fs::create_dir_all(&steps_dir).unwrap();
+        let filename = "steps/s1.ax";
+        std::fs::write(dir.path().join(filename), "fn main() -> Int { 1 }").unwrap();
+        let mut steps = BTreeMap::new();
+        steps.insert(
+            "s1".to_string(),
+            StepDef {
+                kind: StepKind::Source {
+                    source: filename.to_string(),
+                },
+                capabilities: vec![],
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                depends_on: vec![],
+                timeout_ms: None,
+                retry: None,
+                budget: None,
+            },
+        );
+        let def = WorkflowDef {
+            schema_version: 1,
+            name: "huge".into(),
+            version: "1.0.0".into(),
+            description: "x".repeat(2 * 1024 * 1024), // 2 MiB description
+            steps,
+            edges: vec![],
+        };
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: true,
+        };
+        let err = WorkflowRunner::run_persistent(&def, &options, data_dir.path())
+            .expect_err("expected oversize rejection");
+        let msg = format!("{err}");
+        assert!(msg.contains("workflow_def"), "msg: {msg}");
+        assert!(msg.contains("1048576"), "msg: {msg}");
+    }
+
+    #[test]
+    fn advance_run_one_tick_rejects_run_without_workflow_def() {
+        // A run that pre-dates 0.5-S2f (no workflow_def in metadata)
+        // should error out clearly.
+        let (def, dir) = make_workflow_with_steps(&[("step1", "fn main() -> Int { 1 }")]);
+        let data_dir = tempfile::tempdir().unwrap();
+        let options = RunOptions {
+            policy: Some(Policy::allow_all()),
+            record: false,
+            workflow_dir: dir.path().to_string_lossy().to_string(),
+            live: false,
+            concurrency: 1,
+            submit_only: false, // does NOT embed workflow_def
+        };
+        let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+        let store =
+            crate::persistence::RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+        let err = WorkflowRunner::advance_run_one_tick(&store, &result.run_id)
+            .expect_err("expected error for run without embedded workflow_def");
+        let msg = format!("{err}");
+        assert!(msg.contains("workflow_def"), "msg: {msg}");
+        assert!(msg.contains("submit-only"), "msg: {msg}");
     }
 
     #[test]

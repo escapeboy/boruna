@@ -26,7 +26,7 @@
 //! responses also carry `error_kind: "<stable_string>"` from
 //! the locked `coord.*` taxonomy.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -817,6 +817,119 @@ impl CoordinatorState {
     }
     pub fn bind_warning(&self) -> Option<&str> {
         self.config.bind_warning.as_deref()
+    }
+}
+
+// ── coordinator wait (sprint 0.5-S2f) ──
+
+/// Minimum poll interval for the wait loop. Mirrors
+/// `MIN_SWEEP_INTERVAL_MS` — sub-100 ms polling is allowed only as
+/// a test/operator override, with a clamping warning.
+const MIN_WAIT_POLL_INTERVAL_MS: u64 = 100;
+
+/// Drive a submit-only run to terminal status by computing
+/// downstream-ready successors via
+/// [`boruna_orchestrator::workflow::WorkflowRunner::advance_run_one_tick`]
+/// every `poll_interval_ms`. Sprint `0.5-S2f`.
+///
+/// Returns the intended process exit code:
+/// - `0` — run reached `Completed`.
+/// - `1` — run reached `Failed`.
+/// - `2` — `--max-wait-secs` exceeded.
+///
+/// This function is synchronous (no tokio runtime); the wait loop is
+/// driven by `std::thread::sleep` between ticks. The advance call
+/// itself is short-lived (a SQLite read + a few small writes).
+pub fn run_wait(
+    data_dir: PathBuf,
+    run_id: String,
+    poll_interval_ms: u64,
+    max_wait_secs: u64,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    use boruna_orchestrator::workflow::{AdvanceRunStatus, WorkflowRunner};
+
+    let db_path = data_dir.join("runs.db");
+    if !db_path.exists() {
+        return Err(format!(
+            "no runs.db at {} — pass --data-dir matching the coordinator process",
+            db_path.display()
+        )
+        .into());
+    }
+    let store = RunCheckpointStore::open(&db_path)
+        .map_err(|e| format!("failed to open {}: {e}", db_path.display()))?;
+
+    let effective_poll_ms = poll_interval_ms.max(MIN_WAIT_POLL_INTERVAL_MS);
+    if poll_interval_ms < MIN_WAIT_POLL_INTERVAL_MS {
+        eprintln!(
+            "[WARNING] --poll-interval-ms {poll_interval_ms} below minimum \
+             {MIN_WAIT_POLL_INTERVAL_MS}; using {effective_poll_ms} ms"
+        );
+    }
+
+    eprintln!("coordinator wait run_id={run_id}");
+    eprintln!("    data-dir: {}", data_dir.display());
+    eprintln!("    poll-interval-ms: {effective_poll_ms}");
+    if max_wait_secs > 0 {
+        eprintln!("    max-wait-secs: {max_wait_secs}");
+    }
+
+    // Track previous step statuses so we only print transitions, not
+    // the entire status map every tick.
+    let mut prev: BTreeMap<String, String> = BTreeMap::new();
+    let started = std::time::Instant::now();
+
+    loop {
+        let result = match WorkflowRunner::advance_run_one_tick(&store, &run_id) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Ok(2);
+            }
+        };
+        // Print step transitions in sorted order (BTreeMap iteration).
+        // newly_pending is always reflected in all_step_statuses (see
+        // advance_run_one_tick: status_map is updated alongside the
+        // newly_pending push), so this single loop covers all
+        // transitions.
+        for (sid, status) in &result.all_step_statuses {
+            let status_str = persist_status_str(*status).to_string();
+            match prev.get(sid) {
+                Some(p) if p == &status_str => {}
+                _ => {
+                    println!("step {sid}: {status_str}");
+                    prev.insert(sid.clone(), status_str);
+                }
+            }
+        }
+        match result.run_status {
+            AdvanceRunStatus::Completed => {
+                println!("run {run_id}: completed");
+                return Ok(0);
+            }
+            AdvanceRunStatus::Failed => {
+                println!("run {run_id}: failed");
+                return Ok(1);
+            }
+            AdvanceRunStatus::Running => {}
+        }
+        if max_wait_secs > 0 && started.elapsed().as_secs() >= max_wait_secs {
+            eprintln!("error: --max-wait-secs {max_wait_secs} exceeded");
+            return Ok(3);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(effective_poll_ms));
+    }
+}
+
+fn persist_status_str(s: boruna_orchestrator::persistence::StepStatus) -> &'static str {
+    use boruna_orchestrator::persistence::StepStatus;
+    match s {
+        StepStatus::Pending => "pending",
+        StepStatus::Running => "running",
+        StepStatus::Completed => "completed",
+        StepStatus::Failed => "failed",
+        StepStatus::AwaitingApproval => "awaiting_approval",
+        StepStatus::AwaitingExternalEvent => "awaiting_external_event",
     }
 }
 
