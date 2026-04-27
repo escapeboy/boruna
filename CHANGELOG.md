@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-27
+
+The **operations** release. Twelve sprints (0.4-S5 through
+0.4-S16) ship the production-readiness layer on top of 0.3.0's
+durability work: distributed-tracing observability, streaming
+progress, multi-pause-per-level wave loops, per-error-class retry
+classification, hash-chained audit decisions and lifecycle
+events, post-hoc evidence-bundle creation, Prometheus metrics,
+multi-provider LLM dispatch, multi-environment data separation,
+strict-validated policy-as-code, and a read-only HTTP dashboard.
+
 ### Added
 
 - **Workflow dashboard** (sprint `0.4-S16`). New `boruna dashboard
@@ -1218,6 +1229,8 @@ Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna
   `std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`, `std-notifications`, `std-testing`
 - 557+ tests across 9 crates
 
-[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/escapeboy/boruna/releases/tag/v0.4.0
+[0.3.0]: https://github.com/escapeboy/boruna/releases/tag/v0.3.0
 [0.2.0]: https://github.com/escapeboy/boruna/releases/tag/v0.2.0
 [0.1.0]: https://github.com/escapeboy/boruna/releases/tag/v0.1.0

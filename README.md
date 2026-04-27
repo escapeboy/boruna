@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-orange.svg)](CHANGELOG.md)
 [![Status: Pre-production](https://img.shields.io/badge/status-pre--production-yellow.svg)](docs/stability.md)
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
