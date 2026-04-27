@@ -1007,10 +1007,26 @@ pub fn run_wait(
         }
         match result.run_status {
             AdvanceRunStatus::Completed => {
+                // Sprint follow-up to 0.5-S2f: emit a terminating
+                // WorkflowCompleted audit event so the chain has
+                // a closing entry to match its WorkflowStarted
+                // genesis. Idempotent on re-invocation.
+                if let Err(e) = WorkflowRunner::append_wait_terminal_audit_event(&store, &run_id) {
+                    eprintln!(
+                        "warning: failed to append WorkflowCompleted audit event for run \
+                         '{run_id}': {e}"
+                    );
+                }
                 println!("run {run_id}: completed");
                 return Ok(0);
             }
             AdvanceRunStatus::Failed => {
+                if let Err(e) = WorkflowRunner::append_wait_terminal_audit_event(&store, &run_id) {
+                    eprintln!(
+                        "warning: failed to append WorkflowCompleted audit event for run \
+                         '{run_id}': {e}"
+                    );
+                }
                 println!("run {run_id}: failed");
                 return Ok(1);
             }
