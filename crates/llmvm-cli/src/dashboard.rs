@@ -79,12 +79,8 @@ pub async fn run_serve(
         Some(msg)
     };
 
-    let state = DashboardState {
-        store: Arc::new(Mutex::new(store)),
-        bind_warning,
-    };
-
-    let app = build_router(state);
+    let store_handle = Arc::new(Mutex::new(store));
+    let app = dashboard_routes(store_handle, bind_warning);
 
     let addr = std::net::SocketAddr::new(bind, port);
     eprintln!("dashboard serving on http://{addr}");
@@ -95,7 +91,23 @@ pub async fn run_serve(
     Ok(())
 }
 
-fn build_router(state: DashboardState) -> Router {
+/// Build the dashboard's read-only route surface. Public so the
+/// coordinator (sprint `0.5-S2d`) can `.merge(...)` these onto
+/// its own router and serve fleet visibility + distributed
+/// dispatch from a single listener.
+///
+/// Takes primitive args (the shared store handle and an
+/// optional `bind_warning` string for the banner) instead of
+/// the internal `DashboardState` so the coordinator doesn't
+/// have to reach into the dashboard's internals.
+pub fn dashboard_routes(
+    store: Arc<Mutex<RunCheckpointStore>>,
+    bind_warning: Option<String>,
+) -> Router {
+    let state = DashboardState {
+        store,
+        bind_warning,
+    };
     Router::new()
         .route("/", get(handle_index))
         .route("/runs/{id}", get(handle_run_detail))

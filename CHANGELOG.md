@@ -8,6 +8,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Coordinator + dashboard listener-merge** (sprint
+  `0.5-S2d`). The dashboard's read-only routes (`/`,
+  `/runs/:id`, `/api/runs`, `/api/runs/:id`) are now served
+  on the same listener as the coordinator's worker routes
+  (`/api/workers/...`, `/api/work/...`). Operators get fleet
+  visibility AND distributed dispatch from a single
+  `boruna coordinator serve` invocation — one process, one
+  port, one connection to runs.db.
+
+  The merge is automatic — anyone running the coordinator
+  gets the dashboard routes too. The standalone
+  `boruna dashboard serve` keeps working unchanged for
+  read-only deployments without the coordinator overhead.
+
+  The coordinator's `bind_warning` flows into the dashboard
+  builder so the red HTML banner correctly fires when the
+  coordinator is bound to a non-loopback address. Operators
+  can't accidentally expose the coordinator without the
+  dashboard banner warning them.
+
+  Refactor: `dashboard::dashboard_routes(store, bind_warning)`
+  is now a `pub` route builder taking primitive args. The
+  coordinator merges it onto its own router. Zero
+  copy-paste; both the standalone dashboard and the
+  coordinator use the same builder.
+
+  3 new CLI integration tests cover the merged surface.
+
 - **Coordinator background lease-expiry sweep** (sprint
   `0.5-S2c`). The coordinator now runs a tokio interval task
   that wakes up every `--sweep-interval-ms` (default 30 s)
