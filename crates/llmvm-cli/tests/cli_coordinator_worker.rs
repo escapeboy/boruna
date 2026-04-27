@@ -1406,3 +1406,160 @@ fn coord_without_secret_accepts_unauth_request_no_regression() {
     kill_child(child);
     assert_eq!(code, 200);
 }
+
+// ── Sprint 0.5-S4 — `workflow run --coordinator` end-to-end ──
+
+fn write_single_step_workflow(wf_dir: &Path, body: &str) {
+    std::fs::create_dir_all(wf_dir).unwrap();
+    std::fs::write(wf_dir.join("s1.ax"), body).unwrap();
+    std::fs::write(
+        wf_dir.join("workflow.json"),
+        r#"{
+            "schema_version": 1,
+            "name": "remote-run-test",
+            "version": "1.0.0",
+            "steps": {
+                "s1": {"kind": "source", "source": "s1.ax", "capabilities": [], "outputs": {"result": "Int"}}
+            },
+            "edges": []
+        }"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cli_workflow_run_coordinator_drives_remote_run_to_completion() {
+    // End-to-end: operator's CLI submits a workflow over HTTP to a
+    // remote coordinator (different data-dir), the coordinator
+    // dispatches it to a connected worker, the worker runs the
+    // step, and the CLI's polling loop sees Completed and exits 0.
+    let tmp = tempfile::tempdir().unwrap();
+    let coord_data = tmp.path().join("coord-data");
+    std::fs::create_dir_all(&coord_data).unwrap();
+    // Coordinator's `serve` requires runs.db to already exist (the
+    // pre-0.5-S4 model assumed an operator had submitted at least
+    // one workflow locally first). Touch the schema by opening the
+    // store and dropping it.
+    drop(RunCheckpointStore::open(&coord_data.join("runs.db")).unwrap());
+    let wf_dir = tmp.path().join("wf");
+    write_single_step_workflow(&wf_dir, "fn main() -> Int { 7 }\n");
+
+    let (coord_child, port) = spawn_coordinator(&coord_data, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "remote-run-worker", 30_000);
+
+    let out = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--coordinator",
+            &coord_url,
+            "--coord-poll-interval-ms",
+            "200",
+            "--coord-max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke boruna workflow run --coordinator");
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "workflow run --coordinator failed:\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        stdout.contains("step s1: completed") && stdout.contains(": completed"),
+        "expected completion lines in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn cli_workflow_run_coordinator_exits_1_on_step_failure() {
+    // Mirror of the success case but with a step source that fails
+    // at runtime. Exit code must be 1 (Failed), not 2 (timeout).
+    let tmp = tempfile::tempdir().unwrap();
+    let coord_data = tmp.path().join("coord-data");
+    std::fs::create_dir_all(&coord_data).unwrap();
+    // Coordinator's `serve` requires runs.db to already exist (the
+    // pre-0.5-S4 model assumed an operator had submitted at least
+    // one workflow locally first). Touch the schema by opening the
+    // store and dropping it.
+    drop(RunCheckpointStore::open(&coord_data.join("runs.db")).unwrap());
+    let wf_dir = tmp.path().join("wf");
+    // Use match exhaustion to force a runtime failure.
+    write_single_step_workflow(
+        &wf_dir,
+        r#"fn main() -> Int { match 99 { 0 => 0, 1 => 1 } }
+"#,
+    );
+
+    let (coord_child, port) = spawn_coordinator(&coord_data, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "remote-run-fail-worker", 30_000);
+
+    let out = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--coordinator",
+            &coord_url,
+            "--coord-poll-interval-ms",
+            "200",
+            "--coord-max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke boruna workflow run --coordinator");
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected exit 1 (Failed), got {:?}\nstdout={stdout}",
+        out.status.code()
+    );
+    assert!(
+        stdout.contains("failed"),
+        "expected 'failed' line in stdout, got: {stdout}"
+    );
+}
+
+#[test]
+fn cli_workflow_run_coordinator_rejects_data_dir_combo() {
+    // --coordinator and --data-dir are mutually exclusive at the
+    // clap level. clap should refuse before any side effect.
+    let tmp = tempfile::tempdir().unwrap();
+    let wf_dir = tmp.path().join("wf");
+    write_single_step_workflow(&wf_dir, "fn main() -> Int { 1 }\n");
+    let out = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--coordinator",
+            "http://127.0.0.1:1",
+            "--data-dir",
+            tmp.path().to_str().unwrap(),
+        ])
+        .output()
+        .expect("invoke boruna workflow run");
+    assert!(
+        !out.status.success(),
+        "expected clap to reject --coordinator + --data-dir"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot be used with") || stderr.contains("conflicts"),
+        "expected conflict error, got: {stderr}"
+    );
+}

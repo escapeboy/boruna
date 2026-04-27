@@ -540,6 +540,44 @@ enum WorkflowCommand {
         /// deferred to a future sprint.
         #[arg(long, conflicts_with_all = ["ephemeral", "skip_if_running"])]
         submit_only: bool,
+        /// Submit the workflow to a remote coordinator over HTTP and
+        /// poll for terminal status (sprint `0.5-S4`). The CI runner
+        /// does NOT need filesystem access to the cluster's data-dir;
+        /// the workflow.json + every Source-kind step's `.ax` body
+        /// are inlined into the submit payload. Bearer token via
+        /// `--coord-token` or the `BORUNA_TOKEN` env var when the
+        /// cluster is auth-gated (0.5-S3).
+        ///
+        /// Mutually exclusive with `--data-dir` (different
+        /// operational model entirely), `--ephemeral`,
+        /// `--submit-only`, and `--skip-if-running`. Exit codes
+        /// match `coordinator wait`: `0` Completed, `1` Failed,
+        /// `2` timeout / submit-failed.
+        #[arg(
+            long,
+            value_name = "URL",
+            conflicts_with_all = ["data_dir", "ephemeral", "submit_only", "skip_if_running"]
+        )]
+        coordinator: Option<String>,
+        /// Bearer token for the coordinator's auth middleware (sprint
+        /// `0.5-S3`). Only meaningful with `--coordinator`. Falls back
+        /// to the `BORUNA_TOKEN` env var. Omit if the cluster is
+        /// loopback / unauthenticated.
+        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
+        coord_token: Option<String>,
+        /// How often to poll `/api/runs/{run_id}/status` when running
+        /// against `--coordinator`. Defaults to `1000` ms; clamped
+        /// silently to a `500`-ms floor matching `coordinator wait`.
+        /// Ignored without `--coordinator`.
+        #[arg(long, default_value = "1000")]
+        coord_poll_interval_ms: u64,
+        /// Maximum total wall-clock time to wait for terminal status
+        /// in `--coordinator` mode. `0` (default) means wait
+        /// indefinitely — same posture as `coordinator wait`. On
+        /// timeout the CLI exits with `2` and the run keeps going
+        /// on the cluster.
+        #[arg(long, default_value = "0")]
+        coord_max_wait_secs: u64,
         /// CI/CD safety check: refuse to run if the on-disk def's
         /// workflow_hash doesn't match this value (case-insensitive
         /// 64-char SHA-256 hex). Capture via `boruna workflow
@@ -2158,6 +2196,10 @@ fn run_workflow(
             concurrency,
             skip_if_running,
             submit_only,
+            coordinator,
+            coord_token,
+            coord_poll_interval_ms,
+            coord_max_wait_secs,
             expect_workflow_hash,
         } => {
             if concurrency == 0 {
@@ -2187,6 +2229,37 @@ fn run_workflow(
                     boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?
                 }
             };
+
+            // Sprint 0.5-S4: --coordinator branches off the local-
+            // run path entirely. Build the inline submit payload,
+            // POST it, then poll status until terminal. Exit with
+            // the conventional code (0/1/2) and skip the rest of
+            // the local-run flow.
+            if let Some(coord_url) = coordinator {
+                #[cfg(feature = "serve")]
+                {
+                    let exit = crate::coordinator::run_remote(
+                        &def,
+                        &dir,
+                        &policy_obj,
+                        &coord_url,
+                        coord_token.as_deref(),
+                        coord_poll_interval_ms,
+                        coord_max_wait_secs,
+                    )?;
+                    process::exit(exit);
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    let _ = (
+                        coord_url,
+                        coord_token,
+                        coord_poll_interval_ms,
+                        coord_max_wait_secs,
+                    );
+                    return Err("`workflow run --coordinator` requires the `serve` feature".into());
+                }
+            }
 
             let options = RunOptions {
                 policy: Some(policy_obj.clone()),

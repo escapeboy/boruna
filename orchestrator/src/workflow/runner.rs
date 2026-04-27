@@ -626,6 +626,149 @@ impl WorkflowRunner {
         Ok(out)
     }
 
+    /// Submit a workflow with inline step sources to the persistent
+    /// store, returning the assigned `run_id`. Sprint `0.5-S4`:
+    /// powers the coordinator's `POST /api/runs/submit` endpoint, so
+    /// CI runners can drive remote clusters without sharing a
+    /// `data-dir`.
+    ///
+    /// Behaviorally identical to `prepare_persistent_run` + the
+    /// `submit_only` branch of [`Self::run_persistent`], with two
+    /// differences:
+    ///
+    /// 1. **Step sources come from the caller, not disk.** The HTTP
+    ///    submit payload inlines every Source-kind step's `.ax`
+    ///    body. We validate per-step (256 KiB) and aggregate (4 MiB)
+    ///    size caps that match [`Self::collect_step_sources`].
+    /// 2. **`workflow_dir` is empty in metadata.** The remote
+    ///    cluster never reads from operator-side paths; downstream
+    ///    code that touches `workflow_dir` is gated on
+    ///    `step_sources` being populated, which it always is here.
+    ///
+    /// Validation, the WorkflowStarted audit-event genesis, and the
+    /// initial-wave Pending checkpoint insertion all match
+    /// submit-only mode so the coordinator can dispatch work to
+    /// connected workers immediately.
+    #[cfg(feature = "persist-sqlite")]
+    pub fn submit_with_inline_sources(
+        def: &WorkflowDef,
+        step_sources: BTreeMap<String, String>,
+        policy: &boruna_vm::Policy,
+        store: &RunCheckpointStore,
+    ) -> Result<String, WorkflowRunError> {
+        use crate::workflow::definition::StepKind;
+
+        WorkflowValidator::validate(def).map_err(|errors| {
+            WorkflowRunError::Validation(
+                errors
+                    .into_iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+
+        // Every Source-kind step in the def must be covered by an
+        // entry in `step_sources`; missing entries would mean the
+        // remote cluster has no .ax to compile when a worker claims
+        // the step. Symmetric to collect_step_sources reading every
+        // such step from disk.
+        for (step_id, step_def) in &def.steps {
+            if let StepKind::Source { .. } = &step_def.kind {
+                if !step_sources.contains_key(step_id) {
+                    return Err(WorkflowRunError::Validation(format!(
+                        "submit-with-inline-sources: missing inline source for \
+                         Source-kind step '{step_id}'"
+                    )));
+                }
+            }
+        }
+
+        // Caps mirror collect_step_sources / embed_workflow_def_for_metadata.
+        const MAX_PER_STEP_BYTES: usize = 256 * 1024;
+        const MAX_AGGREGATE_BYTES: usize = 4 * 1024 * 1024;
+        const MAX_WORKFLOW_DEF_BYTES: usize = 1024 * 1024;
+        let mut total_bytes: usize = 0;
+        for (step_id, body) in &step_sources {
+            if body.len() > MAX_PER_STEP_BYTES {
+                return Err(WorkflowRunError::Validation(format!(
+                    "step '{step_id}' inline source is {} bytes; exceeds per-step cap of {} bytes",
+                    body.len(),
+                    MAX_PER_STEP_BYTES
+                )));
+            }
+            total_bytes = total_bytes.saturating_add(body.len());
+            if total_bytes > MAX_AGGREGATE_BYTES {
+                return Err(WorkflowRunError::Validation(format!(
+                    "aggregate inline step_sources size exceeds cap of {} bytes \
+                     (after step '{step_id}')",
+                    MAX_AGGREGATE_BYTES
+                )));
+            }
+        }
+        let def_bytes = serde_json::to_string(def)
+            .map_err(|e| WorkflowRunError::Internal(format!("workflow_def serialize: {e}")))?
+            .len();
+        if def_bytes > MAX_WORKFLOW_DEF_BYTES {
+            return Err(WorkflowRunError::Validation(format!(
+                "workflow_def serialized to {def_bytes} bytes; exceeds cap of \
+                 {MAX_WORKFLOW_DEF_BYTES} bytes"
+            )));
+        }
+
+        let workflow_hash = Self::workflow_hash_from_def(def);
+        let inputs_hash = Self::ephemeral_inputs_hash();
+        let policy_json = serde_json::to_string(policy)
+            .map_err(|e| WorkflowRunError::Internal(format!("policy serialize: {e}")))?;
+        let metadata = PersistedRunMetadata {
+            // Empty: the cluster never reads from operator-side paths
+            // because step_sources covers every dispatchable step.
+            workflow_dir: String::new(),
+            inputs_hash: inputs_hash.clone(),
+            boruna_version: env!("CARGO_PKG_VERSION").to_string(),
+            approvals: BTreeMap::new(),
+            triggers: BTreeMap::new(),
+            audit_log: Vec::new(),
+            step_sources,
+            workflow_def: Some(def.clone()),
+        };
+        let metadata_json = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
+
+        let run_id = store
+            .insert_run_with_derived_id(
+                &def.name,
+                &workflow_hash,
+                &inputs_hash,
+                &policy_json,
+                &metadata_json,
+                now_unix_ms(),
+            )
+            .map_err(WorkflowRunError::from)?;
+
+        Self::insert_initial_wave_pending_checkpoints(def, store, &run_id)?;
+
+        // Best-effort genesis audit event — same posture as
+        // submit-only and execute_after_insert. CAS exhaustion logs
+        // and continues; the run still proceeds.
+        let policy_hash_seed = serde_json::to_string(&Some(policy.clone())).unwrap_or_default();
+        if let Err(e) = append_audit_event(
+            store,
+            &run_id,
+            crate::audit::AuditEvent::WorkflowStarted {
+                workflow_hash: Self::workflow_hash_from_def(def),
+                policy_hash: sha256_hex(&policy_hash_seed),
+            },
+        ) {
+            eprintln!(
+                "warning: failed to append WorkflowStarted audit event for inline-submit run \
+                 '{run_id}': {e}"
+            );
+        }
+
+        Ok(run_id)
+    }
+
     /// Submit-only initial-wave Pending checkpoint insertion
     /// (sprint `0.5-S2e`). For the first topological level, write
     /// a Pending step checkpoint for every `Source`-kind step.

@@ -97,9 +97,9 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 ### (a) Distributed-execution closure
 
 - [x] **`workflow run --submit-only`** + **`coordinator wait`** — end-to-end multi-wave (0.5-S2e/f)
-- [ ] **0.5-S3 — Authentication** — shared-secret bearer token (mTLS deferred to 0.6.x). MUST land before any non-loopback bind is recommended. Gating for production deployments.
-- [ ] **0.5-S4 — `workflow run --coordinator <url>`** — combines submit + wait in one command for CI workflows
-- [ ] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
+- [x] **0.5-S3 — Authentication** — shared-secret bearer token (mTLS deferred to 0.6.x). MUST land before any non-loopback bind is recommended. Gating for production deployments.
+- [x] **0.5-S4 — `workflow run --coordinator <url>`** — combines submit + wait in one command for CI workflows
+- [x] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
 - [ ] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
 - [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
 - [ ] **Coordinator HA / failover** — eliminates the single-coord SPOF; worker leases survive coord failover

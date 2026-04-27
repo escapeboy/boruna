@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -358,6 +358,11 @@ pub fn build_router(state: CoordinatorState) -> Router {
         .route("/api/work/complete", post(handle_complete))
         .route("/api/work/fail", post(handle_fail))
         .route("/api/work/extend-lease", post(handle_extend_lease))
+        // Sprint 0.5-S4: operator-facing routes for CI runners that
+        // do not share a data-dir with the cluster. Same auth
+        // middleware as worker routes.
+        .route("/api/runs/submit", post(handle_submit_run))
+        .route("/api/runs/{run_id}/status", get(handle_run_status))
         // The 8 MiB DefaultBodyLimit applies to coord routes
         // ONLY (not dashboard routes) because Axum's per-
         // router layer scoping means layers attached pre-merge
@@ -457,6 +462,40 @@ pub struct ExtendLeaseRequest {
 pub struct ExtendLeaseResponse {
     pub protocol_version: u32,
     pub new_lease_expires_at_ms: i64,
+}
+
+/// Sprint `0.5-S4` — operator-side `POST /api/runs/submit` payload.
+/// Inlines the full workflow definition + every Source-kind step's
+/// `.ax` body so the coordinator's data-dir is the single source of
+/// truth (CI runner does not need shared filesystem access).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SubmitRunRequest {
+    pub workflow: boruna_orchestrator::workflow::definition::WorkflowDef,
+    #[serde(default)]
+    pub step_sources: BTreeMap<String, String>,
+    #[serde(default)]
+    pub policy: Option<boruna_vm::Policy>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SubmitRunResponse {
+    pub protocol_version: u32,
+    pub run_id: String,
+    pub workflow_hash: String,
+}
+
+/// Sprint `0.5-S4` — `GET /api/runs/{run_id}/status` response.
+/// Per-step status map mirrors the format `coordinator wait` uses
+/// for stdout transition lines so a future HTTP-mode `wait` can
+/// reuse the same wire shape.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RunStatusResponse {
+    pub protocol_version: u32,
+    pub run_id: String,
+    pub status: String,
+    pub step_statuses: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_msg: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -904,6 +943,177 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
+// ── operator-facing submit + status (sprint 0.5-S4) ──
+
+/// `POST /api/runs/submit` — register a workflow run from a CI
+/// runner that does NOT share a `data-dir` with the cluster. Body
+/// inlines the workflow def + every Source-kind step's `.ax` body;
+/// the cluster persists everything into `metadata.audit_log`'s
+/// surrounding metadata blob (same surface that `submit-only` mode
+/// populates from disk). Auth: bearer-gated by the existing
+/// `auth_middleware`. Failures map to the same `error_kind`
+/// taxonomy used by other coordinator routes, plus three new kinds
+/// scoped to this surface (`coord.submit.*`).
+async fn handle_submit_run(
+    State(state): State<CoordinatorState>,
+    Json(req): Json<SubmitRunRequest>,
+) -> Response {
+    use boruna_orchestrator::workflow::WorkflowRunner;
+    let policy = req.policy.unwrap_or_default();
+    let store = state.store.clone();
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
+    };
+    let result = WorkflowRunner::submit_with_inline_sources(
+        &req.workflow,
+        req.step_sources,
+        &policy,
+        &store_guard,
+    );
+    drop(store_guard);
+    match result {
+        Ok(run_id) => {
+            let workflow_hash = WorkflowRunner::workflow_hash_from_def(&req.workflow);
+            (
+                StatusCode::OK,
+                Json(SubmitRunResponse {
+                    protocol_version: PROTOCOL_VERSION,
+                    run_id,
+                    workflow_hash,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => match e {
+            boruna_orchestrator::workflow::WorkflowRunError::Validation(msg) => respond_err(
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new("coord.submit.invalid_workflow", msg),
+            ),
+            boruna_orchestrator::workflow::WorkflowRunError::Internal(msg) => respond_err(
+                StatusCode::BAD_REQUEST,
+                ErrorBody::new("coord.submit.bad_payload", msg),
+            ),
+            other => internal_error(&format!("submit failed: {other}")),
+        },
+    }
+}
+
+/// `GET /api/runs/{run_id}/status` — return a compact status
+/// snapshot for the named run. The shape (`status` string +
+/// per-step status map + optional `error_msg`) matches what
+/// `coordinator wait`'s stdout reflects, so a future HTTP-mode
+/// `wait` can reuse the same wire format. 404 with stable
+/// `coord.runs.not_found` when the run_id isn't in the store.
+///
+/// The handler also advances the run one tick before reading
+/// state. In the local-data-dir model `coordinator wait` was the
+/// thing that drove `advance_run_one_tick`; in the remote-submit
+/// model the operator is polling over HTTP and there is no
+/// separate wait driver. Folding `advance` into the status read
+/// makes the operator's poll the wait driver. Concurrent pollers
+/// race-safely converge — the same property locked by the
+/// `cli_coordinator_wait_two_concurrent_waits_converge` regression
+/// test from the 0.5-S2f cleanup.
+async fn handle_run_status(
+    State(state): State<CoordinatorState>,
+    Path(run_id): Path<String>,
+) -> Response {
+    use boruna_orchestrator::workflow::{AdvanceRunStatus, WorkflowRunner};
+
+    let store = state.store.clone();
+    let store_guard = match store.lock() {
+        Ok(g) => g,
+        Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
+    };
+
+    // Confirm the run exists before advancing — advance_run_one_tick
+    // returns an Internal error for unknown run ids; we want to
+    // produce the stable `coord.runs.not_found` taxonomy entry, so
+    // dispatch on existence first.
+    match store_guard.get_run(&run_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return respond_err(
+                StatusCode::NOT_FOUND,
+                ErrorBody::new("coord.runs.not_found", format!("no run with id '{run_id}'")),
+            );
+        }
+        Err(e) => {
+            return internal_error(&format!("read run: {e}"));
+        }
+    }
+
+    // Drive the run forward. In the local-data-dir model
+    // `coordinator wait` was the thing that did this; in the
+    // remote-submit model the operator is polling over HTTP and
+    // there is no separate driver. Folding `advance` into the
+    // status read makes the operator's poll the wait driver.
+    // Concurrent pollers race-safely converge — same property
+    // locked by the `cli_coordinator_wait_two_concurrent_waits_converge`
+    // regression test from the 0.5-S2f cleanup.
+    let advance = match WorkflowRunner::advance_run_one_tick(&store_guard, &run_id) {
+        Ok(r) => r,
+        Err(e) => {
+            return internal_error(&format!("advance run: {e}"));
+        }
+    };
+    let cps = match store_guard.list_step_checkpoints(&run_id) {
+        Ok(cs) => cs,
+        Err(e) => {
+            return internal_error(&format!("read checkpoints: {e}"));
+        }
+    };
+
+    let mut step_statuses = BTreeMap::new();
+    let mut error_msg: Option<String> = None;
+    for cp in &cps {
+        step_statuses.insert(
+            cp.step_id.clone(),
+            persist_status_str(cp.status).to_string(),
+        );
+        if cp.status == StepStatus::Failed && error_msg.is_none() {
+            error_msg.clone_from(&cp.error_msg);
+        }
+    }
+
+    // Surface the *computed* run status from advance_run_one_tick
+    // — the same value `coordinator wait` consults to exit. The
+    // run row's `status` column is operationally maintained by
+    // the in-process runner only; in distributed mode it doesn't
+    // transition. Mirroring the wait driver here keeps wire and
+    // local semantics aligned.
+    let status_str = match advance.run_status {
+        AdvanceRunStatus::Running => "running",
+        AdvanceRunStatus::Completed => "completed",
+        AdvanceRunStatus::Failed => "failed",
+    }
+    .to_string();
+
+    // Terminal: append closing WorkflowCompleted audit event
+    // idempotently — same posture as `coordinator wait`'s terminal
+    // exit paths. Without this, runs driven entirely through the
+    // remote API would have no closing audit chain entry.
+    if matches!(
+        advance.run_status,
+        AdvanceRunStatus::Completed | AdvanceRunStatus::Failed
+    ) {
+        if let Err(e) = WorkflowRunner::append_wait_terminal_audit_event(&store_guard, &run_id) {
+            eprintln!("warning: failed to append terminal audit event for '{run_id}': {e}");
+        }
+    }
+    drop(store_guard);
+
+    Json(RunStatusResponse {
+        protocol_version: PROTOCOL_VERSION,
+        run_id,
+        status: status_str,
+        step_statuses,
+        error_msg,
+    })
+    .into_response()
+}
+
 // Helper accessors for tests / future dashboard merge.
 #[allow(dead_code)]
 impl CoordinatorState {
@@ -913,6 +1123,175 @@ impl CoordinatorState {
     pub fn bind_warning(&self) -> Option<&str> {
         self.config.bind_warning.as_deref()
     }
+}
+
+// ── workflow run --coordinator client (sprint 0.5-S4) ──
+
+/// Drive the operator-side flow for `boruna workflow run --coordinator`:
+/// 1. Read `workflow_dir/workflow.json` + each Source-step's `.ax`.
+/// 2. POST `/api/runs/submit` with the inlined payload.
+/// 3. Poll `/api/runs/{run_id}/status` until terminal.
+/// 4. Print step transitions to stdout (matching `coordinator wait`'s
+///    line-per-transition format).
+/// 5. Return an exit code: `0` Completed, `1` Failed, `2` Timeout.
+///
+/// `coord_url` may end with or without a trailing slash; we normalize.
+/// `coord_token` is sent as `Authorization: Bearer <token>` when
+/// `Some`, omitted otherwise — operators running an unauthenticated
+/// loopback coordinator can pass `None` (or omit the env var).
+pub fn run_remote(
+    def: &boruna_orchestrator::workflow::definition::WorkflowDef,
+    workflow_dir: &std::path::Path,
+    policy: &boruna_vm::Policy,
+    coord_url: &str,
+    coord_token: Option<&str>,
+    poll_interval_ms: u64,
+    max_wait_secs: u64,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    use boruna_orchestrator::workflow::definition::StepKind;
+
+    // 1. Collect step sources from disk.
+    let mut step_sources: BTreeMap<String, String> = BTreeMap::new();
+    for (step_id, step_def) in &def.steps {
+        if let StepKind::Source { source } = &step_def.kind {
+            let path = workflow_dir.join(source);
+            let body = std::fs::read_to_string(&path).map_err(|e| {
+                format!(
+                    "step '{step_id}' source '{}' read failed: {e}",
+                    path.display()
+                )
+            })?;
+            step_sources.insert(step_id.clone(), body);
+        }
+    }
+
+    // 2. Build URLs. The submit URL is fixed; the status URL needs a
+    //    placeholder for the run_id we don't yet know.
+    let base = coord_url.trim_end_matches('/').to_string();
+    let submit_url = format!("{base}/api/runs/submit");
+
+    // 3. Synchronous Tokio runtime — `reqwest` here is the async
+    //    client (the same one the worker uses) and we want a simple
+    //    synchronous CLI surface. A short-lived current-thread
+    //    runtime keeps memory + thread overhead minimal.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+    let submit = SubmitRunRequest {
+        workflow: def.clone(),
+        step_sources,
+        policy: Some(policy.clone()),
+    };
+
+    eprintln!("workflow run --coordinator");
+    eprintln!("    coordinator: {base}");
+    eprintln!("    workflow:    {}", def.name);
+    eprintln!("    poll-ms:     {poll_interval_ms}");
+    if max_wait_secs > 0 {
+        eprintln!("    max-wait-s:  {max_wait_secs}");
+    }
+
+    // 4. Submit + poll under the runtime.
+    rt.block_on(async move {
+        let mut req = client.post(&submit_url).json(&submit);
+        if let Some(tok) = coord_token {
+            req = req.bearer_auth(tok);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("submit failed: HTTP error: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err::<i32, Box<dyn std::error::Error>>(
+                format!("submit failed: {status}: {body}").into(),
+            );
+        }
+        let submit_resp: SubmitRunResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("submit response not parseable as JSON: {e}"))?;
+        let run_id = submit_resp.run_id;
+        eprintln!("    run_id:      {run_id}");
+        eprintln!("    workflow_hash: {}", submit_resp.workflow_hash);
+
+        let status_url = format!("{base}/api/runs/{run_id}/status");
+        let effective_poll_ms = poll_interval_ms.max(MIN_WAIT_POLL_INTERVAL_MS);
+        if poll_interval_ms < MIN_WAIT_POLL_INTERVAL_MS {
+            eprintln!(
+                "[WARNING] --coord-poll-interval-ms {poll_interval_ms} below minimum \
+                 {MIN_WAIT_POLL_INTERVAL_MS}; using {effective_poll_ms} ms"
+            );
+        }
+
+        let started = std::time::Instant::now();
+        let mut prev: BTreeMap<String, String> = BTreeMap::new();
+        loop {
+            let mut req = client.get(&status_url);
+            if let Some(tok) = coord_token {
+                req = req.bearer_auth(tok);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("status poll failed: {e}"))?;
+            if !resp.status().is_success() {
+                let s = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err::<i32, Box<dyn std::error::Error>>(
+                    format!("status poll: {s}: {body}").into(),
+                );
+            }
+            let snapshot: RunStatusResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("status response not parseable as JSON: {e}"))?;
+
+            for (sid, sstatus) in &snapshot.step_statuses {
+                match prev.get(sid) {
+                    Some(p) if p == sstatus => {}
+                    _ => {
+                        println!("step {sid}: {sstatus}");
+                        prev.insert(sid.clone(), sstatus.clone());
+                    }
+                }
+            }
+
+            match snapshot.status.as_str() {
+                "completed" => {
+                    println!("run {run_id}: completed");
+                    return Ok::<i32, Box<dyn std::error::Error>>(0);
+                }
+                "failed" => {
+                    if let Some(msg) = &snapshot.error_msg {
+                        println!("run {run_id}: failed — {msg}");
+                    } else {
+                        println!("run {run_id}: failed");
+                    }
+                    return Ok(1);
+                }
+                _ => {}
+            }
+
+            if max_wait_secs > 0 && started.elapsed().as_secs() >= max_wait_secs {
+                eprintln!(
+                    "run {run_id}: exceeded --coord-max-wait-secs={max_wait_secs}; \
+                     remote run continues; CLI exiting with 2"
+                );
+                return Ok(2);
+            }
+
+            tokio::time::sleep(Duration::from_millis(effective_poll_ms)).await;
+        }
+    })
 }
 
 // ── coordinator wait (sprint 0.5-S2f) ──
@@ -1429,5 +1808,156 @@ mod tests {
         let new_deadline = v["new_lease_expires_at_ms"].as_i64().unwrap();
         // Capped at 600s: deadline should be within ~601s of now.
         assert!(new_deadline <= now_before + 600_001 + 5);
+    }
+
+    // ── Sprint 0.5-S4 — submit + status handler tests ──
+
+    fn make_submit_workflow() -> serde_json::Value {
+        // Minimal one-step Source workflow. Inline source compiles
+        // to `42`. The handler doesn't run the workflow, only
+        // registers it; compilability of the source is the
+        // worker's concern.
+        serde_json::json!({
+            "name": "wf-s4",
+            "version": "1.0.0",
+            "steps": {
+                "s1": {
+                    "kind": "source",
+                    "source": "s1.ax"
+                }
+            },
+            "edges": []
+        })
+    }
+
+    #[tokio::test]
+    async fn submit_run_inserts_run_and_returns_run_id() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "workflow": make_submit_workflow(),
+            "step_sources": { "s1": "fn main() -> Int { 42 }" }
+        });
+        let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
+        assert_eq!(status, StatusCode::OK, "body: {v}");
+        let run_id = v["run_id"].as_str().expect("run_id present").to_string();
+        assert_eq!(run_id.len(), 16, "run_id is 16-hex deterministic");
+        assert_eq!(v["protocol_version"], 1);
+        assert!(!v["workflow_hash"].as_str().unwrap().is_empty());
+
+        // Run row is now in the store with the initial Pending checkpoint.
+        let store = state.store.lock().unwrap();
+        let row = store.get_run(&run_id).unwrap().expect("run inserted");
+        assert_eq!(row.workflow_name, "wf-s4");
+        let cps = store.list_step_checkpoints(&run_id).unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].step_id, "s1");
+        assert_eq!(cps[0].status, StepStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn submit_run_rejects_workflow_with_missing_step_source() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "workflow": make_submit_workflow(),
+            "step_sources": {}  // s1 source missing
+        });
+        let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.submit.invalid_workflow");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap()
+                .contains("missing inline source"),
+            "expected missing-source error, got: {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_run_rejects_oversized_step_source() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        // 257 KiB — over the 256 KiB per-step cap.
+        let big = "x".repeat(257 * 1024);
+        let body = serde_json::json!({
+            "workflow": make_submit_workflow(),
+            "step_sources": { "s1": big }
+        });
+        let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.submit.invalid_workflow");
+        assert!(
+            v["message"]
+                .as_str()
+                .unwrap()
+                .contains("exceeds per-step cap"),
+            "expected size-cap error, got: {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_status_returns_404_for_unknown_run_id() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/runs/nope1234nope1234/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.runs.not_found");
+    }
+
+    #[tokio::test]
+    async fn run_status_reflects_submitted_run() {
+        // Submit a run, then GET its status; the response must
+        // mirror the row + initial Pending checkpoint.
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "workflow": make_submit_workflow(),
+            "step_sources": { "s1": "fn main() -> Int { 42 }" }
+        });
+        let (_, v) = post_json(&app, "/api/runs/submit", &body).await;
+        let run_id = v["run_id"].as_str().unwrap().to_string();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/runs/{run_id}/status"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let snap: RunStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(snap.run_id, run_id);
+        assert_eq!(snap.status, "running");
+        assert_eq!(snap.step_statuses.get("s1").unwrap(), "pending");
+        assert!(snap.error_msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_run_rejects_unauthenticated_when_secret_configured() {
+        // Auth middleware (sprint 0.5-S3) must guard the new
+        // submit endpoint just like the worker endpoints.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("super-secret".into());
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "workflow": make_submit_workflow(),
+            "step_sources": { "s1": "fn main() -> Int { 42 }" }
+        });
+        let (status, v) = post_json(&app, "/api/runs/submit", &body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(v["error_kind"], "coord.unauthorized");
     }
 }

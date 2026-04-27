@@ -8,7 +8,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Carried-debt cleanup pass** (this session). Three small
+- **`boruna workflow run --coordinator <url>`** (sprint
+  `0.5-S4`). Submits a workflow over HTTP to a remote
+  coordinator and polls for terminal status — eliminates the
+  shared-`data-dir` requirement for CI workflows. Workflow
+  definition + every Source-kind step's `.ax` body are inlined
+  into the submit payload. Bearer token via `--coord-token` or
+  the `BORUNA_TOKEN` env var. Exit codes match `coordinator
+  wait`: `0` Completed, `1` Failed, `2` timeout / submit-failed.
+  Two new coordinator HTTP routes: `POST /api/runs/submit` and
+  `GET /api/runs/{run_id}/status`, both bearer-gated by the
+  same auth middleware as worker endpoints. Status reads
+  fold `advance_run_one_tick` into the request so the
+  operator's poll IS the wait driver. Six handler unit tests +
+  three end-to-end CLI integration tests. New `error_kind`
+  taxonomy entries: `coord.submit.invalid_workflow`,
+  `coord.submit.bad_payload`, `coord.runs.not_found`. See
+  `docs/design-0.5-s4-coordinator-flag.md`.
+
+- **Sprint A debt cleanup** (preceding commit `chore/0.5-debt-cleanup-2`).
+  Five carried-forward debts cleared in one pass:
+  eliminate `unsafe { env::set_var }` (production CLI + 2
+  tests) by threading env name explicitly through
+  `resolve_data_dir`/`metrics::export`; new
+  `error_class::TRANSIENT_NETWORK` taxonomy entry detected
+  from both `VmError::AssertionFailed` and wire-level
+  `error_msg` strings; `AuditLog::from_entries_verified`
+  called at evidence-bundle creation to catch direct sqlite3
+  tamper of `metadata.audit_log`; new Prometheus
+  `boruna_workflow_run_duration_seconds` histogram for p50/p95/p99
+  dashboards; five drift-detection tests for
+  `docs/reference/policy.schema.json` (caught real drift —
+  schema was missing `step.input` capability, fixed).
+
+- **Carried-debt cleanup pass** (preceding session). Three small
   fixes from earlier-sprint adversarial-review findings that
   hadn't been addressed:
 
