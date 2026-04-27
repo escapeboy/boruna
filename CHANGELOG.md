@@ -8,6 +8,88 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`boruna coordinator wait <run-id>`** (sprint `0.5-S2f`).
+  Multi-wave workflow advancement for distributed runs. After
+  `workflow run --submit-only` writes the first wave's Pending
+  checkpoints, `coordinator wait` polls runs.db, computes
+  downstream-ready successors as workers complete steps, and
+  writes Pending checkpoints for the next wave — repeating
+  until the run reaches a terminal status.
+
+  ```sh
+  boruna coordinator serve --data-dir /var/lib/boruna &
+  boruna worker run --coordinator http://127.0.0.1:8090 &
+  boruna workflow run examples/workflows/document_processing \
+      --submit-only --data-dir /var/lib/boruna
+  # ↳ submitted run_id=...
+
+  boruna coordinator wait <run-id> --data-dir /var/lib/boruna
+  # ↳ polls every 500 ms, prints transitions per step,
+  #    exits 0 on Completed / 1 on Failed
+  ```
+
+  **Coordinator gains zero new logic** — the "dumb transport"
+  invariant from 0.5-S2c is preserved. All wave advancement is
+  client-side. The wait driver is stateless: kill it at any
+  point and re-invoke; the run continues from the persisted
+  state.
+
+  New flags on `coordinator wait`:
+  - `--poll-interval-ms <ms>` (default 500, minimum 100; values
+    below the floor are clamped with a warning).
+  - `--max-wait-secs <s>` (default 0 = unlimited; useful for CI
+    timeouts).
+
+  Exit codes: `0` Completed, `1` Failed, `2` error (run not
+  found, missing `workflow_def`, unsupported step kind in non-
+  first wave), `3` `--max-wait-secs` exceeded.
+
+  New persistence primitive
+  `RunCheckpointStore::insert_pending_step_if_absent(run_id,
+  step_id) -> bool` uses `INSERT ... ON CONFLICT DO NOTHING`
+  so the wait client can safely write Pending checkpoints
+  even when the coordinator is concurrently transitioning
+  sibling steps. The legacy `upsert_step_checkpoint` (which
+  hard-overwrites status on conflict) is unchanged; the new
+  primitive is the race-safe variant for client-side
+  advancement. Locked by
+  `insert_pending_step_if_absent_preserves_running_row`.
+
+  New field `PersistedRunMetadata::workflow_def:
+  Option<WorkflowDef>` (with `#[serde(default)]` for
+  back-compat). Embedded only when `submit_only=true`; capped
+  at 1 MiB serialized JSON. In-process runs leave it `None` to
+  keep metadata small.
+
+  New `WorkflowRunner::compute_ready_steps(def, status_map)`
+  (pure, deterministic-sort) and `advance_run_one_tick(store,
+  run_id) -> AdvanceResult` (one polling tick).
+
+  Tests: 14 new orchestrator unit tests covering the advance
+  loop, the size cap, race-safe persistence, and idempotency.
+  4 new CLI integration tests: marquee multi-wave end-to-end,
+  kill-and-resume, fail-on-bad-step, immediate-exit-on-already-
+  completed.
+
+  **Known limitations** (deferred to 0.5-S3+):
+  - Retry policies in distributed mode — a step that fails is
+    terminal; the wait driver exits with status 1 even if a
+    retry policy would have succeeded in-process. Distributed
+    retry is a future sprint.
+  - Audit-chain coverage — the wait driver does NOT append
+    `WorkflowCompleted`/`WorkflowFailed` events. Submit-only
+    emits `WorkflowStarted` but the chain has no terminating
+    entry for distributed runs. Auditors should check
+    persisted `runs.status` directly.
+  - Concurrent wait clients — multiple `coordinator wait`
+    processes against the same `run_id` are safe (the race-
+    safe primitive ensures idempotency) but not specifically
+    tested as an integration scenario.
+  - HTTP-based remote wait — the wait client requires
+    filesystem access to `--data-dir`. A truly remote
+    `coordinator wait --coordinator <url>` mode is a future
+    sprint.
+
 - **`boruna workflow run --submit-only`** (sprint `0.5-S2e`).
   The first end-to-end path for dispatching a real workflow
   through a coord+workers cluster. Submit-only mode:

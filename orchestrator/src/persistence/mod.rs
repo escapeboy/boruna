@@ -994,6 +994,41 @@ impl RunCheckpointStore {
         })
     }
 
+    /// Insert a fresh `Pending` step checkpoint **only if no row exists**
+    /// for `(run_id, step_id)`. Returns `true` if a new row was inserted,
+    /// `false` if the row already existed (with any status).
+    ///
+    /// Sprint `0.5-S2f`: introduced for the client-side multi-wave
+    /// advancement loop (`boruna coordinator wait`). Unlike
+    /// [`upsert_step_checkpoint`] — which hard-overwrites `status` and
+    /// clears `worker_id`/`lease_expires_at` on conflict, voiding any
+    /// in-flight worker claim — this method is a no-op on conflict.
+    /// The wait client computes ready steps based on Unknown-status
+    /// (no-row) entries; calling this method with a step that has been
+    /// concurrently claimed by a worker (e.g. between the wait's read
+    /// and write) leaves the Running row untouched.
+    ///
+    /// Locked by `insert_pending_step_if_absent_preserves_running_row`
+    /// regression test in this module.
+    pub fn insert_pending_step_if_absent(
+        &self,
+        run_id: &str,
+        step_id: &str,
+    ) -> Result<bool, PersistenceError> {
+        with_busy_retry(|| {
+            let tx = self.conn.unchecked_transaction()?;
+            let rows = tx.execute(
+                "INSERT INTO step_checkpoints \
+                 (run_id, step_id, status, output_json, output_hash, started_at, ended_at, error_msg, attempt_count) \
+                 VALUES (?1, ?2, 'pending', NULL, NULL, NULL, NULL, NULL, 1) \
+                 ON CONFLICT(run_id, step_id) DO NOTHING",
+                params![run_id, step_id],
+            )?;
+            tx.commit()?;
+            Ok(rows > 0)
+        })
+    }
+
     /// Replay-verified view of a run row. See [`RunRecord`] for why this
     /// exists separately from [`get_run`].
     ///
@@ -2126,6 +2161,64 @@ mod tests {
         let cps = store.list_step_checkpoints("R-1").unwrap();
         let ids: Vec<&str> = cps.iter().map(|c| c.step_id.as_str()).collect();
         assert_eq!(ids, vec!["S-1", "S-2", "S-3"]);
+    }
+
+    // ── insert_pending_step_if_absent (sprint 0.5-S2f) ──
+
+    #[test]
+    fn insert_pending_step_if_absent_inserts_new_row() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        let inserted = store.insert_pending_step_if_absent("R-1", "S-1").unwrap();
+        assert!(inserted, "expected fresh insert to return true");
+        let cps = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].step_id, "S-1");
+        assert_eq!(cps[0].status, StepStatus::Pending);
+        assert_eq!(cps[0].claim_id, 0);
+        assert_eq!(cps[0].worker_id, None);
+    }
+
+    #[test]
+    fn insert_pending_step_if_absent_is_noop_when_row_exists() {
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        // Pre-existing Pending row.
+        store
+            .upsert_step_checkpoint(&sample_checkpoint("R-1", "S-1", StepStatus::Pending))
+            .unwrap();
+        let inserted = store.insert_pending_step_if_absent("R-1", "S-1").unwrap();
+        assert!(!inserted, "expected duplicate insert to return false");
+        let cps = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(cps.len(), 1);
+    }
+
+    #[test]
+    fn insert_pending_step_if_absent_preserves_running_row() {
+        // Critical race property for sprint 0.5-S2f's wait client. A
+        // worker may concurrently transition the row from Pending → Running
+        // between the wait client's read and write. The
+        // insert_pending_step_if_absent call must NOT clobber the Running
+        // row back to Pending (which would void the lease).
+        let store = fresh_store();
+        store.insert_run(&sample_run("R-1")).unwrap();
+        store
+            .upsert_step_checkpoint(&sample_checkpoint("R-1", "S-1", StepStatus::Pending))
+            .unwrap();
+        // Worker claims it.
+        let outcome = store
+            .claim_step("R-1", "S-1", "worker-A", 1_000_000, 0)
+            .unwrap();
+        assert!(matches!(outcome, ClaimOutcome::Claimed { .. }));
+        // Wait client raced and tries to write a fresh Pending row.
+        let inserted = store.insert_pending_step_if_absent("R-1", "S-1").unwrap();
+        assert!(!inserted, "expected race insert to return false");
+        // Row is still Running with the original lease.
+        let cps = store.list_step_checkpoints("R-1").unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].status, StepStatus::Running);
+        assert_eq!(cps[0].worker_id.as_deref(), Some("worker-A"));
+        assert!(cps[0].lease_expires_at_ms.is_some());
     }
 
     // ── foreign keys = ON (the silent-footgun PRAGMA) ──

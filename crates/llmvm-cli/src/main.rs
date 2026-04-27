@@ -193,6 +193,41 @@ enum CoordinatorCommand {
         #[arg(long, default_value = "30000")]
         sweep_interval_ms: u64,
     },
+    /// Drive a submit-only workflow run to terminal status by
+    /// computing downstream-ready successors as workers complete
+    /// steps and writing fresh Pending checkpoints. Sprint
+    /// `0.5-S2f`: client-side multi-wave advancement. Operates on
+    /// the same `runs.db` the coordinator process uses; must run
+    /// on a host with filesystem access to `--data-dir`.
+    ///
+    /// Idempotent on restart — kill and re-invoke at any point;
+    /// the run continues from where it was left.
+    ///
+    /// Exit codes:
+    /// - 0 — run reached `Completed` status.
+    /// - 1 — run reached `Failed` status.
+    /// - 2 — invalid arguments, run not found, missing
+    ///   `workflow_def` in metadata, or unsupported step kind
+    ///   (approval/external_trigger in non-first wave).
+    /// - 3 — `--max-wait-secs` budget exceeded before terminal.
+    Wait {
+        /// Run id to drive to terminal status (returned by
+        /// `boruna workflow run --submit-only`).
+        run_id: String,
+        /// Persistent data directory holding `runs.db`. Same
+        /// fallback chain as `boruna workflow run`. Must match
+        /// the coordinator process's `--data-dir`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Polling interval in milliseconds. Minimum 100 ms
+        /// (lower values are clamped + a warning is logged).
+        #[arg(long, default_value = "500")]
+        poll_interval_ms: u64,
+        /// Maximum total wait duration in seconds. `0` =
+        /// unlimited. Useful for CI test timeouts.
+        #[arg(long, default_value = "0")]
+        max_wait_secs: u64,
+    },
 }
 
 #[cfg(feature = "serve")]
@@ -1005,6 +1040,27 @@ fn run_coordinator(cmd: CoordinatorCommand) -> Result<(), Box<dyn std::error::Er
                     sweep_interval_ms,
                 );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
+            }
+        }
+        CoordinatorCommand::Wait {
+            run_id,
+            data_dir,
+            poll_interval_ms,
+            max_wait_secs,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                let resolved = resolve_data_dir(data_dir.as_ref());
+                let exit_code =
+                    coordinator::run_wait(resolved, run_id, poll_interval_ms, max_wait_secs)?;
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, data_dir, poll_interval_ms, max_wait_secs);
+                return Err("`coordinator wait` requires the `persist-sqlite` feature".into());
             }
         }
     }

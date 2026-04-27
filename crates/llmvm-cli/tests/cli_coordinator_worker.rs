@@ -523,6 +523,322 @@ fn cli_workflow_run_submit_only_then_worker_completes() {
     );
 }
 
+// ── coordinator wait (sprint 0.5-S2f) ──
+
+/// Build a 3-step fan-in workflow on disk for the wait-driver tests.
+/// `s1` and `s2` are wave-1 source steps; `s3` depends on both.
+/// `s3.ax` body controls success/failure for the failed-run test.
+fn make_fan_in_workflow_on_disk(wf_dir: &Path, s3_body: &str) {
+    std::fs::create_dir_all(wf_dir).unwrap();
+    std::fs::write(wf_dir.join("s1.ax"), "fn main() -> Int { 1 }\n").unwrap();
+    std::fs::write(wf_dir.join("s2.ax"), "fn main() -> Int { 2 }\n").unwrap();
+    std::fs::write(wf_dir.join("s3.ax"), s3_body).unwrap();
+    std::fs::write(
+        wf_dir.join("workflow.json"),
+        r#"{
+            "schema_version": 1,
+            "name": "wait-test",
+            "version": "1.0.0",
+            "steps": {
+                "s1": {"kind": "source", "source": "s1.ax", "capabilities": [], "outputs": {"result": "Int"}},
+                "s2": {"kind": "source", "source": "s2.ax", "capabilities": [], "outputs": {"result": "Int"}},
+                "s3": {"kind": "source", "source": "s3.ax", "capabilities": [], "outputs": {"result": "Int"}}
+            },
+            "edges": [["s1", "s3"], ["s2", "s3"]]
+        }"#,
+    )
+    .unwrap();
+}
+
+fn submit_only(data_dir: &Path, wf_dir: &Path) -> String {
+    let out = Command::new(boruna_bin())
+        .args([
+            "workflow",
+            "run",
+            wf_dir.to_str().unwrap(),
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--submit-only",
+        ])
+        .output()
+        .expect("invoke boruna workflow run --submit-only");
+    assert!(
+        out.status.success(),
+        "submit failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let store = RunCheckpointStore::open(&data_dir.join("runs.db")).unwrap();
+    let runs = store.list_runs().unwrap();
+    assert_eq!(runs.len(), 1, "expected exactly one run after submit");
+    runs[0].run_id.clone()
+}
+
+fn spawn_wait(data_dir: &Path, run_id: &str) -> Child {
+    Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "100",
+            "--max-wait-secs",
+            "30",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn coordinator wait")
+}
+
+#[test]
+fn cli_coordinator_wait_drives_multi_wave_to_completion() {
+    // Sprint 0.5-S2f marquee test. Submit a 3-step fan-in workflow
+    // (s1, s2 → s3) and prove the `coordinator wait` driver advances
+    // wave-2 (s3) to Pending after wave-1 completes, the worker picks
+    // it up, and the run reaches Completed with all 3 steps Completed.
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let wf_dir = dir.path().join("wf");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    make_fan_in_workflow_on_disk(&wf_dir, "fn main() -> Int { 3 }\n");
+
+    let run_id = submit_only(&data_dir, &wf_dir);
+
+    let (coord_child, port) = spawn_coordinator(&data_dir, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "wait-worker", 30_000);
+
+    // Run wait synchronously and wait for it to exit.
+    let wait_out = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            &run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "100",
+            "--max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke coordinator wait");
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    assert!(
+        wait_out.status.success(),
+        "wait exited non-zero; status={:?}\nstdout={}\nstderr={}",
+        wait_out.status.code(),
+        String::from_utf8_lossy(&wait_out.stdout),
+        String::from_utf8_lossy(&wait_out.stderr),
+    );
+
+    // All 3 steps Completed; correct outputs.
+    let store = RunCheckpointStore::open(&data_dir.join("runs.db")).unwrap();
+    let cps = store.list_step_checkpoints(&run_id).unwrap();
+    assert_eq!(cps.len(), 3, "got {} checkpoints", cps.len());
+    for cp in &cps {
+        assert_eq!(
+            cp.status,
+            StepStatus::Completed,
+            "step {} not Completed: {:?}",
+            cp.step_id,
+            cp.status
+        );
+    }
+    let outputs: std::collections::BTreeMap<&str, &str> = cps
+        .iter()
+        .map(|c| (c.step_id.as_str(), c.output_json.as_deref().unwrap_or("")))
+        .collect();
+    assert_eq!(outputs["s1"], "1");
+    assert_eq!(outputs["s2"], "2");
+    assert_eq!(outputs["s3"], "3");
+
+    // Wait stdout should contain transitions per step.
+    let stdout = String::from_utf8_lossy(&wait_out.stdout);
+    assert!(stdout.contains("step s1"), "stdout missing s1: {stdout}");
+    assert!(stdout.contains("step s3"), "stdout missing s3: {stdout}");
+    assert!(
+        stdout.contains("completed"),
+        "stdout missing completed: {stdout}"
+    );
+}
+
+#[test]
+fn cli_coordinator_wait_resumes_after_kill() {
+    // Kill the wait process between waves; re-invoke; the run still
+    // completes. Proves the wait driver is stateless on the client
+    // side — all state lives in runs.db.
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let wf_dir = dir.path().join("wf");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    make_fan_in_workflow_on_disk(&wf_dir, "fn main() -> Int { 3 }\n");
+
+    let run_id = submit_only(&data_dir, &wf_dir);
+
+    let (coord_child, port) = spawn_coordinator(&data_dir, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "resume-worker", 30_000);
+
+    // First wait: kill it after a short delay (likely between
+    // waves but state survives regardless).
+    let wait1 = spawn_wait(&data_dir, &run_id);
+    std::thread::sleep(Duration::from_millis(800));
+    kill_child(wait1);
+
+    // Second wait: drive to terminal.
+    let wait_out = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            &run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "100",
+            "--max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke wait #2");
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    assert!(
+        wait_out.status.success(),
+        "wait #2 exited non-zero; status={:?}\nstdout={}\nstderr={}",
+        wait_out.status.code(),
+        String::from_utf8_lossy(&wait_out.stdout),
+        String::from_utf8_lossy(&wait_out.stderr),
+    );
+    let store = RunCheckpointStore::open(&data_dir.join("runs.db")).unwrap();
+    let cps = store.list_step_checkpoints(&run_id).unwrap();
+    assert_eq!(cps.len(), 3);
+    for cp in &cps {
+        assert_eq!(cp.status, StepStatus::Completed);
+    }
+}
+
+#[test]
+fn cli_coordinator_wait_exits_zero_immediately_for_already_completed_run() {
+    // Drive a run to Completed via the marquee path, then re-invoke
+    // wait against the same run_id. The second wait should exit 0
+    // immediately on the first tick (no polling loop).
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let wf_dir = dir.path().join("wf");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    make_fan_in_workflow_on_disk(&wf_dir, "fn main() -> Int { 3 }\n");
+
+    let run_id = submit_only(&data_dir, &wf_dir);
+    let (coord_child, port) = spawn_coordinator(&data_dir, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "completed-worker", 30_000);
+
+    // First wait: drive to Completed.
+    let _ = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            &run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "100",
+            "--max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke wait #1");
+
+    // Second wait: should exit 0 immediately. Use a short max-wait
+    // budget — if the loop spins without detecting Completed on the
+    // first tick, this would time out (exit 3) instead.
+    let started = Instant::now();
+    let wait_out = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            &run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "5000", // long poll; if we hit it, the test fails
+            "--max-wait-secs",
+            "10",
+        ])
+        .output()
+        .expect("invoke wait #2");
+    let elapsed = started.elapsed();
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    assert_eq!(
+        wait_out.status.code(),
+        Some(0),
+        "expected exit 0; got {:?}\nstdout={}\nstderr={}",
+        wait_out.status.code(),
+        String::from_utf8_lossy(&wait_out.stdout),
+        String::from_utf8_lossy(&wait_out.stderr),
+    );
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "wait took {elapsed:?}; expected immediate exit on first tick"
+    );
+}
+
+#[test]
+fn cli_coordinator_wait_exits_nonzero_on_failed_run() {
+    // s3 has a deliberately broken .ax (missing main); worker fails it.
+    // Wait should exit non-zero (1 = run Failed).
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let wf_dir = dir.path().join("wf");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    // Compile-error body — the worker should fail this step.
+    make_fan_in_workflow_on_disk(&wf_dir, "this is not valid ax syntax\n");
+
+    let run_id = submit_only(&data_dir, &wf_dir);
+
+    let (coord_child, port) = spawn_coordinator(&data_dir, 60_000, 1_000);
+    let coord_url = format!("http://127.0.0.1:{port}");
+    let worker = spawn_worker(&coord_url, "fail-worker", 30_000);
+
+    let wait_out = Command::new(boruna_bin())
+        .args([
+            "coordinator",
+            "wait",
+            &run_id,
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "--poll-interval-ms",
+            "100",
+            "--max-wait-secs",
+            "30",
+        ])
+        .output()
+        .expect("invoke wait");
+
+    kill_child(worker);
+    kill_child(coord_child);
+
+    assert_eq!(
+        wait_out.status.code(),
+        Some(1),
+        "expected exit code 1 (run Failed); got {:?}\nstdout={}\nstderr={}",
+        wait_out.status.code(),
+        String::from_utf8_lossy(&wait_out.stdout),
+        String::from_utf8_lossy(&wait_out.stderr),
+    );
+}
+
 #[test]
 fn coord_bg_sweep_requeues_expired_lease() {
     // Sprint 0.5-S2c: prove the background sweep fires
