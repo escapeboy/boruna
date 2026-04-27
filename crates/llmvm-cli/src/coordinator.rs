@@ -2065,16 +2065,20 @@ mod tests {
     async fn complete_with_stale_claim_returns_409() {
         let state = fresh_state();
         pending_step(&state, "run-c", "s1", "fn main() -> Int { 1 }\n");
-        // Manually claim and then simulate expiry+reclaim.
-        let store = state.store.lock().unwrap();
-        store
-            .claim_step("run-c", "s1", "A", 5_000_000_000_000, 0)
-            .unwrap();
-        store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
-        store
-            .claim_step("run-c", "s1", "B", 5_000_000_000_002, 0)
-            .unwrap();
-        drop(store);
+        // Manually claim and then simulate expiry+reclaim. The lock
+        // is scoped to a block so the MutexGuard drops before any
+        // .await — clippy::await_holding_lock would flag a guard
+        // bound at the function level even with an explicit drop().
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .claim_step("run-c", "s1", "A", 5_000_000_000_000, 0)
+                .unwrap();
+            store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
+            store
+                .claim_step("run-c", "s1", "B", 5_000_000_000_002, 0)
+                .unwrap();
+        }
         let app = build_router(state.clone());
         // Register a worker so we have a session token.
         let (_, reg) = post_json(

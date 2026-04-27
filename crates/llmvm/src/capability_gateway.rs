@@ -579,29 +579,26 @@ mod llm_router_tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Shared handle for the recorded capability calls captured by
+    /// [`RecordingHandler`]. Aliased to keep test signatures readable
+    /// (clippy `type_complexity` flags the bare nested type).
+    type RecordedCalls = std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>;
+
     /// Test handler that records every call and returns a tagged
     /// response so tests can verify which provider was hit.
     struct RecordingHandler {
         tag: String,
-        calls: std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
+        calls: RecordedCalls,
     }
 
     impl CapabilityHandler for RecordingHandler {
         fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((cap.clone(), args.to_vec()));
+            self.calls.lock().unwrap().push((*cap, args.to_vec()));
             Ok(Value::String(format!("response-from-{}", self.tag)))
         }
     }
 
-    fn make_recorder(
-        tag: &str,
-    ) -> (
-        Box<dyn CapabilityHandler>,
-        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
-    ) {
+    fn make_recorder(tag: &str) -> (Box<dyn CapabilityHandler>, RecordedCalls) {
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let handler = RecordingHandler {
             tag: tag.to_string(),
@@ -610,11 +607,7 @@ mod llm_router_tests {
         (Box::new(handler), calls)
     }
 
-    fn make_router_with_two_providers() -> (
-        LlmRouterHandler,
-        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
-        std::sync::Arc<std::sync::Mutex<Vec<(Capability, Vec<Value>)>>>,
-    ) {
+    fn make_router_with_two_providers() -> (LlmRouterHandler, RecordedCalls, RecordedCalls) {
         let (openai_handler, openai_calls) = make_recorder("openai");
         let (anthropic_handler, anthropic_calls) = make_recorder("anthropic");
         let mut providers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();

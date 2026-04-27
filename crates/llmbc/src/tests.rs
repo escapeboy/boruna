@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::module::*;
     use crate::*;
@@ -126,7 +127,7 @@ mod tests {
         let mut id = 0u32;
         while let Some(cap) = Capability::from_id(id) {
             assert!(
-                Capability::ALL.iter().any(|c| *c == cap),
+                Capability::ALL.contains(&cap),
                 "Capability::{cap:?} (id={id}) is not in Capability::ALL — \
                  forgot to add it after introducing a new capability?"
             );

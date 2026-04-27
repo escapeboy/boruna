@@ -3228,7 +3228,7 @@ mod tests {
         // must contain only complete 'é' characters (each 2 bytes).
         let truncated = out.trim_end_matches('…');
         assert!(
-            truncated.len() % 2 == 0,
+            truncated.len().is_multiple_of(2),
             "truncated portion must end on a char boundary; got len {}",
             truncated.len()
         );

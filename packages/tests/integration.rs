@@ -43,7 +43,7 @@ fn publish_to_registry(
     std::fs::create_dir_all(src.path().join("src")).unwrap();
     std::fs::write(
         src.path().join("src/core.ax"),
-        &format!("// {name} v{version}\nfn main() -> Int {{ 42 }}\n"),
+        format!("// {name} v{version}\nfn main() -> Int {{ 42 }}\n"),
     )
     .unwrap();
     let manifest = make_manifest(name, version, deps, caps);

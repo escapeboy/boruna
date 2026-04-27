@@ -5994,7 +5994,7 @@ mod tests {
         let result = WorkflowRunner::run(&def, &options).unwrap();
         assert_eq!(result.status, WorkflowStatus::Completed);
         assert_eq!(result.step_results.len(), 3);
-        for (_, sr) in &result.step_results {
+        for sr in result.step_results.values() {
             assert_eq!(sr.status, StepStatus::Completed);
         }
     }

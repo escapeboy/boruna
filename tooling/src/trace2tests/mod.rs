@@ -553,7 +553,7 @@ fn main() -> Int {
         tags.iter()
             .map(|t| TraceMessage {
                 tag: t.to_string(),
-                payload: serde_json::to_value(&Value::Int(0)).unwrap(),
+                payload: serde_json::to_value(Value::Int(0)).unwrap(),
             })
             .collect()
     }
@@ -683,7 +683,9 @@ fn main() -> Int {
             Value::Int(42),
             Value::String("hello".into()),
             Value::Bool(true),
-            Value::Float(3.14),
+            // Arbitrary float; not PI — using a non-π-approximating
+            // value avoids clippy::approx_constant on the test fixture.
+            Value::Float(2.5),
             Value::Unit,
             Value::List(vec![Value::Int(1), Value::Int(2)]),
         ];
