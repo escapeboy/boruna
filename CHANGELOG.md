@@ -8,6 +8,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dashboard renders step outputs with blob-aware fallback**
+  (sprint `0.5-S7b`). The per-run detail HTML page gains an
+  `Output` column. Inline outputs render in a `<code>` block
+  truncated to 256 chars; blob-stored outputs render
+  `[blob: <hash[..16]>…]` linked to the S7
+  `/api/runs/{run_id}/blobs/{hash}` route, without slurping the
+  bytes into the dashboard render. Pending/Running/paused steps
+  show `—`. Reads route through `RunCheckpointStore::read_step_output`
+  for inline cases (the same accessor used by the resume and
+  evidence-bundle paths). The JSON detail endpoint
+  (`GET /api/runs/{id}`) is unchanged — `StepCheckpoint` already
+  serializes both `output_json` and `output_blob_ref` fields, so
+  programmatic consumers can branch on the shape directly.
+  3 new HTML rendering tests. See
+  `docs/design-dashboard-blob-render.md`.
+
 - **Output blob references for large step outputs** (sprint
   `0.5-S7`). Step outputs whose JSON encoding exceeds 64 KiB are
   now offloaded to a content-addressed blob store at

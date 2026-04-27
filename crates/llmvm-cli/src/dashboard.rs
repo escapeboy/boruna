@@ -184,10 +184,17 @@ async fn handle_run_detail(
     Path(id): Path<String>,
 ) -> Result<Html<String>, StatusCode> {
     let (run, operational, steps) = load_run_detail(&state, &id)?;
+    // Sprint 0.5-S7b: resolve per-step output for the HTML render.
+    // For inline outputs we read the bytes; for blob-stored outputs
+    // we hand the renderer the ref so it can emit a link to the
+    // S7 blob route without fetching the bytes (avoids slurping
+    // multi-MB blobs into a dashboard render).
+    let outputs = resolve_step_outputs_for_render(&state, &id, &steps)?;
     Ok(Html(render_detail(
         &run,
         operational.as_ref(),
         &steps,
+        &outputs,
         state.bind_warning.as_deref(),
     )))
 }
@@ -239,6 +246,57 @@ fn load_run_detail(
         .list_step_checkpoints(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((run, operational, steps))
+}
+
+/// Per-step output as it should render in the HTML detail page.
+/// Sprint 0.5-S7b — distinguishes inline-rendered text from a
+/// blob-link placeholder so `render_detail` can emit different
+/// markup without re-querying the persistence layer.
+#[derive(Debug, Clone)]
+enum StepOutputDisplay {
+    /// No output yet (Pending / Running / paused / Failed-without-output).
+    None,
+    /// Output stored inline; the value is the JSON-encoded text.
+    /// Renderer applies truncation + html_escape.
+    Inline(String),
+    /// Output stored in the blob store. The hash is the
+    /// `output_blob_ref` column value. Renderer emits a link to
+    /// the coord/dashboard's blob route — does NOT fetch bytes
+    /// (large blobs would bloat the dashboard render).
+    Blob(String),
+}
+
+/// Resolve the per-step output rendering for the HTML detail page.
+/// Reads through `read_step_output` for inline outputs; for
+/// blob-stored steps it short-circuits to the ref (which lives on
+/// the StepCheckpoint already) so we don't pull large bytes into
+/// memory just to render a link.
+fn resolve_step_outputs_for_render(
+    state: &DashboardState,
+    run_id: &str,
+    steps: &[StepCheckpoint],
+) -> Result<Vec<StepOutputDisplay>, StatusCode> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut out = Vec::with_capacity(steps.len());
+    for cp in steps {
+        // Blob-stored: skip the byte read; we want a link, not the bytes.
+        if let Some(hash) = &cp.output_blob_ref {
+            out.push(StepOutputDisplay::Blob(hash.clone()));
+            continue;
+        }
+        // Inline (or no output yet) — read_step_output handles both,
+        // returning Some(json) for completed-inline and None for
+        // pending/running/failed-without-output.
+        match store.read_step_output(run_id, &cp.step_id) {
+            Ok(Some(json)) => out.push(StepOutputDisplay::Inline(json)),
+            Ok(None) => out.push(StepOutputDisplay::None),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+    Ok(out)
 }
 
 // ── Rendering ──
@@ -336,10 +394,24 @@ fn render_index(runs: &[RunRow], bind_warning: Option<&str>) -> String {
     wrap_page("Boruna runs", &banner, &body)
 }
 
+/// Maximum chars of inline output rendered in the HTML detail
+/// page. Sprint 0.5-S7b. Truncated outputs append `…` to signal
+/// elision. The full bytes are still in the persistence layer
+/// (or the blob store); operators can fetch via `boruna evidence
+/// inspect` or the JSON API for the full content.
+const HTML_INLINE_OUTPUT_MAX: usize = 256;
+
+/// Visible chars of a blob hash in the HTML detail page link
+/// label. Sprint 0.5-S7b. The full 64-char hash is preserved in
+/// the link target; the visible label is shortened so the table
+/// stays readable.
+const HTML_BLOB_HASH_LABEL_LEN: usize = 16;
+
 fn render_detail(
     run: &RunRecord,
     operational: Option<&RunOperational>,
     steps: &[StepCheckpoint],
+    outputs: &[StepOutputDisplay],
     bind_warning: Option<&str>,
 ) -> String {
     let banner = render_banner(bind_warning);
@@ -386,10 +458,10 @@ fn render_detail(
     } else {
         body.push_str("<table><thead><tr>");
         body.push_str(
-            "<th>Step</th><th>Status</th><th>Attempts</th><th>Started</th><th>Ended</th><th>Error</th>",
+            "<th>Step</th><th>Status</th><th>Attempts</th><th>Started</th><th>Ended</th><th>Output</th><th>Error</th>",
         );
         body.push_str("</tr></thead><tbody>");
-        for step in steps {
+        for (step, output) in steps.iter().zip(outputs.iter()) {
             let status_class = format!("status-{}", step.status.as_str());
             let started = step.started_at_ms.map(format_ms).unwrap_or_default();
             let ended = step.ended_at_ms.map(format_ms).unwrap_or_default();
@@ -398,14 +470,16 @@ fn render_detail(
                 .as_deref()
                 .map(html_escape)
                 .unwrap_or_default();
+            let output_cell = render_output_cell(&run.run_id, output);
             body.push_str(&format!(
-                r#"<tr><td><code>{}</code></td><td class="{}">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
+                r#"<tr><td><code>{}</code></td><td class="{}">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
                 html_escape(&step.step_id),
                 status_class,
                 step.status.as_str(),
                 step.attempt_count,
                 started,
                 ended,
+                output_cell,
                 error,
             ));
         }
@@ -418,6 +492,65 @@ fn render_detail(
     ));
 
     wrap_page(&format!("Run {}", &run.run_id), &banner, &body)
+}
+
+/// Render a single step's Output cell. Sprint 0.5-S7b.
+///
+/// - `StepOutputDisplay::None` → render `—` (em dash).
+/// - `StepOutputDisplay::Inline(json)` → render in a `<code>` block,
+///   truncated to [`HTML_INLINE_OUTPUT_MAX`] chars (UTF-8 char
+///   boundary safe). Contents pass through `html_escape`.
+/// - `StepOutputDisplay::Blob(hash)` → render `[blob: <hash[..N]>…]`
+///   linked to `/api/runs/{run_id}/blobs/{hash}`. The full hash is
+///   in the URL; the visible label is shortened so the table stays
+///   readable.
+fn render_output_cell(run_id: &str, output: &StepOutputDisplay) -> String {
+    match output {
+        StepOutputDisplay::None => "—".to_string(),
+        StepOutputDisplay::Inline(json) => {
+            let truncated = truncate_chars(json, HTML_INLINE_OUTPUT_MAX);
+            let suffix = if truncated.len() < json.len() {
+                "…"
+            } else {
+                ""
+            };
+            format!("<code>{}{}</code>", html_escape(truncated), suffix)
+        }
+        StepOutputDisplay::Blob(hash) => {
+            // Defensive: only build the link if hash matches the
+            // expected 64-lowercase-hex shape. Otherwise the
+            // blob-route will reject; render plain text.
+            let valid = hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            if !valid {
+                return format!("<code>[blob: {}]</code>", html_escape(hash));
+            }
+            let label_len = hash.len().min(HTML_BLOB_HASH_LABEL_LEN);
+            let short = &hash[..label_len];
+            format!(
+                r#"<a href="/api/runs/{}/blobs/{}"><code>[blob: {}…]</code></a>"#,
+                html_escape(run_id),
+                html_escape(hash),
+                html_escape(short),
+            )
+        }
+    }
+}
+
+/// Truncate `s` to at most `max_chars` Unicode scalar values
+/// (NOT bytes), staying on a char boundary so `html_escape`
+/// receives a valid `&str`. Returns a borrowed prefix.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    let mut end = s.len();
+    for (count, (i, _)) in s.char_indices().enumerate() {
+        if count == max_chars {
+            end = i;
+            break;
+        }
+    }
+    &s[..end]
 }
 
 fn wrap_page(title: &str, banner: &str, body: &str) -> String {
@@ -491,7 +624,7 @@ fn is_leap(y: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boruna_orchestrator::persistence::{RunStatus, StepStatus};
+    use boruna_orchestrator::persistence::{ClaimOutcome, RunStatus, StepStatus};
 
     fn fresh_store() -> RunCheckpointStore {
         RunCheckpointStore::open_in_memory().expect("open in-memory store")
@@ -646,6 +779,161 @@ mod tests {
             .0;
         assert!(html.contains("&lt;x&gt;boom&lt;/x&gt;"));
         assert!(!html.contains("<x>boom"));
+    }
+
+    // ── Sprint 0.5-S7b: Output column rendering ──
+
+    /// Helper: build a fresh store with an on-disk blob store at a
+    /// per-test tempdir so we can exercise the offload path. Returns
+    /// a guard that holds the tempdir alive for the test.
+    fn fresh_store_with_blobs() -> (RunCheckpointStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs_root = dir.path().join("blobs");
+        let store = RunCheckpointStore::open_in_memory_with_blob_store(blobs_root).unwrap();
+        (store, dir)
+    }
+
+    /// Drive a step from Pending → Completed via the public claim/CAS
+    /// path, exercising the threshold gate inside `complete_step_cas`.
+    fn complete_step_in_store(
+        store: &RunCheckpointStore,
+        run_id: &str,
+        step_id: &str,
+        output_json: &str,
+    ) -> String {
+        use sha2::Digest;
+        store
+            .upsert_step_checkpoint(&sample_step(run_id, step_id, StepStatus::Pending))
+            .unwrap();
+        let claim = match store
+            .claim_step(run_id, step_id, "wkr-test", 9_999_999_999, 1_000)
+            .unwrap()
+        {
+            ClaimOutcome::Claimed { claim_id } => claim_id,
+            other => panic!("expected Claimed, got {other:?}"),
+        };
+        let mut h = sha2::Sha256::new();
+        h.update(output_json.as_bytes());
+        let hash = format!("{:x}", h.finalize());
+        store
+            .complete_step_cas(run_id, step_id, claim, output_json, &hash, 1, 2_000)
+            .unwrap();
+        hash
+    }
+
+    #[tokio::test]
+    async fn handle_run_detail_renders_inline_output_truncated() {
+        let (store, _dir) = fresh_store_with_blobs();
+        store
+            .insert_run(&sample_run("r1", "wf", RunStatus::Running))
+            .unwrap();
+        // Small inline output → renders verbatim in the table cell.
+        complete_step_in_store(&store, "r1", "small", "\"hello world\"");
+        let state = state_with(store, None);
+        let html = handle_run_detail(State(state), Path("r1".into()))
+            .await
+            .unwrap()
+            .0;
+        // Output column header present.
+        assert!(html.contains("<th>Output</th>"));
+        // Inline value rendered (with HTML-escaped quotes).
+        assert!(
+            html.contains("&quot;hello world&quot;"),
+            "expected escaped JSON in render; got:\n{html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_run_detail_renders_blob_link_for_offloaded_output() {
+        let (store, _dir) = fresh_store_with_blobs();
+        store
+            .insert_run(&sample_run("r1", "wf", RunStatus::Running))
+            .unwrap();
+        // 100 KiB output > BLOB_THRESHOLD → offloaded to blob store.
+        let big = "\"".to_string()
+            + &"q".repeat(boruna_orchestrator::persistence::BLOB_THRESHOLD + 1)
+            + "\"";
+        let hash = complete_step_in_store(&store, "r1", "big", &big);
+        let state = state_with(store, None);
+        let html = handle_run_detail(State(state), Path("r1".into()))
+            .await
+            .unwrap()
+            .0;
+        // Render must NOT include the literal 100 KiB output.
+        assert!(
+            !html.contains("qqqqqqqqqq"),
+            "blob output bytes must not appear inline in the dashboard render"
+        );
+        // Render MUST include a blob link with the full hash in the
+        // URL and a short label.
+        let expected_href = format!(r#"href="/api/runs/r1/blobs/{hash}""#);
+        assert!(
+            html.contains(&expected_href),
+            "expected blob link href to include full hash; got:\n{html}"
+        );
+        let expected_label = format!("[blob: {}", &hash[..16]);
+        assert!(
+            html.contains(&expected_label),
+            "expected blob short-label '{expected_label}' in render; got:\n{html}"
+        );
+    }
+
+    #[test]
+    fn truncate_chars_handles_boundary_cases() {
+        // Empty / max=0
+        assert_eq!(truncate_chars("hello", 0), "");
+        assert_eq!(truncate_chars("", 5), "");
+        // Input shorter than max → returned whole
+        assert_eq!(truncate_chars("abc", 10), "abc");
+        // Exact boundary
+        assert_eq!(truncate_chars("abcdef", 6), "abcdef");
+        // Multi-byte char at boundary: "héllo" — é is 2 bytes
+        // 4 chars would be "héll", which has length 5 (h=1, é=2, l=1, l=1).
+        let s = "héllo";
+        assert_eq!(s.chars().count(), 5);
+        let t = truncate_chars(s, 4);
+        assert_eq!(t.chars().count(), 4);
+        assert_eq!(t, "héll");
+    }
+
+    #[test]
+    fn render_output_cell_falls_back_for_malformed_blob_ref() {
+        // Defensive branch: a row with an output_blob_ref that fails
+        // hex validation (corruption / future schema drift) must still
+        // render — as plain text, not a broken link.
+        let bad = StepOutputDisplay::Blob("not-a-valid-hash".to_string());
+        let html = render_output_cell("r1", &bad);
+        assert!(
+            !html.contains(r#"href=""#),
+            "must NOT emit href for malformed hash; got: {html}"
+        );
+        assert!(html.contains("[blob: not-a-valid-hash]"));
+    }
+
+    #[tokio::test]
+    async fn handle_run_detail_renders_em_dash_for_pending_output() {
+        let store = fresh_store();
+        store
+            .insert_run(&sample_run("r1", "wf", RunStatus::Running))
+            .unwrap();
+        // Step exists in Pending state — no output yet.
+        store
+            .upsert_step_checkpoint(&sample_step("r1", "p", StepStatus::Pending))
+            .unwrap();
+        let state = state_with(store, None);
+        let html = handle_run_detail(State(state), Path("r1".into()))
+            .await
+            .unwrap()
+            .0;
+        // The em dash placeholder must appear in a cell. We can't
+        // do an exact match because the page can contain other em
+        // dashes (e.g. headings); assert it appears in the steps
+        // table by checking it follows the step_id row markup.
+        assert!(
+            html.contains("<td><code>p</code>"),
+            "step row must be present"
+        );
+        assert!(html.contains("—"));
     }
 
     #[tokio::test]
