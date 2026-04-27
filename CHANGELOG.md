@@ -6,6 +6,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Decided
+
+- **ADR 002 — Distributed step execution.** The 0.5.0 ("Scale")
+  cycle's foundational architectural decision. Distributed mode
+  uses an embedded HTTP coordinator + lightweight HTTP workers,
+  all behind the existing `serve` feature flag. The coordinator
+  remains the only writer of `runs.db`; workers long-poll for
+  claimable steps and report results via JSON over HTTP. Lease-
+  based claim with re-dispatch on expiry handles worker crashes.
+  Determinism is preserved: which worker ran a step is
+  operational state and never enters the audit/replay pipeline.
+  The single-process path (`boruna workflow run`/`resume`) keeps
+  working unchanged. Considered alternatives — shared-filesystem
+  SQLite, external queue (Redis/RMQ/SQS), gRPC — were rejected
+  for footgun risk, deployment-simplicity violation, and
+  marginal benefit respectively. Implementation in `0.5-S2`.
+  See [`docs/adr/002-distributed-step-execution.md`](docs/adr/002-distributed-step-execution.md).
+
 ## [0.4.0] — 2026-04-27
 
 The **operations** release. Twelve sprints (0.4-S5 through
