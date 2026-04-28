@@ -97,6 +97,44 @@ These must not be violated:
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`
 - [ ] New behavior has test coverage
 
+## Reading the bench-compare PR comment
+
+Every PR that touches non-doc code triggers a `Bench compare` job
+that runs the criterion bench harness on the PR base and on the
+PR head, then posts a sticky comment with per-benchmark deltas.
+
+The comment is a simple table:
+
+| Benchmark | Mean change | 99% CI |
+|-----------|-------------|--------|
+| `compile/small_program` | `-1.20%` | `[-3.10%, +0.50%]` |
+| `vm_throughput/loop_1k` | `+0.45%` | `[-1.20%, +2.10%]` |
+
+How to read it:
+
+- **Mean change**: positive means slower, negative means faster.
+  Roughly: `+5%` is "noticeable", `+10%` is the regression
+  threshold, `-10%` is "you sped something up — say so in the
+  PR body."
+- **99% CI**: the confidence interval on the mean. If the CI
+  spans zero, the change is not statistically distinguishable
+  from noise.
+- **Threshold**: 10% slower mean fails the job. The job is
+  intentionally NOT in the required-status-checks set, so a
+  failing `Bench compare` does not block merge by default.
+  Reviewers should ask "is this regression intentional?" and
+  expect a documented answer in the PR body.
+- **CI runner**: bench-compare runs on `self-hosted`. Hosted
+  GitHub runners are noisy enough that the deltas would not be
+  trustworthy; the self-hosted box is a stable reference.
+
+If a `Bench compare` job fails on a PR that is genuinely not
+perf-relevant (a docs-only change misclassified, a test-only
+change), trigger a re-run from the Actions UI. If the
+regression reproduces on a docs-only change, the path filter
+in `.github/workflows/bench-compare.yml` may need tightening —
+file a follow-up issue.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
