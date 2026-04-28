@@ -21,6 +21,36 @@ fn boruna_bin() -> &'static str {
     env!("CARGO_BIN_EXE_boruna")
 }
 
+/// Connect to a freshly-spawned server with a small retry budget.
+/// Sprint W10 — pre-existing flaky surface flagged by W9-D's local
+/// runs: even after `wait_for_server` returns, a busy CI runner can
+/// race the listener-backlog state and surface ConnectionRefused on
+/// the first real request. Retrying fixes the race without changing
+/// what the test verifies (HTTP responses, not connect timing).
+/// Mirrors the W8 fix in `cli_dashboard.rs::http_request`.
+fn connect_with_retries(port: u16) -> TcpStream {
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..5 {
+        match TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(500),
+        ) {
+            Ok(s) => return s,
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+            }
+        }
+    }
+    panic!(
+        "connect to 127.0.0.1:{port} failed after 5 retries; last err: {}",
+        last_err
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown".into())
+    );
+}
+
 fn pick_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -48,7 +78,7 @@ fn wait_for_server(port: u16) {
 }
 
 fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut stream = connect_with_retries(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -206,7 +236,7 @@ fn http_request_with_auth(
     body: Option<&str>,
     bearer: Option<&str>,
 ) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut stream = connect_with_retries(port);
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();

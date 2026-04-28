@@ -3120,10 +3120,24 @@ mod tests {
             },
         )
         .await;
+        let now_after = now_unix_ms();
         assert_eq!(status, StatusCode::OK);
         let new_deadline = v["new_lease_expires_at_ms"].as_i64().unwrap();
-        // Capped at 600s: deadline should be within ~601s of now.
-        assert!(new_deadline <= now_before + 600_001 + 5);
+        // The handler caps `requested` at `now_handler + max_lease_ttl_ms`.
+        // `now_handler` falls between `now_before` and `now_after`, so the
+        // deadline must be in `[now_before + 600_000, now_after + 600_000]`.
+        // Using `now_after` as the upper bound eliminates the timing
+        // dependency that flaked under parallel CI load (sprint W10).
+        assert!(
+            new_deadline >= now_before + 600_000,
+            "deadline {new_deadline} below lower bound {}",
+            now_before + 600_000
+        );
+        assert!(
+            new_deadline <= now_after + 600_000,
+            "deadline {new_deadline} above upper bound {}",
+            now_after + 600_000
+        );
     }
 
     // ── Sprint 0.5-S4 — submit + status handler tests ──
