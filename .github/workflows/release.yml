@@ -158,6 +158,31 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout repository (for CHANGELOG)
+        uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Strip leading 'v' from tag (e.g. v1.0.0-rc2 -> 1.0.0-rc2).
+          version="${TAG#v}"
+          # awk extracts content between '## [VERSION]' and the next '## [' header.
+          awk -v ver="$version" '
+            /^## \[/ {
+              if (in_section) exit
+              if ($0 ~ "^## \\[" ver "\\]") { in_section = 1; next }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No CHANGELOG section found for [$version] - update CHANGELOG.md before tagging." >&2
+            exit 1
+          fi
+          echo "notes_file=release-notes.md" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -177,7 +202,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
-          generate_release_notes: true
+          body_path: ${{ steps.changelog.outputs.notes_file }}
           files: |
             flat/*.tar.gz
             flat/SHA256SUMS

@@ -4,6 +4,8 @@ Boruna ships pre-built binaries on every Git tag matching `v*` via `.github/work
 
 ## Cutting a release
 
+> **GitHub Release body is now auto-extracted from the CHANGELOG section for the tag** (sprint `W9-B`). Update `CHANGELOG.md` before tagging — the release workflow fails loudly if no `## [X.Y.Z]` section exists for the new tag's version, so an empty body cannot ship by accident.
+
 1. Update `CHANGELOG.md`: move entries from `[Unreleased]` to a new `[X.Y.Z] - YYYY-MM-DD` section. Add the comparison link at the bottom.
 2. Bump `version` in the workspace `Cargo.toml` if appropriate (workspace package version is inherited by all member crates).
 3. Commit on `master`:

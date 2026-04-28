@@ -15,6 +15,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   format, opcode table, value model, capability table, and
   determinism contract for the 1.x line. Forward-compat: 1.x
   VMs accept any 1.y bytecode module.
+- **CHANGELOG-driven GitHub Release notes** (sprint `W9-B`).
+  The release pipeline now extracts the CHANGELOG section for
+  the current tag and uses it as the GitHub Release body
+  instead of auto-generating from commits. Operators MUST
+  update `CHANGELOG.md` before tagging — empty section fails
+  the release loudly. Improves release-page readability for
+  integrators.
 
 ## [1.0.0-rc2] - 2026-04-28
 
