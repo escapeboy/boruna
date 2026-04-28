@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **CHANGELOG-driven GitHub Release notes** (sprint `W9-B`).
+  The release pipeline now extracts the CHANGELOG section for
+  the current tag and uses it as the GitHub Release body
+  instead of auto-generating from commits. Operators MUST
+  update `CHANGELOG.md` before tagging — empty section fails
+  the release loudly. Improves release-page readability for
+  integrators.
+
 ## [1.0.0-rc2] - 2026-04-28
 
 **Theme: GA polish.** rc1 shipped the post-v0.5 sprint cycle
