@@ -6,6 +6,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Formal versioned `.ax` language specification at `docs/spec/ax-language-1.0.md` (sprint W1-B). `language_version: "1.0"` exposed via `boruna_compiler::LANGUAGE_VERSION`. New `docs/spec/README.md` indexes versioned specs. The narrative reference (`docs/reference/ax-language.md`) cross-links the spec.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of
