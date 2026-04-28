@@ -84,6 +84,12 @@ enum Command {
         /// also set, replay wins (no network calls happen).
         #[arg(long, conflicts_with = "record_net_to")]
         replay_net_from: Option<PathBuf>,
+        /// Re-run the file on every change. Watch mode prints a
+        /// separator before each rerun and continues until Ctrl-C.
+        /// Errors in a single run do not exit watch mode — fix the
+        /// file and the next save will re-execute.
+        #[arg(long)]
+        watch: bool,
     },
     /// Run with execution tracing enabled.
     Trace {
@@ -1120,44 +1126,30 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             live,
             record_net_to,
             replay_net_from,
+            watch,
         } => {
-            let module = load_module(&file)?;
-            let gateway = make_gateway(
+            if watch {
+                run_watch_loop(
+                    &file,
+                    &policy,
+                    max_steps,
+                    record.as_deref(),
+                    live,
+                    record_net_to.as_deref(),
+                    replay_net_from.as_deref(),
+                )?;
+            } else if let Err(e) = run_once(
+                &file,
                 &policy,
+                max_steps,
+                record.as_deref(),
                 live,
                 record_net_to.as_deref(),
                 replay_net_from.as_deref(),
-            )?;
-            let mut vm = Vm::new(module, gateway);
-            vm.set_max_steps(max_steps);
-
-            match vm.run() {
-                Ok(result) => {
-                    println!("{result}");
-                    if !vm.ui_output.is_empty() {
-                        println!("\n--- UI Output ---");
-                        for tree in &vm.ui_output {
-                            let json = serde_json::to_string_pretty(tree)?;
-                            println!("{json}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("runtime error: {e}");
-                    process::exit(1);
-                }
+            ) {
+                eprintln!("{e}");
+                process::exit(1);
             }
-
-            if let Some(log_path) = record {
-                let json = vm
-                    .event_log()
-                    .to_json()
-                    .map_err(|e| format!("failed to serialize event log: {e}"))?;
-                fs::write(&log_path, json)?;
-                println!("events recorded to {}", log_path.display());
-            }
-
-            println!("steps: {}", vm.step_count());
         }
         Command::Trace { file } => {
             let module = load_module(&file)?;
@@ -2414,6 +2406,186 @@ fn make_gateway(
     }
 
     Ok(CapabilityGateway::new(policy))
+}
+
+/// Compile and execute the file once. Returns Err on compile or
+/// runtime failure; the caller decides whether to exit (single-run
+/// mode) or print and continue (watch mode).
+fn run_once(
+    file: &PathBuf,
+    policy: &str,
+    max_steps: u64,
+    record: Option<&std::path::Path>,
+    live: bool,
+    record_net_to: Option<&std::path::Path>,
+    replay_net_from: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let module = load_module(file)?;
+    let gateway = make_gateway(policy, live, record_net_to, replay_net_from)?;
+    let mut vm = Vm::new(module, gateway);
+    vm.set_max_steps(max_steps);
+
+    match vm.run() {
+        Ok(result) => {
+            println!("{result}");
+            if !vm.ui_output.is_empty() {
+                println!("\n--- UI Output ---");
+                for tree in &vm.ui_output {
+                    let json = serde_json::to_string_pretty(tree)?;
+                    println!("{json}");
+                }
+            }
+        }
+        Err(e) => {
+            return Err(format!("runtime error: {e}").into());
+        }
+    }
+
+    if let Some(log_path) = record {
+        let json = vm
+            .event_log()
+            .to_json()
+            .map_err(|e| format!("failed to serialize event log: {e}"))?;
+        fs::write(log_path, json)?;
+        println!("events recorded to {}", log_path.display());
+    }
+
+    println!("steps: {}", vm.step_count());
+    Ok(())
+}
+
+/// Watch a `.ax` file and re-execute on change.
+///
+/// Debounces filesystem events to 200ms so a single editor save
+/// (which often produces multiple inotify/fsevent events) triggers
+/// exactly one rerun. Errors in a single run print to stderr but do
+/// NOT exit the loop — the user fixes the file and the next save
+/// re-executes. Ctrl-C exits cleanly via the default SIGINT handler.
+fn run_watch_loop(
+    file: &PathBuf,
+    policy: &str,
+    max_steps: u64,
+    record: Option<&std::path::Path>,
+    live: bool,
+    record_net_to: Option<&std::path::Path>,
+    replay_net_from: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
+    use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let canonical = file
+        .canonicalize()
+        .map_err(|e| format!("--watch: cannot resolve {}: {e}", file.display()))?;
+    let display = display_relative(file);
+
+    print_reload_banner(&display);
+    if let Err(e) = run_once(
+        file,
+        policy,
+        max_steps,
+        record,
+        live,
+        record_net_to,
+        replay_net_from,
+    ) {
+        eprintln!("{e}");
+    }
+
+    let (tx, rx) = channel::<notify::Result<Event>>();
+    let mut watcher: RecommendedWatcher = Watcher::new(
+        move |res| {
+            // Send errors are unrecoverable (rx dropped); ignore them
+            // because we're about to exit.
+            let _ = tx.send(res);
+        },
+        notify::Config::default(),
+    )?;
+    // Watching the parent directory non-recursively makes editors
+    // that write atomically (rename-into-place) work reliably; the
+    // event filter then drops anything not matching our file.
+    let watch_root = canonical
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| canonical.clone());
+    watcher.watch(&watch_root, RecursiveMode::NonRecursive)?;
+
+    let debounce = Duration::from_millis(200);
+
+    loop {
+        // Block waiting for the first event after a settle period.
+        let event = match rx.recv() {
+            Ok(Ok(ev)) => ev,
+            Ok(Err(e)) => {
+                eprintln!("watch error: {e}");
+                continue;
+            }
+            Err(_) => break, // sender dropped; exit
+        };
+
+        if !event_touches(&event, &canonical) {
+            continue;
+        }
+
+        // Debounce: drain any further events arriving within the
+        // 200ms window so a flurry of saves becomes one rerun.
+        let deadline = Instant::now() + debounce;
+        loop {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(_) => continue, // drain
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        }
+
+        print_reload_banner(&display);
+        if let Err(e) = run_once(
+            file,
+            policy,
+            max_steps,
+            record,
+            live,
+            record_net_to,
+            replay_net_from,
+        ) {
+            eprintln!("{e}");
+        }
+    }
+
+    Ok(())
+}
+
+fn event_touches(event: &notify::Event, target: &std::path::Path) -> bool {
+    event
+        .paths
+        .iter()
+        .any(|p| p.canonicalize().ok().as_deref() == Some(target))
+}
+
+fn print_reload_banner(display: &str) {
+    use std::time::SystemTime;
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    println!("── reloading {display} at {h:02}:{m:02}:{s:02} ──");
+}
+
+fn display_relative(file: &std::path::Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(rel) = file.strip_prefix(&cwd) {
+            return rel.display().to_string();
+        }
+    }
+    file.display().to_string()
 }
 
 fn run_workflow(

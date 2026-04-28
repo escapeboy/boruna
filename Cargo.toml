@@ -42,6 +42,16 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc
 # Dev-only cert generation for the mTLS integration test.
 rcgen = "0.13"
 
+# Filesystem watcher for `boruna run --watch` (post1-T-1.4).
+# Default features are kept enabled here because they are the
+# platform-specific watcher backends (fsevent on macOS, inotify on
+# Linux, ReadDirectoryChanges on Windows) — the crate cannot
+# function without one. ADR 001's default-features-off guideline is
+# intentionally relaxed here for the same reason it is relaxed for
+# `clap` (the `env` feature) and `criterion` (the
+# `cargo_bench_support` feature).
+notify = "6"
+
 # Crate aliases: old directory names → new names for Boruna branding
 # The directory structure stays the same; Cargo.toml names are updated.
 # Rust source uses the new crate names via [dependencies] key aliasing.
