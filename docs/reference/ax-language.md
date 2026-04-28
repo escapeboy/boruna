@@ -1,5 +1,7 @@
 # .ax Language Reference
 
+> **Looking for the formal specification?** This page is the narrative, example-driven reference. The authoritative grammar, type rules, and capability semantics live in [`docs/spec/ax-language-1.0.md`](../spec/ax-language-1.0.md). When the two disagree, the spec wins.
+
 `.ax` is Boruna's statically-typed, deterministic scripting language. It compiles to Boruna bytecode and runs on the Boruna VM. It is designed for workflow steps: small, focused, pure functions with explicit capability declarations for any side effects.
 
 ## File structure

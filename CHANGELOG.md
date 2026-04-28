@@ -14,6 +14,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   at PR time instead of only at release-runner time. Filed as a
   followup in the B-2 retro after the workspace `--all-targets`
   sweep landed.
+- **Formal versioned `.ax` language specification** at
+  `docs/spec/ax-language-1.0.md` (sprint `W1-B`).
+  `language_version: "1.0"` exposed via
+  `boruna_compiler::LANGUAGE_VERSION`. New `docs/spec/README.md`
+  indexes versioned specs. The narrative reference
+  (`docs/reference/ax-language.md`) cross-links the spec.
 
 ## [0.5.0] - 2026-04-28
 
