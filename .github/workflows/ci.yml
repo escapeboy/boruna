@@ -54,6 +54,15 @@ jobs:
             cargo run --bin boruna -- workflow validate "$dir"
           done
 
+      - name: Compile benches (no-run)
+        # Sprint W8: regression-gate the criterion bench harness so a
+        # bench refactor that breaks compilation surfaces at PR time.
+        # We do NOT execute benches in CI — bench TIMING data is the
+        # operator's job to capture on a representative production-class
+        # machine; see docs/PERFORMANCE.md for the workflow. Compile-only
+        # adds <30s on a warm cache.
+        run: cargo bench -p boruna-benches --no-run
+
   clippy:
     name: Clippy
     runs-on: self-hosted
