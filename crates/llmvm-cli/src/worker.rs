@@ -5,6 +5,7 @@
 //! See `docs/design-coordinator-worker-http.md` and
 //! `docs/architecture-coordinator-worker-http.md`.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use boruna_bytecode::{compute_capability_set_hash, Value};
@@ -18,6 +19,54 @@ use crate::coordinator::{
 };
 
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
+
+/// File-path bundle for the worker's mTLS client config (sprint
+/// `W6-A`). All three paths required together — partial sets are
+/// a startup error so half-configured TLS doesn't silently fall
+/// back to plaintext.
+#[derive(Debug, Clone)]
+pub struct ClientTlsPaths {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub server_ca: PathBuf,
+}
+
+impl ClientTlsPaths {
+    pub fn from_optional(
+        cert: Option<PathBuf>,
+        key: Option<PathBuf>,
+        server_ca: Option<PathBuf>,
+    ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        match (cert, key, server_ca) {
+            (None, None, None) => Ok(None),
+            (Some(cert), Some(key), Some(server_ca)) => Ok(Some(Self {
+                cert,
+                key,
+                server_ca,
+            })),
+            _ => Err("--tls-cert, --tls-key, --tls-server-ca must all be provided together".into()),
+        }
+    }
+}
+
+/// Read a cert PEM and key PEM and concatenate them in the format
+/// `reqwest::Identity::from_pem` expects (cert blocks then key
+/// block, separated by newlines). Reqwest's parser is fine with
+/// multi-cert chains followed by a single key.
+fn read_pem_pair(
+    cert: &std::path::Path,
+    key: &std::path::Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut cert_bytes =
+        std::fs::read(cert).map_err(|e| format!("read --tls-cert {}: {e}", cert.display()))?;
+    let key_bytes =
+        std::fs::read(key).map_err(|e| format!("read --tls-key {}: {e}", key.display()))?;
+    if !cert_bytes.ends_with(b"\n") {
+        cert_bytes.push(b'\n');
+    }
+    cert_bytes.extend_from_slice(&key_bytes);
+    Ok(cert_bytes)
+}
 
 /// Conditionally attach the `Authorization: Bearer <secret>` header
 /// to a reqwest request when a shared-secret is configured. When
@@ -103,14 +152,34 @@ pub async fn run_worker(
     poll_timeout_ms: u64,
     shared_secret: Option<String>,
     advertised_capabilities: Option<Vec<String>>,
+    tls_paths: Option<ClientTlsPaths>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let coord_urls = parse_coordinator_urls(&coordinator)?;
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         // Long-poll buffer: client timeout MUST be greater than
         // server-side poll_timeout_ms so a 30s long-poll doesn't
         // trip a 10s default client timeout.
-        .timeout(Duration::from_millis(poll_timeout_ms + 30_000))
-        .build()?;
+        .timeout(Duration::from_millis(poll_timeout_ms + 30_000));
+    if let Some(tls) = &tls_paths {
+        let identity_pem = read_pem_pair(&tls.cert, &tls.key)?;
+        let identity = reqwest::Identity::from_pem(&identity_pem)
+            .map_err(|e| format!("client cert+key parse: {e}"))?;
+        let ca_pem = std::fs::read(&tls.server_ca)
+            .map_err(|e| format!("read --tls-server-ca {}: {e}", tls.server_ca.display()))?;
+        let ca =
+            reqwest::Certificate::from_pem(&ca_pem).map_err(|e| format!("server CA parse: {e}"))?;
+        builder = builder
+            .use_rustls_tls()
+            .identity(identity)
+            .add_root_certificate(ca);
+        eprintln!(
+            "worker mTLS: cert={} key={} server-ca={}",
+            tls.cert.display(),
+            tls.key.display(),
+            tls.server_ca.display()
+        );
+    }
+    let client = builder.build()?;
 
     let capability_set_hash = compute_capability_set_hash(
         boruna_bytecode::Capability::ALL

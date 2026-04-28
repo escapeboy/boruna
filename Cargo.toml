@@ -32,6 +32,16 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 
+# mTLS stack (sprint W6-A). `default-features = false` per ADR 001
+# (drops the optional `prefer-post-quantum`, `logging` features).
+# We do enable `aws_lc_rs` explicitly — it's the rustls 0.23 default
+# crypto provider with stronger LTS guarantees than `ring`.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+rustls-pemfile = "2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+# Dev-only cert generation for the mTLS integration test.
+rcgen = "0.13"
+
 # Crate aliases: old directory names → new names for Boruna branding
 # The directory structure stays the same; Cargo.toml names are updated.
 # Rust source uses the new crate names via [dependencies] key aliasing.

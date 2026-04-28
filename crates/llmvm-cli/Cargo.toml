@@ -10,7 +10,19 @@ path = "src/main.rs"
 
 [features]
 default = ["persist-sqlite"]
-serve = ["dep:axum", "dep:tokio", "dep:reqwest", "dep:uuid"]
+serve = [
+    "dep:axum",
+    "dep:tokio",
+    "dep:reqwest",
+    "dep:uuid",
+    "dep:rustls",
+    "dep:rustls-pemfile",
+    "dep:tokio-rustls",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:tower",
+    "dep:tower-service",
+]
 http = ["boruna-vm/http"]
 telemetry = ["boruna-vm/telemetry", "dep:tokio"]
 # Forwards to boruna-orchestrator's persist-sqlite feature so the CLI's
@@ -38,6 +50,26 @@ axum = { workspace = true, optional = true }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
 uuid = { version = "1", optional = true, features = ["v4"] }
 sha2 = "0.10"
+# mTLS stack (sprint W6-A). All optional; pulled in by `serve`.
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+# Direct hyper/hyper-util/tower deps for the mTLS connection
+# loop (W6-A). These are already in the dep graph via axum so
+# pulling them in directly does not increase the binary size.
+hyper = { version = "1", optional = true, features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", optional = true, features = ["server-auto", "tokio"] }
+tower = { version = "0.5", optional = true }
+tower-service = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+rcgen = { workspace = true }
+# Dev-only: blocking reqwest for the mTLS integration test.
+# The runtime worker uses async reqwest under tokio.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# Dev-only: rustls + rustls-pemfile so tests can synthesize a
+# bare TLS handshake (no client cert) and assert the server
+# rejects it before any HTTP is exchanged.
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }

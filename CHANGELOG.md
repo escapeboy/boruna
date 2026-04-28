@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Mutual TLS auth + per-worker client certificates** (sprint
+  `W6-A`). Operators can now require X.509 client certs on the
+  coord HTTP surface via `--tls-cert`, `--tls-key`, and
+  `--tls-client-ca`. Workers present client certs via
+  `--tls-cert` / `--tls-key` / `--tls-server-ca`. The cert
+  subject CN drives worker identity; mismatch with a body
+  `worker_id` returns `coord.identity_mismatch`. mTLS is
+  additive: shared-secret bearer auth (sprint 0.5-S3)
+  continues to work unchanged. Operator guide:
+  [`docs/guides/coord-mtls.md`](./docs/guides/coord-mtls.md).
+  New error_kind: `coord.identity_mismatch`.
 - **Evidence bundle encryption** (sprint `W6-B`). Operators can
   now opt into AES-256-GCM envelope encryption for evidence
   bundles via `boruna workflow run --record --encrypt-bundle`
