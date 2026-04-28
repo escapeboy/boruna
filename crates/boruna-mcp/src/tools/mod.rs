@@ -142,7 +142,8 @@ mod protocol_version_tests {
     fn workflow_validate_validation_error_carries_protocol_version() {
         // A workflow_json that parses as WorkflowDef but fails validation
         // (no steps). schema_version is required as of sprint W4.
-        let empty = r#"{"schema_version":1,"name":"empty","version":"1.0.0","steps":{},"edges":[]}"#;
+        let empty =
+            r#"{"schema_version":1,"name":"empty","version":"1.0.0","steps":{},"edges":[]}"#;
         let out = workflow::validate_workflow(empty);
         assert_protocol_version(&out, "workflow validation_error");
     }

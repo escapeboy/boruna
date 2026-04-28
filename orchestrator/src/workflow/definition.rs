@@ -92,25 +92,25 @@ impl WorkflowDef {
     /// unsupported `schema_version` with a typed error per
     /// project-conventions §1 (reject at parse, not later).
     pub fn from_json(json: &str) -> Result<Self, WorkflowParseError> {
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| WorkflowParseError::InvalidJson(e.to_string()))?;
+        let value: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| WorkflowParseError::InvalidJson(e.to_string()))?;
 
         // Gate 1: `schema_version` MUST be present and an integer.
         let sv = match value.get("schema_version") {
             None => return Err(WorkflowParseError::MissingSchemaVersion),
             Some(serde_json::Value::Null) => return Err(WorkflowParseError::MissingSchemaVersion),
-            Some(v) => v
-                .as_u64()
-                .ok_or_else(|| WorkflowParseError::InvalidJson(
+            Some(v) => v.as_u64().ok_or_else(|| {
+                WorkflowParseError::InvalidJson(
                     "field `schema_version` must be a non-negative integer".into(),
-                ))?,
+                )
+            })?,
         };
-        let sv: u32 = sv.try_into().map_err(|_| {
-            WorkflowParseError::UnsupportedSchemaVersion {
+        let sv: u32 = sv
+            .try_into()
+            .map_err(|_| WorkflowParseError::UnsupportedSchemaVersion {
                 found: u32::MAX,
                 supported_max: WORKFLOW_DAG_SCHEMA_VERSION,
-            }
-        })?;
+            })?;
 
         // Gate 2: major version bound. 1.x readers accept any 1.y;
         // 2+ is a hard reject (future format).

@@ -367,16 +367,13 @@ fn example_workflows_all_validate() {
         "../examples/workflows/customer_support_triage/workflow.json",
     ];
     for path in examples {
-        let json = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("read {path}: {e}"));
-        let def = WorkflowDef::from_json(&json)
-            .unwrap_or_else(|e| panic!("parse {path}: {e}"));
+        let json = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let def = WorkflowDef::from_json(&json).unwrap_or_else(|e| panic!("parse {path}: {e}"));
         assert_eq!(
             def.schema_version, WORKFLOW_DAG_SCHEMA_VERSION,
             "{path} must declare schema_version: {WORKFLOW_DAG_SCHEMA_VERSION}"
         );
-        WorkflowValidator::validate(&def)
-            .unwrap_or_else(|e| panic!("validate {path}: {e:?}"));
+        WorkflowValidator::validate(&def).unwrap_or_else(|e| panic!("validate {path}: {e:?}"));
     }
 }
 
