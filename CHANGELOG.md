@@ -20,6 +20,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `boruna_compiler::LANGUAGE_VERSION`. New `docs/spec/README.md`
   indexes versioned specs. The narrative reference
   (`docs/reference/ax-language.md`) cross-links the spec.
+- **Versioned evidence bundle format** with `format_version: "1.0"`
+  in `bundle.json` (sprint `W1-C`). Forward-compat reader gate
+  rejects bundles from incompatible major versions; same-major
+  bundles are accepted with unknown fields ignored. Spec:
+  [`docs/spec/evidence-bundle-1.0.md`](./docs/spec/evidence-bundle-1.0.md).
+
+### Changed
+
+- **BREAKING:** Evidence bundles now require a top-level
+  `bundle.json` manifest (sprint `W1-C`). Legacy bundles from
+  v0.5.0 and earlier must be migrated (migration tool planned
+  for sprint `W5-C`; until then, re-record against a current
+  binary).
 
 ## [0.5.0] - 2026-04-28
 

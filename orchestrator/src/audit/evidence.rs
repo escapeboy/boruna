@@ -5,9 +5,29 @@ use std::path::{Path, PathBuf};
 
 use crate::audit::fingerprint::EnvFingerprint;
 use crate::audit::log::AuditLog;
+use crate::audit::BUNDLE_FORMAT_VERSION;
 
 fn default_schema_version() -> u32 {
     1
+}
+
+/// Top-level bundle manifest written as `bundle.json` at the bundle root.
+///
+/// This is the version-gated entry point for readers (see
+/// [`crate::audit::verify::verify_bundle`]). It is the LAST file written
+/// during finalize, after every other component has been flushed and
+/// parent-dir fsynced — so its presence implies a complete bundle.
+///
+/// `format_version` follows semver-like compat: `1.x` is forward-compat,
+/// `2.x` is breaking. See `docs/spec/evidence-bundle-1.0.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleJson {
+    pub format_version: String,
+    pub boruna_version: String,
+    pub created_at: String,
+    pub run_id: String,
+    pub workflow_hash: String,
+    pub components: Vec<String>,
 }
 
 /// Manifest describing an evidence bundle.
@@ -130,6 +150,41 @@ impl EvidenceBundleBuilder {
             serde_json::to_string_pretty(&final_manifest).map_err(std::io::Error::other)?;
         std::fs::write(self.bundle_dir.join("manifest.json"), &final_json)?;
 
+        // Write top-level versioned bundle.json LAST, after every other
+        // component is on disk. Readers gate on this file: if it's
+        // missing, the bundle is treated as legacy/incomplete.
+        // Components are listed by what was actually written.
+        let mut components: Vec<String> = vec![
+            "manifest.json".to_string(),
+            "audit_log.json".to_string(),
+            "env_fingerprint.json".to_string(),
+        ];
+        if self.bundle_dir.join("workflow.json").exists() {
+            components.push("workflow.json".to_string());
+        }
+        if self.bundle_dir.join("policy.json").exists() {
+            components.push("policy.json".to_string());
+        }
+        if self.bundle_dir.join("outputs").exists() {
+            components.push("outputs/".to_string());
+        }
+        components.sort();
+
+        let bundle_json = BundleJson {
+            format_version: BUNDLE_FORMAT_VERSION.to_string(),
+            boruna_version: env!("CARGO_PKG_VERSION").to_string(),
+            created_at: completed_at.clone(),
+            run_id: self.run_id.clone(),
+            workflow_hash: self.workflow_hash.clone(),
+            components,
+        };
+        let bundle_json_str =
+            serde_json::to_string_pretty(&bundle_json).map_err(std::io::Error::other)?;
+
+        // Atomic write + parent-dir fsync, mirroring the audit-log /
+        // step-output write pattern (see workflow/data_flow.rs).
+        atomic_write_with_dir_fsync(&self.bundle_dir, "bundle.json", bundle_json_str.as_bytes())?;
+
         Ok(final_manifest)
     }
 
@@ -154,6 +209,44 @@ fn sha256_str(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Write `bytes` to `dir/name` atomically and fsync the parent directory
+/// so the rename's directory entry is journaled to stable media. Mirrors
+/// the pattern in `workflow::data_flow::DataStore::store_output`.
+///
+/// Used for `bundle.json` so that readers seeing the file are guaranteed
+/// to see a complete bundle (every other component was written first).
+fn atomic_write_with_dir_fsync(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    std::io::Write::write_all(&mut tmp, bytes)?;
+    fullsync_file(tmp.as_file())?;
+    tmp.persist(dir.join(name)).map_err(|e| e.error)?;
+    #[cfg(unix)]
+    {
+        let dir_handle = std::fs::File::open(dir)?;
+        fullsync_file(&dir_handle)?;
+    }
+    Ok(())
+}
+
+fn fullsync_file(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `file` is a valid open file descriptor; F_FULLFSYNC
+        // takes no further argument. Returns 0 on success, -1 on error.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            file.sync_all()
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        file.sync_all()
+    }
 }
 
 #[cfg(test)]
@@ -215,6 +308,45 @@ mod tests {
         assert!(manifest.file_checksums.contains_key("policy.json"));
         assert!(manifest.file_checksums.contains_key("audit_log.json"));
         assert!(manifest.file_checksums.contains_key("env_fingerprint.json"));
+    }
+
+    #[test]
+    fn bundle_writes_format_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-fmt-001", "fmt-test").unwrap();
+        builder.add_workflow_def(r#"{"name":"fmt"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+        builder
+            .add_step_output("s1", "result", r#"{"v":1}"#)
+            .unwrap();
+
+        let mut audit = AuditLog::new();
+        audit.append(AuditEvent::WorkflowStarted {
+            workflow_hash: "abc".into(),
+            policy_hash: "def".into(),
+        });
+        audit.append(AuditEvent::WorkflowCompleted {
+            result_hash: "res".into(),
+            total_duration_ms: 1,
+        });
+
+        builder.finalize(&audit).unwrap();
+
+        let bundle_dir = dir.path().join("run-fmt-001");
+        let bundle_json_path = bundle_dir.join("bundle.json");
+        assert!(
+            bundle_json_path.exists(),
+            "bundle.json must be present at bundle root"
+        );
+        let raw = std::fs::read_to_string(&bundle_json_path).unwrap();
+        let parsed: BundleJson = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.format_version, "1.0");
+        assert_eq!(parsed.run_id, "run-fmt-001");
+        assert!(!parsed.boruna_version.is_empty());
+        assert!(parsed.components.iter().any(|c| c == "manifest.json"));
+        assert!(parsed.components.iter().any(|c| c == "audit_log.json"));
+        assert!(parsed.components.iter().any(|c| c == "outputs/"));
     }
 
     #[test]

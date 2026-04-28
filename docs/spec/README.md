@@ -4,18 +4,16 @@ This directory holds **formal, versioned** specifications for the surfaces Borun
 
 Each spec carries a `language_version` / `format_version` / `protocol_version` field in its front matter. Implementations against a `1.x` spec MUST keep working against any later `1.y` (`y >= x`).
 
-## Layout
+## Current specs
 
-One file per `<surface>-<major>.<minor>.md`:
+| Surface | Latest | Status | File |
+|---------|:------:|:------:|------|
+| `.ax` language | 1.0 | stable | [ax-language-1.0.md](./ax-language-1.0.md) |
+| Evidence bundle format | 1.0 | stable | [evidence-bundle-1.0.md](./evidence-bundle-1.0.md) |
 
-| Surface | Latest | Status |
-|---------|:------:|:------:|
-| [`.ax` language](./ax-language-1.0.md) | 1.0 | stable |
-
-Future entries (placeholder list, kept in this README so readers know what's coming):
+Future entries (planned, not yet frozen):
 
 - `bytecode-1.0.md` — the binary opcode set, capability ID table, and module format. The informal version lives at [`docs/bytecode-spec.md`](../bytecode-spec.md) and is the source for the future formal freeze.
-- `evidence-bundle-1.0.md` — the evidence bundle on-disk schema (owned by sprint W1-C).
 - `workflow-dag-1.0.md` — the `workflow.json` schema with `schema_version`.
 
 ## Authoring rules
