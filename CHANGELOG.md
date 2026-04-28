@@ -6,6 +6,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `docs/post-1.0/README.md` describing how post-1.0 work is tracked
+  on GitHub: branch naming, labels, and the project-board scheme.
+- `docs/branch-policy.md` documenting the `master` (1.x LTS) vs.
+  `0.7.x` (speculative) branch topology and cross-merge rules.
+- GitHub labels `wave-1`…`wave-4`, `branch-master`, `branch-0.7.x`,
+  `post1-execution` for filtering post-1.0 PRs and issues.
+
 ## [1.0.0] - 2026-04-28
 
 **First stable release.** The 1.x LTS contract takes effect from
