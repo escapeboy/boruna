@@ -22,6 +22,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   update `CHANGELOG.md` before tagging — empty section fails
   the release loudly. Improves release-page readability for
   integrators.
+- **End-to-end smoke gate for example workflows in CI**
+  (sprint `W9-D`). Each example workflow under
+  `examples/workflows/` now runs to completion with
+  `--policy allow-all --record` and the produced bundle is
+  `evidence verify`-ed on every push/PR. Catches integration
+  regressions where DAG validation passes but execution fails.
 
 ## [1.0.0-rc2] - 2026-04-28
 
