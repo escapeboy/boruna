@@ -33,7 +33,7 @@ Boruna draws a hard boundary between pure computation and effects.
 - Time reads (`time.now`)
 - File system access (`fs.read`, `fs.write`)
 - Database queries (`db.query`)
-- Random number generation (`rand.next`)
+- Random number generation (`random`)
 
 Effects are declared on functions using capability annotations:
 

@@ -96,7 +96,7 @@ The 1.0 capability set is frozen in `crates/llmbc/src/capability.rs::Capability:
 | `net.fetch` | HTTP requests |
 | `llm.call` | LLM inference |
 | `time.now` | Current timestamp |
-| `random.next` | Random numbers |
+| `random` | Random numbers |
 | `fs.read` | File system reads |
 | `fs.write` | File system writes |
 | `db.query` | Database access |

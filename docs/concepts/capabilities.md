@@ -11,7 +11,7 @@ The 1.0 capability set is frozen in `crates/llmbc/src/capability.rs::Capability:
 | `net.fetch` | HTTP requests | Calling external APIs, webhooks |
 | `llm.call` | LLM inference | GPT-4, Claude, local models (BYOH — see [`guides/llm-integration.md`](../guides/llm-integration.md)) |
 | `time.now` | Current timestamp | Timestamping records |
-| `random.next` | Random numbers | Sampling, tie-breaking |
+| `random` | Random numbers | Sampling, tie-breaking |
 | `fs.read` | File system reads | Loading documents, configs |
 | `fs.write` | File system writes | Writing reports, outputs |
 | `db.query` | Database access | Reading/writing records |
