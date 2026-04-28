@@ -234,11 +234,38 @@ fn test_evidence_bundle_tamper_detected() {
     assert!(result.errors.iter().any(|e| e.contains("checksum")));
 }
 
-// === Schema Compatibility Tests ===
+// === Schema Compatibility Tests (sprint W4) ===
 
 #[test]
-fn test_workflow_def_missing_schema_version_defaults() {
-    // Simulate a v0 workflow.json without schema_version
+fn workflow_def_loads_with_schema_version_1() {
+    // The contract: a well-formed 1.0 workflow.json parses cleanly
+    // via both the typed entry point (`from_json`) and the generic
+    // `serde_json::from_str` path used by the CLI.
+    let json = r#"{
+        "schema_version": 1,
+        "name": "ok",
+        "version": "1.0.0",
+        "steps": {
+            "a": { "kind": "source", "source": "a.ax" }
+        },
+        "edges": []
+    }"#;
+    let def = WorkflowDef::from_json(json).expect("valid 1.0 workflow must parse");
+    assert_eq!(def.schema_version, 1);
+    assert_eq!(def.name, "ok");
+    assert!(WorkflowValidator::validate(&def).is_ok());
+
+    // Same JSON via the derived Deserialize path (every CLI / persistence
+    // call site goes through this).
+    let def2: WorkflowDef = serde_json::from_str(json).unwrap();
+    assert_eq!(def2.schema_version, 1);
+}
+
+#[test]
+fn workflow_def_rejects_missing_schema_version() {
+    // Per project-conventions §1: reject at parse, not later. No
+    // silent defaulting — pre-W4 fixtures lacking the field MUST
+    // fail with a typed `MissingSchemaVersion` error.
     let json = r#"{
         "name": "legacy",
         "version": "0.9.0",
@@ -247,15 +274,117 @@ fn test_workflow_def_missing_schema_version_defaults() {
         },
         "edges": []
     }"#;
-    let def: WorkflowDef = serde_json::from_str(json).unwrap();
-    assert_eq!(def.schema_version, 1); // default
-    assert!(WorkflowValidator::validate(&def).is_ok());
+    let err = WorkflowDef::from_json(json).expect_err("missing schema_version must reject");
+    assert_eq!(err, WorkflowParseError::MissingSchemaVersion);
+    assert_eq!(err.error_kind(), "workflow.missing_schema_version");
+
+    // Derived Deserialize must also reject (this is the path used
+    // by every existing CLI call site via `serde_json::from_str`).
+    let de_err = serde_json::from_str::<WorkflowDef>(json).unwrap_err();
+    assert!(
+        de_err.to_string().contains("schema_version"),
+        "derived deserialize error must mention schema_version, got: {de_err}"
+    );
+}
+
+#[test]
+fn workflow_def_rejects_future_major_version() {
+    // A `schema_version: 2` document is from a future format that
+    // this build cannot read. Reject — do not silently truncate.
+    let json = r#"{
+        "schema_version": 2,
+        "name": "future",
+        "version": "2.0.0",
+        "steps": {
+            "a": { "kind": "source", "source": "a.ax" }
+        },
+        "edges": []
+    }"#;
+    let err = WorkflowDef::from_json(json).expect_err("future major must reject");
+    match err {
+        WorkflowParseError::UnsupportedSchemaVersion {
+            found,
+            supported_max,
+        } => {
+            assert_eq!(found, 2);
+            assert_eq!(supported_max, WORKFLOW_DAG_SCHEMA_VERSION);
+        }
+        other => panic!("expected UnsupportedSchemaVersion, got {other:?}"),
+    }
+    assert_eq!(
+        WorkflowParseError::UnsupportedSchemaVersion {
+            found: 2,
+            supported_max: 1,
+        }
+        .error_kind(),
+        "workflow.unsupported_schema_version",
+    );
+
+    let de_err = serde_json::from_str::<WorkflowDef>(json).unwrap_err();
+    assert!(
+        de_err.to_string().contains("not supported"),
+        "expected 'not supported' in error, got: {de_err}"
+    );
+}
+
+#[test]
+fn workflow_def_accepts_unknown_optional_fields() {
+    // Forward-compat: 1.x readers MUST accept any 1.y workflow,
+    // ignoring fields they don't know about. Adversarial test
+    // (project-conventions §29): a future 1.5 reader could add a
+    // `priority` field at top level and a `tags` field on a step.
+    // This 1.0 reader must accept the document silently.
+    let json = r#"{
+        "schema_version": 1,
+        "name": "forward-compat",
+        "version": "1.0.0",
+        "priority": "high",
+        "future_field": {"a": 1, "b": [true, false]},
+        "steps": {
+            "a": {
+                "kind": "source",
+                "source": "a.ax",
+                "tags": ["alpha", "beta"],
+                "future_step_field": 42
+            }
+        },
+        "edges": []
+    }"#;
+    let def = WorkflowDef::from_json(json).expect("additive fields must be accepted");
+    assert_eq!(def.schema_version, 1);
+    assert_eq!(def.steps.len(), 1);
+    let def2: WorkflowDef = serde_json::from_str(json).unwrap();
+    assert_eq!(def2.steps.len(), 1);
+}
+
+#[test]
+fn example_workflows_all_validate() {
+    // Iterates every bundled example workflow and asserts each
+    // parses through the schema-version gate.
+    let examples = [
+        "../examples/workflows/llm_code_review/workflow.json",
+        "../examples/workflows/document_processing/workflow.json",
+        "../examples/workflows/customer_support_triage/workflow.json",
+    ];
+    for path in examples {
+        let json = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let def = WorkflowDef::from_json(&json)
+            .unwrap_or_else(|e| panic!("parse {path}: {e}"));
+        assert_eq!(
+            def.schema_version, WORKFLOW_DAG_SCHEMA_VERSION,
+            "{path} must declare schema_version: {WORKFLOW_DAG_SCHEMA_VERSION}"
+        );
+        WorkflowValidator::validate(&def)
+            .unwrap_or_else(|e| panic!("validate {path}: {e:?}"));
+    }
 }
 
 #[test]
 fn test_step_def_minimal_fields() {
     // Only required fields, all optionals use defaults
     let json = r#"{
+        "schema_version": 1,
         "name": "minimal",
         "version": "1.0.0",
         "steps": {

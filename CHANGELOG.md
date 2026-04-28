@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Versioned workflow DAG schema** (sprint `W4`). New
+  `schema_version: 1` field required on every `workflow.json`.
+  Spec at [`docs/spec/workflow-dag-1.0.md`](./docs/spec/workflow-dag-1.0.md).
+  `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION = 1`
+  exposed for compatible readers. Forward-compat: 1.x readers
+  accept any 1.y workflow (additive fields ignored).
+
+### Changed
+
+- **BREAKING:** `workflow.json` files without `schema_version`
+  are now rejected (sprint `W4`). All bundled examples updated.
+  Operator action: add `"schema_version": 1` to existing
+  workflow definitions before upgrading.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of
