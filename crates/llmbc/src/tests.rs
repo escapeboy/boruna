@@ -4,6 +4,14 @@ mod tests {
     use crate::module::*;
     use crate::*;
 
+    /// Locked by `docs/spec/bytecode-1.0.md` (sprint `W9-A`). The
+    /// `BYTECODE_VERSION` constant is the public spec identifier; bumping it
+    /// is a coordinated spec freeze, not a routine release operation.
+    #[test]
+    fn test_bytecode_version_is_1_0() {
+        assert_eq!(BYTECODE_VERSION, "1.0");
+    }
+
     #[test]
     fn test_module_json_roundtrip() {
         let mut module = Module::new("test");

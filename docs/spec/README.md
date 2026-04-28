@@ -9,12 +9,11 @@ Each spec carries a `language_version` / `format_version` / `schema_version` fie
 | Surface | Latest | Status | Sprint | Reader constant |
 |---------|:------:|:------:|--------|-----------------|
 | `.ax` language | 1.0 | stable | W1-B | `boruna_compiler::LANGUAGE_VERSION` |
+| Bytecode format | 1.0 | stable | W9-A | `boruna_bytecode::BYTECODE_VERSION` |
 | Evidence bundle format | 1.0 | stable | W1-C | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
 | Workflow DAG schema | 1.0 | stable | W4 | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
 
-Future entries (planned, not yet frozen):
-
-- `bytecode-1.0.md` — the binary opcode set, capability ID table, and module format. The informal version lives at [`docs/bytecode-spec.md`](../bytecode-spec.md) and is the source for the future formal freeze.
+The narrative companion to the bytecode spec lives at [`docs/bytecode-spec.md`](../bytecode-spec.md); the formal spec at [`bytecode-1.0.md`](./bytecode-1.0.md) wins on any disagreement.
 
 ## Authoring rules
 

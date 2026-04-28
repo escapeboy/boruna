@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Versioned bytecode 1.0 specification** at
+  `docs/spec/bytecode-1.0.md` (sprint `W9-A`).
+  `bytecode_version: "1.0"` exposed via
+  `boruna_bytecode::BYTECODE_VERSION`. Locks the on-disk module
+  format, opcode table, value model, capability table, and
+  determinism contract for the 1.x line. Forward-compat: 1.x
+  VMs accept any 1.y bytecode module.
+
 ## [1.0.0-rc2] - 2026-04-28
 
 **Theme: GA polish.** rc1 shipped the post-v0.5 sprint cycle
