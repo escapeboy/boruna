@@ -128,7 +128,7 @@ Milestone: the stable API surface is locked. 0.5+ programs compile and run uncha
 - [ ] **Migration tooling stable** (graduated from 0.5 beta)
 - [ ] All schemas (language, DAG, evidence) finalized and documented
 - [ ] **Evidence bundle storage adapters** — pluggable shipping to S3 / object storage / document store, beyond local files
-- [ ] **Evidence bundle encryption** — at-rest encryption for bundles containing sensitive data
+- [x] **Evidence bundle encryption** — at-rest encryption for bundles containing sensitive data (sprint `W6-B`, AES-256-GCM envelope encryption; see `docs/design-bundle-encryption.md`)
 
 ## What we need to decide *now* (before 0.3.0 starts)
 

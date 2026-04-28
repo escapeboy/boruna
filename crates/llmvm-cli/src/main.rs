@@ -492,6 +492,22 @@ enum WorkflowCommand {
         /// Evidence output directory (defaults to <dir>/evidence/).
         #[arg(long)]
         evidence_dir: Option<PathBuf>,
+        /// Sprint W6-B: encrypt the evidence bundle at rest with
+        /// AES-256-GCM envelope encryption. Requires
+        /// `--bundle-encryption-key <hex>` or `BORUNA_BUNDLE_KEK`
+        /// env. Implies `--record`.
+        #[arg(long)]
+        encrypt_bundle: bool,
+        /// Sprint W6-B: 32-byte key-encryption-key as 64 hex chars.
+        /// Used for `--encrypt-bundle`. Falls back to env var
+        /// `BORUNA_BUNDLE_KEK` when omitted.
+        #[arg(long, value_name = "HEX")]
+        bundle_encryption_key: Option<String>,
+        /// Sprint W6-B: identifier the operator can use to look up
+        /// the KEK in their key store at verify time. Defaults to
+        /// `"default"` when omitted.
+        #[arg(long, value_name = "ID")]
+        bundle_kek_id: Option<String>,
         /// Use real HTTP handler for net.fetch (requires `http` feature).
         #[arg(long)]
         live: bool,
@@ -754,6 +770,11 @@ enum EvidenceCommand {
     Verify {
         /// Evidence bundle directory.
         dir: PathBuf,
+        /// Sprint W6-B: 32-byte KEK as 64 hex chars to decrypt an
+        /// encrypted bundle. Falls back to `BORUNA_BUNDLE_KEK` env.
+        /// Plaintext bundles ignore this flag.
+        #[arg(long, value_name = "HEX")]
+        bundle_encryption_key: Option<String>,
     },
     /// Inspect an evidence bundle's manifest.
     Inspect {
@@ -762,6 +783,18 @@ enum EvidenceCommand {
         /// Output as JSON.
         #[arg(long)]
         json: bool,
+        /// Sprint W6-B: when the bundle is encrypted, refuse to
+        /// print decrypted file contents unless this flag is set.
+        /// The manifest itself (which is plaintext) prints either
+        /// way. Defense against accidentally pasting bundle
+        /// internals into chat or logs.
+        #[arg(long)]
+        decrypt: bool,
+        /// Sprint W6-B: KEK as 64 hex chars; required with
+        /// `--decrypt` when bundle is encrypted. Falls back to
+        /// `BORUNA_BUNDLE_KEK`.
+        #[arg(long, value_name = "HEX")]
+        bundle_encryption_key: Option<String>,
     },
 }
 
@@ -2215,6 +2248,9 @@ fn run_workflow(
             policy,
             record,
             evidence_dir,
+            encrypt_bundle,
+            bundle_encryption_key,
+            bundle_kek_id,
             live,
             data_dir,
             ephemeral,
@@ -2227,6 +2263,15 @@ fn run_workflow(
             coord_max_wait_secs,
             expect_workflow_hash,
         } => {
+            // Sprint W6-B: --encrypt-bundle implies --record. Reject
+            // up front (project-conventions §1) when the operator
+            // asked for encryption without recording.
+            if encrypt_bundle && !record {
+                return Err(
+                    "`--encrypt-bundle` requires `--record` (no bundle to encrypt otherwise)"
+                        .into(),
+                );
+            }
             if concurrency == 0 {
                 return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
             }
@@ -2386,6 +2431,25 @@ fn run_workflow(
             if record {
                 let ev_dir = evidence_dir.unwrap_or_else(|| dir.join("evidence"));
                 let mut builder = EvidenceBundleBuilder::new(&ev_dir, &result.run_id, &def.name)?;
+
+                // Sprint W6-B: enable envelope encryption when the
+                // operator passed --encrypt-bundle. KEK comes from
+                // --bundle-encryption-key or BORUNA_BUNDLE_KEK env.
+                if encrypt_bundle {
+                    let kek =
+                        boruna_orchestrator::audit::resolve_kek(bundle_encryption_key.as_deref())
+                            .map_err(|e| format!("invalid KEK: {e}"))?
+                            .ok_or(
+                                "`--encrypt-bundle` requires `--bundle-encryption-key <hex>` or \
+                         BORUNA_BUNDLE_KEK env var (32 bytes / 64 hex chars)",
+                            )?;
+                    let kek_id = bundle_kek_id
+                        .as_deref()
+                        .unwrap_or(boruna_orchestrator::audit::DEFAULT_KEK_ID);
+                    builder = builder
+                        .with_encryption(&kek, kek_id)
+                        .map_err(|e| format!("encryption setup failed: {e}"))?;
+                }
 
                 builder.add_workflow_def(&json)?;
                 let policy_json = serde_json::to_string_pretty(&policy_obj)?;
@@ -3035,7 +3099,9 @@ fn run_evidence(
     cmd: EvidenceCommand,
     env_arg: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use boruna_orchestrator::audit::{evidence::BundleManifest, verify::verify_bundle};
+    use boruna_orchestrator::audit::{
+        evidence::BundleManifest, resolve_kek, verify::verify_bundle_with_kek,
+    };
 
     match cmd {
         EvidenceCommand::Create {
@@ -3064,8 +3130,13 @@ fn run_evidence(
                 return Err("`evidence create` requires the `persist-sqlite` feature".into());
             }
         }
-        EvidenceCommand::Verify { dir } => {
-            let result = verify_bundle(&dir);
+        EvidenceCommand::Verify {
+            dir,
+            bundle_encryption_key,
+        } => {
+            let kek = resolve_kek(bundle_encryption_key.as_deref())
+                .map_err(|e| format!("invalid KEK: {e}"))?;
+            let result = verify_bundle_with_kek(&dir, kek.as_ref());
             if result.valid {
                 println!("evidence bundle is VALID");
             } else {
@@ -3076,12 +3147,35 @@ fn run_evidence(
                 process::exit(1);
             }
         }
-        EvidenceCommand::Inspect { dir, json } => {
+        EvidenceCommand::Inspect {
+            dir,
+            json,
+            decrypt,
+            bundle_encryption_key,
+        } => {
             let manifest_path = dir.join("manifest.json");
             let manifest_json = fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("cannot read manifest: {e}"))?;
             let manifest: BundleManifest = serde_json::from_str(&manifest_json)
                 .map_err(|e| format!("invalid manifest: {e}"))?;
+
+            // Sprint W6-B: refuse to print decrypted payloads from
+            // an encrypted bundle unless the operator opted in via
+            // --decrypt. The manifest itself is plaintext metadata;
+            // it always prints. Currently `inspect` only prints
+            // manifest-level fields (no payload), so the gate is
+            // future-proofing — wire it now so the surface lands
+            // with the encryption sprint.
+            let _ = (decrypt, bundle_encryption_key);
+            if let Some(info) = &manifest.encryption {
+                if !decrypt {
+                    eprintln!(
+                        "note: bundle is encrypted (algorithm={}, kek_id={}); \
+                         pass --decrypt to print decrypted file contents",
+                        info.algorithm, info.kek_id
+                    );
+                }
+            }
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&manifest)?);
@@ -3095,6 +3189,12 @@ fn run_evidence(
                 println!("workflow_hash: {}", manifest.workflow_hash);
                 println!("policy_hash:   {}", manifest.policy_hash);
                 println!("audit_hash:    {}", manifest.audit_log_hash);
+                if let Some(info) = &manifest.encryption {
+                    println!(
+                        "encrypted:     yes (algorithm={}, kek_id={})",
+                        info.algorithm, info.kek_id
+                    );
+                }
                 println!("files: {}", manifest.file_checksums.len());
                 for (name, hash) in &manifest.file_checksums {
                     println!("  {name}: {}", &hash[..16]);
