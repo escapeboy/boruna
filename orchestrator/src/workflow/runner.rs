@@ -1355,8 +1355,7 @@ impl WorkflowRunner {
             .map_err(WorkflowRunError::from)?;
         let result_hash = checkpoints
             .iter()
-            .filter(|c| matches!(c.status, PersistStepStatus::Completed))
-            .next_back()
+            .rfind(|c| matches!(c.status, PersistStepStatus::Completed))
             .and_then(|c| c.output_hash.clone())
             .unwrap_or_else(|| "0".repeat(64));
         append_audit_event(
