@@ -1,0 +1,6 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fn main() -> Int {\\n    let value_one: Int = 1\\n    value_ono\\n}\\n\")"
+---
+type error: undefined variable: value_ono
+  did you mean: 'value_one'?

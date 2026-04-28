@@ -10,6 +10,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 logos = { workspace = true }
+# Levenshtein-distance string similarity for parser/typeck typo
+# suggestions (post1-T-1.5).
+strsim = { workspace = true }
 
 [dev-dependencies]
 boruna-vm = { path = "../llmvm" }
+# Snapshot testing for parser/typeck diagnostic fixtures.
+insta = { workspace = true }

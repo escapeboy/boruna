@@ -1,6 +1,119 @@
 use crate::ast::*;
 use crate::error::CompileError;
 use crate::lexer::{Token, TokenKind};
+use crate::suggest;
+
+/// Render a `TokenKind` for parser-error messages.
+///
+/// `Debug` formatting yields strings like `Fn` and `Ident("foo")`,
+/// which contradict the docs' use of single-quoted source spelling.
+/// The display form mirrors what users actually type:
+///   `'fn'`, `'let'`, `'foo'`, `'<integer literal>'`.
+fn display_token(kind: &TokenKind) -> String {
+    match kind {
+        TokenKind::Fn => "'fn'".into(),
+        TokenKind::Let => "'let'".into(),
+        TokenKind::Mut => "'mut'".into(),
+        TokenKind::If => "'if'".into(),
+        TokenKind::Else => "'else'".into(),
+        TokenKind::Match => "'match'".into(),
+        TokenKind::Return => "'return'".into(),
+        TokenKind::Type => "'type'".into(),
+        TokenKind::Enum => "'enum'".into(),
+        TokenKind::ModuleKw => "'module'".into(),
+        TokenKind::Import => "'import'".into(),
+        TokenKind::Export => "'export'".into(),
+        TokenKind::True => "'true'".into(),
+        TokenKind::False => "'false'".into(),
+        TokenKind::None => "'None'".into(),
+        TokenKind::Some => "'Some'".into(),
+        TokenKind::Ok => "'Ok'".into(),
+        TokenKind::ErrKw => "'Err'".into(),
+        TokenKind::Requires => "'requires'".into(),
+        TokenKind::Ensures => "'ensures'".into(),
+        TokenKind::Spawn => "'spawn'".into(),
+        TokenKind::Send => "'send'".into(),
+        TokenKind::Receive => "'receive'".into(),
+        TokenKind::Emit => "'emit'".into(),
+        TokenKind::While => "'while'".into(),
+        TokenKind::For => "'for'".into(),
+        TokenKind::In => "'in'".into(),
+        TokenKind::Ident(s) => format!("'{s}'"),
+        TokenKind::IntLit(_) => "<integer literal>".into(),
+        TokenKind::FloatLit(_) => "<float literal>".into(),
+        TokenKind::StringLit(_) => "<string literal>".into(),
+        // For all remaining operator/punctuation tokens, fall back
+        // to Debug. They appear infrequently in keyword-typo paths
+        // and the Debug rendering is unambiguous.
+        other => format!("{:?}", other),
+    }
+}
+
+/// If the actual token is an Ident whose spelling is one
+/// Levenshtein-edit away from the expected keyword's canonical
+/// spelling, return ` did you mean: 'kw'?`. Otherwise empty.
+fn keyword_suggestion_suffix(actual: &TokenKind, expected: &TokenKind) -> String {
+    let TokenKind::Ident(s) = actual else {
+        return String::new();
+    };
+    if let Some(kw) = suggest::keyword_suggestion(s) {
+        // Only suggest if the unique candidate is the keyword the
+        // parser was expecting at this site. Otherwise the
+        // suggestion is misleading ("expected 'fn', found 'mtch';
+        // did you mean: 'match'?" — the parser still wants 'fn').
+        if let Some(expected_spelling) = keyword_spelling(expected) {
+            if kw == expected_spelling {
+                return format!("\n  did you mean: '{kw}'?");
+            }
+        }
+    }
+    String::new()
+}
+
+/// Suggestion suffix when the actual token is an Ident close to
+/// any keyword (used at `expected item / expression / pattern`
+/// sites where the parser does not have a specific expected token).
+fn keyword_suggestion_for_ident(actual: &TokenKind) -> String {
+    if let TokenKind::Ident(s) = actual {
+        if let Some(kw) = suggest::keyword_suggestion(s) {
+            return format!("\n  did you mean: '{kw}'?");
+        }
+    }
+    String::new()
+}
+
+fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
+    Some(match kind {
+        TokenKind::Fn => "fn",
+        TokenKind::Let => "let",
+        TokenKind::Mut => "mut",
+        TokenKind::If => "if",
+        TokenKind::Else => "else",
+        TokenKind::Match => "match",
+        TokenKind::Return => "return",
+        TokenKind::Type => "type",
+        TokenKind::Enum => "enum",
+        TokenKind::ModuleKw => "module",
+        TokenKind::Import => "import",
+        TokenKind::Export => "export",
+        TokenKind::True => "true",
+        TokenKind::False => "false",
+        TokenKind::None => "None",
+        TokenKind::Some => "Some",
+        TokenKind::Ok => "Ok",
+        TokenKind::ErrKw => "Err",
+        TokenKind::Requires => "requires",
+        TokenKind::Ensures => "ensures",
+        TokenKind::Spawn => "spawn",
+        TokenKind::Send => "send",
+        TokenKind::Receive => "receive",
+        TokenKind::Emit => "emit",
+        TokenKind::While => "while",
+        TokenKind::For => "for",
+        TokenKind::In => "in",
+        _ => return Option::None,
+    })
+}
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, CompileError> {
     let mut parser = Parser::new(tokens);
@@ -60,21 +173,30 @@ impl Parser {
     fn expect(&mut self, expected: &TokenKind) -> Result<TokenKind, CompileError> {
         self.skip_newlines();
         if self.pos >= self.tokens.len() {
-            return Err(self.error(format!("expected {:?}, got EOF", expected)));
+            return Err(self.error(format!(
+                "expected {}, found end of input",
+                display_token(expected)
+            )));
         }
         let tok = self.tokens[self.pos].kind.clone();
         if std::mem::discriminant(&tok) == std::mem::discriminant(expected) {
             self.pos += 1;
             Ok(tok)
         } else {
-            Err(self.error(format!("expected {:?}, got {:?}", expected, tok)))
+            let suffix = keyword_suggestion_suffix(&tok, expected);
+            Err(self.error(format!(
+                "expected {}, found {}{}",
+                display_token(expected),
+                display_token(&tok),
+                suffix
+            )))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String, CompileError> {
         self.skip_newlines();
         if self.pos >= self.tokens.len() {
-            return Err(self.error("expected identifier, got EOF".into()));
+            return Err(self.error("expected identifier, found end of input".into()));
         }
         match &self.tokens[self.pos].kind {
             TokenKind::Ident(s) => {
@@ -82,7 +204,10 @@ impl Parser {
                 self.pos += 1;
                 Ok(s)
             }
-            other => Err(self.error(format!("expected identifier, got {:?}", other))),
+            other => Err(self.error(format!(
+                "expected identifier, found {}",
+                display_token(other)
+            ))),
         }
     }
 
@@ -149,7 +274,16 @@ impl Parser {
                     items: vec![],
                 }))
             }
-            other => Err(self.error(format!("expected item, got {:?}", other))),
+            Some(other) => {
+                let other = other.clone();
+                let suffix = keyword_suggestion_for_ident(&other);
+                Err(self.error(format!(
+                    "expected item, found {}{}",
+                    display_token(&other),
+                    suffix
+                )))
+            }
+            Option::None => Err(self.error("expected item, found end of input".into())),
         }
     }
 
@@ -720,7 +854,15 @@ impl Parser {
                     Ok(Expr::Ident(name))
                 }
             }
-            other => Err(self.error(format!("expected expression, got {:?}", other))),
+            Some(other) => {
+                let suffix = keyword_suggestion_for_ident(&other);
+                Err(self.error(format!(
+                    "expected expression, found {}{}",
+                    display_token(&other),
+                    suffix
+                )))
+            }
+            Option::None => Err(self.error("expected expression, found end of input".into())),
         }
     }
 
@@ -841,7 +983,15 @@ impl Parser {
                     unreachable!()
                 }
             }
-            other => Err(self.error(format!("expected pattern, got {:?}", other))),
+            Some(other) => {
+                let suffix = keyword_suggestion_for_ident(&other);
+                Err(self.error(format!(
+                    "expected pattern, found {}{}",
+                    display_token(&other),
+                    suffix
+                )))
+            }
+            Option::None => Err(self.error("expected pattern, found end of input".into())),
         }
     }
 }

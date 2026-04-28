@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Parser and typeck error messages now include `did you mean: 'kw'?`
+  suggestions for typos within Levenshtein distance 1 of a known
+  keyword (parser) or in-scope identifier (typeck). Suggestions are
+  appended only when a single unique candidate exists, so noisy
+  ambiguous suggestions are intentionally suppressed. The single-line
+  prefix (`undefined variable: foo`) remains unchanged so existing
+  diagnostic-collector parsers continue to classify errors correctly.
+
 ### Added
 
 - `docs/post-1.0/README.md` describing how post-1.0 work is tracked

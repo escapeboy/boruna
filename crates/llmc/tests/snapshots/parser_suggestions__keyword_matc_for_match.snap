@@ -1,0 +1,5 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fn main() -> Int {\\n    matc x { _ => 0 }\\n}\\n\")"
+---
+parse error at line 2: expected expression, found Underscore

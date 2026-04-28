@@ -1,0 +1,5 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fn main() -> Int {\\n    lett x: Int = 1\\n    x\\n}\\n\")"
+---
+parse error at line 2: expected expression, found Colon

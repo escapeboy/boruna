@@ -1,0 +1,6 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fn helper(x: Int) -> Int { x + 1 }\\nfn main() -> Int {\\n    helpr(2)\\n}\\n\")"
+---
+type error: undefined variable: helpr
+  did you mean: 'helper'?

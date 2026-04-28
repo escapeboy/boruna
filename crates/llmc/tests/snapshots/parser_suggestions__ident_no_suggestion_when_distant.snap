@@ -1,0 +1,5 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fn main() -> Int {\\n    let value_one: Int = 1\\n    xyz\\n}\\n\")"
+---
+type error: undefined variable: xyz
