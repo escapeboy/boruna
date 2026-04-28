@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Evidence bundle encryption** (sprint `W6-B`). Operators can
+  now opt into AES-256-GCM envelope encryption for evidence
+  bundles via `boruna workflow run --record --encrypt-bundle`
+  with the KEK supplied via `--bundle-encryption-key <hex>` or
+  `BORUNA_BUNDLE_KEK` env. Per-bundle data keys (DEK) are
+  wrapped with the KEK; `bundle.json` carries the wrapped DEK
+  and algorithm metadata. `verify_bundle` auto-detects
+  encryption and decrypts before integrity check. Backwards-
+  compat: unencrypted bundles continue to work. KEK lifecycle
+  is the operator's responsibility — Boruna does not manage
+  keys. New error_kinds: `evidence.encryption_key_required`,
+  `evidence.encryption_key_mismatch`, `evidence.cipher_tag_invalid`.
+  Threat model: `docs/design-bundle-encryption.md`.
+
 ## [1.0.0-rc1] - 2026-04-28
 
 **Theme: 1.0 release candidate.** This is the first 1.0

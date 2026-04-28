@@ -27,6 +27,13 @@ clap = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 tempfile = "3"
+# Sprint W6-B: evidence bundle envelope encryption (AES-256-GCM with
+# DEK wrapped under operator-supplied KEK). See
+# `docs/design-bundle-encryption.md` and ADR 001 for the
+# default-features = false rationale.
+aes-gcm = { workspace = true }
+rand_core = { workspace = true }
+base64 = { workspace = true }
 boruna-effect = { path = "../crates/llm-effect" }
 boruna-compiler = { path = "../crates/llmc" }
 boruna-vm = { path = "../crates/llmvm" }

@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::audit::encryption::{EncryptionError, EncryptionInfo, Envelope, KEY_LEN};
 use crate::audit::fingerprint::EnvFingerprint;
 use crate::audit::log::AuditLog;
 use crate::audit::BUNDLE_FORMAT_VERSION;
@@ -31,6 +32,13 @@ pub struct BundleJson {
 }
 
 /// Manifest describing an evidence bundle.
+///
+/// Sprint W6-B added the optional `encryption` field. Plaintext
+/// bundles serialize without it (skip-if-none); existing W1-C readers
+/// that don't know about encryption see an unchanged shape.
+/// `encryption.algorithm`, `kek_id`, `wrapped_dek`, and
+/// `wrapped_dek_nonce` are REPLAY-VERIFIED (they participate in
+/// `bundle_hash`); `encryption.files` is OPERATIONAL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleManifest {
     #[serde(default = "default_schema_version")]
@@ -45,6 +53,10 @@ pub struct BundleManifest {
     pub started_at: String,
     pub completed_at: String,
     pub bundle_hash: String,
+    /// Sprint W6-B: present iff the bundle is envelope-encrypted with
+    /// AES-256-GCM. Absent → plaintext bundle (W1-C behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionInfo>,
 }
 
 /// Builder for creating evidence bundles on disk.
@@ -56,6 +68,14 @@ pub struct EvidenceBundleBuilder {
     policy_hash: String,
     started_at: String,
     file_checksums: BTreeMap<String, String>,
+    /// Sprint W6-B: when present, every file the builder writes is
+    /// encrypted with AES-256-GCM under the envelope's DEK before
+    /// hitting disk. `file_checksums` are still SHA-256(plaintext) so
+    /// the existing verify path matches once the verifier decrypts.
+    encryption: Option<Envelope>,
+    /// Tracks filenames written through the encrypted path; used to
+    /// populate `EncryptionInfo.files` at finalize time.
+    encrypted_files: Vec<String>,
 }
 
 impl EvidenceBundleBuilder {
@@ -72,7 +92,22 @@ impl EvidenceBundleBuilder {
             policy_hash: String::new(),
             started_at: chrono::Utc::now().to_rfc3339(),
             file_checksums: BTreeMap::new(),
+            encryption: None,
+            encrypted_files: Vec::new(),
         })
+    }
+
+    /// Sprint W6-B: enable AES-256-GCM envelope encryption for all
+    /// subsequent file writes. Generates a fresh DEK and wraps it
+    /// with the supplied KEK. The DEK lives in-memory only and is
+    /// dropped when the builder is consumed by `finalize`.
+    pub fn with_encryption(
+        mut self,
+        kek: &[u8; KEY_LEN],
+        kek_id: &str,
+    ) -> Result<Self, EncryptionError> {
+        self.encryption = Some(Envelope::new(kek, kek_id)?);
+        Ok(self)
     }
 
     /// Store the workflow definition in the bundle.
@@ -98,7 +133,9 @@ impl EvidenceBundleBuilder {
         std::fs::create_dir_all(&subdir)?;
         let filename = format!("outputs/{step_id}/{name}.json");
         let path = self.bundle_dir.join(&filename);
-        std::fs::write(&path, json)?;
+        let bytes = self.encrypt_if_needed(&filename, json.as_bytes());
+        std::fs::write(&path, &bytes)?;
+        // Checksum is over the plaintext: verify decrypts then hashes.
         self.file_checksums.insert(filename, sha256_str(json));
         Ok(())
     }
@@ -121,6 +158,18 @@ impl EvidenceBundleBuilder {
             serde_json::to_string_pretty(&env_fingerprint).map_err(std::io::Error::other)?;
         self.write_file("env_fingerprint.json", &env_json)?;
 
+        // Build encryption metadata if the builder is encrypted. The
+        // `files` list is populated from the running tracker; sort
+        // for deterministic JSON output.
+        let encryption_info = self.encryption.as_ref().map(|env| {
+            let mut info = env.info.clone();
+            let mut files = self.encrypted_files.clone();
+            files.sort();
+            files.dedup();
+            info.files = files;
+            info
+        });
+
         // Build manifest
         let manifest = BundleManifest {
             schema_version: 1,
@@ -134,6 +183,7 @@ impl EvidenceBundleBuilder {
             started_at: self.started_at.clone(),
             completed_at: completed_at.clone(),
             bundle_hash: String::new(), // filled below
+            encryption: encryption_info,
         };
 
         // Compute bundle hash from manifest (excluding bundle_hash itself)
@@ -198,10 +248,25 @@ impl EvidenceBundleBuilder {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&path, content)?;
+        let bytes = self.encrypt_if_needed(name, content.as_bytes());
+        std::fs::write(&path, &bytes)?;
         self.file_checksums
             .insert(name.to_string(), sha256_str(content));
         Ok(())
+    }
+
+    /// Encrypt `bytes` for `name` if the builder has an envelope; also
+    /// record the filename so finalize can populate
+    /// `EncryptionInfo.files`. Returns the bytes to write to disk.
+    fn encrypt_if_needed(&mut self, name: &str, bytes: &[u8]) -> Vec<u8> {
+        match &self.encryption {
+            Some(env) => {
+                let ct = env.encrypt_file(name, bytes);
+                self.encrypted_files.push(name.to_string());
+                ct
+            }
+            None => bytes.to_vec(),
+        }
     }
 }
 

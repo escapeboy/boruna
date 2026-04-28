@@ -26,6 +26,11 @@ clap = { version = "4", features = ["derive", "env"] }
 logos = "0.14"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
+# Sprint W6-B: evidence bundle envelope encryption.
+# `default-features = false` per ADR 001 (musl static link friendly).
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 
 # Crate aliases: old directory names → new names for Boruna branding
 # The directory structure stays the same; Cargo.toml names are updated.
