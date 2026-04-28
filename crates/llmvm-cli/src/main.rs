@@ -3035,7 +3035,10 @@ fn run_evidence(
     cmd: EvidenceCommand,
     env_arg: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use boruna_orchestrator::audit::{evidence::BundleManifest, verify::verify_bundle};
+    use boruna_orchestrator::audit::{
+        evidence::{BundleJson, BundleManifest},
+        verify::verify_bundle,
+    };
 
     match cmd {
         EvidenceCommand::Create {
@@ -3083,10 +3086,28 @@ fn run_evidence(
             let manifest: BundleManifest = serde_json::from_str(&manifest_json)
                 .map_err(|e| format!("invalid manifest: {e}"))?;
 
+            // bundle.json is optional from the inspect viewpoint — we
+            // surface format_version when present, but don't fail if a
+            // user is poking at a partial bundle (verify is the gate).
+            let bundle_meta: Option<BundleJson> = fs::read_to_string(dir.join("bundle.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
+
             if json {
-                println!("{}", serde_json::to_string_pretty(&manifest)?);
+                let merged = serde_json::json!({
+                    "format_version": bundle_meta
+                        .as_ref()
+                        .map(|b| b.format_version.clone()),
+                    "manifest": manifest,
+                });
+                println!("{}", serde_json::to_string_pretty(&merged)?);
             } else {
                 println!("=== Evidence Bundle ===");
+                if let Some(b) = &bundle_meta {
+                    println!("format_version: {}", b.format_version);
+                } else {
+                    println!("format_version: <legacy / missing bundle.json>");
+                }
                 println!("run_id:        {}", manifest.run_id);
                 println!("workflow:      {}", manifest.workflow_name);
                 println!("started_at:    {}", manifest.started_at);

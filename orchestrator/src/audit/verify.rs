@@ -1,8 +1,36 @@
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-use crate::audit::evidence::BundleManifest;
+use crate::audit::evidence::{BundleJson, BundleManifest};
 use crate::audit::log::AuditLog;
+use crate::audit::BUNDLE_FORMAT_VERSION;
+
+/// Errors raised by the bundle reader gate that callers may want to
+/// match on programmatically (vs. the free-form strings in
+/// `VerifyResult::errors`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceError {
+    /// `bundle.json` is missing or has no `format_version` field, OR the
+    /// version's major component does not match the reader's supported
+    /// major (semver-like compat: `1.x` is forward-compat for a `1.0`
+    /// reader; `2.x` is rejected).
+    UnsupportedFormat { found: String, expected: String },
+}
+
+impl std::fmt::Display for EvidenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvidenceError::UnsupportedFormat { found, expected } => {
+                write!(
+                    f,
+                    "unsupported evidence bundle format_version: found `{found}`, expected major `{expected}`"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EvidenceError {}
 
 /// Verification result.
 #[derive(Debug)]
@@ -11,9 +39,59 @@ pub struct VerifyResult {
     pub errors: Vec<String>,
 }
 
+/// Read and validate the top-level `bundle.json` format gate.
+///
+/// Implements §1 ("reject at parse, don't silently override"):
+/// - Legacy bundles (pre-1.0, no `bundle.json`) → reject with a clear
+///   migration hint pointing at `boruna migrate evidence-bundle` (W5-C).
+/// - Future-major bundles (`2.x`) → reject — the reader can't safely
+///   interpret an unknown major.
+/// - Same-major bundles (`1.x`) → accept (forward-compat: unknown
+///   fields are ignored).
+pub fn check_bundle_format(bundle_dir: &Path) -> Result<BundleJson, EvidenceError> {
+    let bundle_path = bundle_dir.join("bundle.json");
+    let raw = match std::fs::read_to_string(&bundle_path) {
+        Ok(s) => s,
+        Err(_) => {
+            return Err(EvidenceError::UnsupportedFormat {
+                found: "missing bundle.json (legacy bundle from pre-1.0 release; use `boruna migrate evidence-bundle` to upgrade)".to_string(),
+                expected: BUNDLE_FORMAT_VERSION.to_string(),
+            });
+        }
+    };
+    let parsed: BundleJson = match serde_json::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(EvidenceError::UnsupportedFormat {
+                found: format!("invalid bundle.json: {e}"),
+                expected: BUNDLE_FORMAT_VERSION.to_string(),
+            });
+        }
+    };
+    let major = parsed.format_version.split('.').next().unwrap_or("");
+    let expected_major = BUNDLE_FORMAT_VERSION.split('.').next().unwrap_or("1");
+    if major.is_empty() || major != expected_major {
+        return Err(EvidenceError::UnsupportedFormat {
+            found: parsed.format_version.clone(),
+            expected: format!("{expected_major}.x"),
+        });
+    }
+    Ok(parsed)
+}
+
 /// Verify an evidence bundle directory for integrity.
 pub fn verify_bundle(bundle_dir: &Path) -> VerifyResult {
     let mut errors = Vec::new();
+
+    // 0. Format-version gate: reject pre-1.0 legacy bundles and any
+    //    bundle from a future incompatible major. This runs FIRST so
+    //    we don't try to read content we can't safely interpret.
+    if let Err(e) = check_bundle_format(bundle_dir) {
+        return VerifyResult {
+            valid: false,
+            errors: vec![e.to_string()],
+        };
+    }
 
     // 1. Load and parse manifest
     let manifest_path = bundle_dir.join("manifest.json");
@@ -82,6 +160,7 @@ pub fn verify_bundle(bundle_dir: &Path) -> VerifyResult {
 
     // 4. Verify required files exist
     for required in &[
+        "bundle.json",
         "manifest.json",
         "workflow.json",
         "policy.json",
@@ -207,5 +286,73 @@ mod tests {
     fn test_verify_nonexistent_dir() {
         let result = verify_bundle(Path::new("/nonexistent/path"));
         assert!(!result.valid);
+    }
+
+    #[test]
+    fn verify_rejects_missing_format_version() {
+        // A legacy bundle has no bundle.json. The reader gate must
+        // reject it before any further checks run.
+        let dir = tempfile::tempdir().unwrap();
+        build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        std::fs::remove_file(bundle_dir.join("bundle.json")).unwrap();
+
+        let result = verify_bundle(&bundle_dir);
+        assert!(!result.valid);
+        let joined = result.errors.join(" ");
+        assert!(
+            joined.contains("legacy bundle") || joined.contains("missing bundle.json"),
+            "expected legacy-bundle hint, got: {:?}",
+            result.errors
+        );
+        assert!(
+            joined.contains("boruna migrate evidence-bundle"),
+            "expected migration hint, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn verify_rejects_future_major_version() {
+        // A 2.x bundle MUST be rejected — major-version bumps are
+        // breaking by spec.
+        let dir = tempfile::tempdir().unwrap();
+        build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        let bundle_path = bundle_dir.join("bundle.json");
+        let raw = std::fs::read_to_string(&bundle_path).unwrap();
+        let mut parsed: BundleJson = serde_json::from_str(&raw).unwrap();
+        parsed.format_version = "2.0".to_string();
+        std::fs::write(&bundle_path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+        let result = verify_bundle(&bundle_dir);
+        assert!(!result.valid);
+        let joined = result.errors.join(" ");
+        assert!(
+            joined.contains("unsupported evidence bundle format_version") && joined.contains("2.0"),
+            "expected unsupported-format error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn verify_accepts_minor_bump() {
+        // A 1.5 bundle MUST be accepted by a 1.0 reader — same-major
+        // means forward-compat (unknown fields ignored).
+        let dir = tempfile::tempdir().unwrap();
+        build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        let bundle_path = bundle_dir.join("bundle.json");
+        let raw = std::fs::read_to_string(&bundle_path).unwrap();
+        let mut parsed: BundleJson = serde_json::from_str(&raw).unwrap();
+        parsed.format_version = "1.5".to_string();
+        std::fs::write(&bundle_path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+        let result = verify_bundle(&bundle_dir);
+        assert!(
+            result.valid,
+            "1.5 bundle should pass 1.0 reader; got errors: {:?}",
+            result.errors
+        );
     }
 }
