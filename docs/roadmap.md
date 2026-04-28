@@ -125,7 +125,7 @@ Milestone: the stable API surface is locked. 0.5+ programs compile and run uncha
 
 - [ ] **Security audit** of the VM and capability enforcement (external auditor; bookable months in advance — must commit Q4 2026 to land Q2 2027)
 - [ ] **Performance benchmarks** — published baseline for compile time, step throughput, evidence bundle write/verify time
-- [ ] **Long-term support commitment for 1.x** — backports for security fixes, deprecation policy
+- [x] **Long-term support commitment for 1.x** — backports for security fixes, deprecation policy (sprint W5-B; see [`lts.md`](./lts.md))
 - [ ] **Migration tooling stable** (graduated from 0.5 beta)
 - [ ] All schemas (language, DAG, evidence) finalized and documented
 - [ ] **Evidence bundle storage adapters** — pluggable shipping to S3 / object storage / document store, beyond local files

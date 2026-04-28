@@ -5,6 +5,8 @@
 [![Version](https://img.shields.io/badge/version-0.5.0-orange.svg)](CHANGELOG.md)
 [![Status: Pre-production](https://img.shields.io/badge/status-pre--production-yellow.svg)](docs/stability.md)
 
+> **LTS:** 1.x will be the long-term-support line. See [`docs/lts.md`](./docs/lts.md) for the support-window, deprecation, and security-backport policy that takes effect at 1.0 GA.
+
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 
 ---

@@ -2,6 +2,12 @@
 
 Boruna is at version **0.1.0**. It is an early-stage project. This document is explicit about what is stable, what is experimental, and what is planned.
 
+> **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
+> below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
+> are the same surfaces the LTS document commits to preserving across the
+> 1.x line. Experimental and Alpha tiers are explicitly NOT LTS-protected
+> and may break in 1.x minor releases.
+
 ## Current status
 
 Boruna is a **working prototype** with a clear production trajectory. The core execution engine is functional and fully tested (557+ tests). The public API surface is not yet stable — breaking changes may occur in minor versions until 1.0.
