@@ -57,6 +57,7 @@ Field semantics:
 | `run_id`         | string          | yes      | Workflow run identifier, matches `manifest.run_id`. |
 | `workflow_hash`  | string (hex)    | yes      | SHA-256 of the workflow definition JSON, matches `manifest.workflow_hash`. |
 | `components`     | string[]        | yes      | Sorted list of component file/directory names actually present in this bundle. Trailing `/` denotes a directory. Diagnostic; readers MUST NOT rely on this list to drive parsing. |
+| `encryption`     | object          | no       | **Additive in 1.x** (sprint `W6-B`). When present in `manifest.json`, the bundle's file contents are AES-256-GCM envelope-encrypted. See §9. Absent → plaintext bundle (original 1.0 behavior). |
 
 Future minor versions (`1.x`) may add optional fields. Readers MUST tolerate them.
 
@@ -126,7 +127,76 @@ unsupported evidence bundle format_version: found `missing bundle.json (legacy b
 
 The `boruna migrate evidence-bundle` tool is planned for sprint W5-C. Until it ships, legacy bundles must be re-recorded against a current binary.
 
-## 8. References
+## 8. Encryption (additive 1.x)
+
+The optional `encryption` field in `manifest.json` carries the metadata
+for AES-256-GCM envelope encryption (sprint `W6-B`). When absent, the
+bundle is plaintext (the original 1.0 behavior). When present, file
+contents in the bundle directory are AES-256-GCM ciphertext keyed off
+a fresh per-bundle data-encryption key (DEK) which is itself wrapped
+with an operator-supplied key-encryption-key (KEK).
+
+Field shape:
+
+| Field | Type | Required | Description |
+|-------|------|:--------:|-------------|
+| `algorithm` | string | yes | Locked to `"aes-256-gcm"` for 1.x |
+| `kek_id` | string | yes | Operator-supplied identifier; bound as AAD into the wrapped DEK |
+| `wrapped_dek` | base64 | yes | DEK encrypted with the KEK |
+| `wrapped_dek_nonce` | base64 | yes | Nonce for the DEK wrap |
+| `files` | string[] | no | Operational hint listing encrypted files; readers MUST NOT use this to drive parsing |
+
+`algorithm`, `kek_id`, `wrapped_dek`, and `wrapped_dek_nonce` are
+replay-verified — they live inside `manifest.json` and therefore
+participate in `bundle_hash`. `files` is OPERATIONAL metadata (per
+project convention §15): it is informational; the canonical set of
+encrypted files is derivable from `manifest.file_checksums` and
+tampering with `files` cannot bypass decryption (the verify loop
+iterates `file_checksums`, not `encryption.files`).
+
+Per-file nonces are deterministic `SHA-256(filename)[..12]`. This is
+safe because the DEK is freshly generated per bundle and filenames are
+unique within a bundle, so a (DEK, nonce) pair never repeats. Each
+per-file ciphertext carries an AES-GCM authentication tag; tag failure
+on read surfaces as `evidence.cipher_tag_invalid`.
+
+### 8.1 Reader contract for encryption
+
+A 1.x reader:
+
+- MUST accept bundles WITHOUT `encryption` (plaintext path; original
+  1.0 behavior).
+- MUST accept bundles WITH `encryption` if a KEK is available.
+- MUST reject `encryption.algorithm` values other than `"aes-256-gcm"`
+  with `evidence.unsupported_algorithm`.
+- MUST surface DEK-unwrap failure as `evidence.encryption_key_mismatch`
+  and a missing KEK as `evidence.encryption_key_required`.
+- MUST surface per-file tag mismatch as `evidence.cipher_tag_invalid`
+  and refuse to return decrypted bytes from the failing file.
+- MUST NOT log the unwrapped DEK at any severity.
+
+### 8.2 Reject-at-parse contract (§1)
+
+Per project convention §1 ("reject at parse, don't silently override"),
+a reader MUST refuse to interpret a bundle when:
+
+- `encryption` is present but `algorithm` is anything other than
+  `"aes-256-gcm"` → `evidence.unsupported_algorithm`.
+- `encryption` is present but a required field
+  (`kek_id`, `wrapped_dek`, `wrapped_dek_nonce`) is missing or
+  malformed (non-base64, wrong length) → reader-defined parse error.
+- `encryption` is present but no KEK has been supplied to the reader
+  → `evidence.encryption_key_required`.
+
+A 1.0 reader (pre-W6-B) that does not know the `encryption` field will
+ignore it as an unknown field per §1 of this spec, then fail integrity
+verification because the on-disk bytes hash to ciphertext rather than
+plaintext referenced by `manifest.file_checksums`. Operators using a
+1.0 reader against an encrypted bundle MUST upgrade to a 1.x reader
+that understands `encryption`. This is the documented compat story per
+§B.3 of the LTS contract (`docs/lts.md`).
+
+## 9. References
 
 - Implementation: `orchestrator/src/audit/evidence.rs` (`BundleJson`, `EvidenceBundleBuilder::finalize`)
 - Reader gate: `orchestrator/src/audit/verify.rs` (`check_bundle_format`, `verify_bundle`)

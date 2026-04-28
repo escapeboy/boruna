@@ -8,6 +8,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Canonical `error_kind` taxonomy reference** at
+  [`docs/reference/error-kinds.md`](./docs/reference/error-kinds.md)
+  (sprint `W7`). All stable `error_kind` strings enumerated with
+  HTTP status, sprint origin, and caller-facing meaning per LTS §B.6.
+  Cross-linked from the policy-schema reference and the evidence
+  bundle spec; integrators may switch on these strings.
+- **Evidence bundle encryption block documented in spec** (sprint
+  `W7`, finding `M-1`). [`docs/spec/evidence-bundle-1.0.md`](./docs/spec/evidence-bundle-1.0.md)
+  now formally describes the optional `encryption` field added in
+  `W6-B`: field shape, AES-256-GCM algorithm pin, per-file nonce
+  derivation, replay-verified vs. operational classification, and the
+  reader contract (1.x readers WITH KEK, 1.0 readers without). Additive
+  to `format_version: 1.0`; no version bump.
+- **mTLS limitations documented** (sprint `W7`, findings `M-4` /
+  `M-5`). [`docs/guides/coord-mtls.md`](./docs/guides/coord-mtls.md)
+  gains a "Limitations" section calling out the absence of CRL/OCSP
+  revocation and recommending short-lived (≤24h) certs as the v1
+  mitigation, plus a "CN comparison semantics" subsection documenting
+  the ASCII-only `eq_ignore_ascii_case` fold (non-ASCII CNs are
+  case-sensitive; no Unicode normalization).
 - **Mutual TLS auth + per-worker client certificates** (sprint
   `W6-A`). Operators can now require X.509 client certs on the
   coord HTTP surface via `--tls-cert`, `--tls-key`, and
@@ -32,6 +52,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   keys. New error_kinds: `evidence.encryption_key_required`,
   `evidence.encryption_key_mismatch`, `evidence.cipher_tag_invalid`.
   Threat model: `docs/design-bundle-encryption.md`.
+
+### Decided
+
+- **TLS 1.2 remains enabled in W6-A mTLS** (sprint `W7`). Decision:
+  the default rustls 0.23 + `aws_lc_rs` configuration restricts TLS
+  1.2 to AEAD-only ciphers (no CBC, no RC4, no export-grade), which
+  is considered safe for 1.0 GA. Operators wanting TLS-1.3-only can
+  build with a forked `rustls` feature set; the default ships TLS 1.2
+  for compatibility with older HTTP load balancers and worker hosts.
+  Rationale: the cryptographic surface (AEAD ciphers, ECDHE key
+  exchange) is the same as TLS 1.3 for the practical attack model;
+  forcing TLS-1.3-only would block deployment on systems with older
+  client/proxy stacks. Re-evaluate at 2.0 if TLS 1.3 adoption is
+  universal.
 
 ## [1.0.0-rc1] - 2026-04-28
 
