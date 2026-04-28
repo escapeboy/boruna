@@ -27,6 +27,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   Library APIs `BlobStore::find_orphans`, `BlobStore::delete`,
   and `RunCheckpointStore::all_referenced_blob_hashes` are
   also exposed for future coord-side periodic-sweep wiring.
+- **`boruna new` interactive scaffold** (sprint `W3-C`).
+  Wraps the existing template engine with stdin-driven
+  prompting. Walks the user through template selection,
+  target dir, and per-template variables; confirms before
+  writing. `--no-input` mode is CI-safe (errors on missing
+  defaults rather than silently filling). Refuses to
+  overwrite non-empty target dirs without `--force`.
 - **Coordinator HA / failover** (sprint `W2`). Multiple
   `boruna coordinator serve` processes can run against the
   same SQLite data-dir for active-active HA. Workers accept
