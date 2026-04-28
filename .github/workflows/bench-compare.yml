@@ -69,7 +69,13 @@ jobs:
           # restricts which branches can be PR targets.
           git fetch origin "$BASE_REF"
           git checkout "origin/$BASE_REF"
-          cargo bench -p boruna-benches -- --save-baseline base
+          # Enumerate the criterion bench targets explicitly so the lib's
+          # default test harness (which does not know --save-baseline)
+          # is skipped. Adding a new [[bench]] target requires updating
+          # this list.
+          cargo bench -p boruna-benches \
+            --bench compile --bench vm_throughput --bench evidence \
+            -- --save-baseline base
 
       - name: Bench PR head
         env:
@@ -79,7 +85,9 @@ jobs:
           # HEAD_SHA is a 40-char git oid extracted by GitHub from the
           # PR ref, not a user-supplied branch name; safe to checkout.
           git checkout "$HEAD_SHA"
-          cargo bench -p boruna-benches -- --baseline base
+          cargo bench -p boruna-benches \
+            --bench compile --bench vm_throughput --bench evidence \
+            -- --baseline base
 
       - name: Render comparison
         id: cmp
