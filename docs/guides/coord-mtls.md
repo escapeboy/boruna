@@ -80,6 +80,24 @@ This is a real security boundary. Without the CN check, any worker
 holding a valid cert chained to `--tls-client-ca` could impersonate
 any other worker by passing a different `worker_id` in the body.
 
+### CN comparison semantics
+
+When both a cert subject CN and a request body `worker_id` are
+present, the coord compares them with `eq_ignore_ascii_case`. This
+means:
+
+- ASCII case folding works as expected: `Worker-7` ≡ `worker-7`.
+- **Non-ASCII characters** (Cyrillic, accented Latin, IDN-style CNs)
+  are compared case-sensitively. `WORKER-Α` (Greek alpha) and
+  `worker-α` are NOT considered equal.
+
+Boruna does not perform Unicode normalization (NFC/NFKC). Operators
+running fleets with non-ASCII worker identifiers should:
+
+- Use the SAME case in cert CN and worker config, OR
+- Restrict CN values to ASCII (recommended for interop with logging /
+  OTel / Prometheus tooling).
+
 ## Auth precedence
 
 The coord's auth middleware composes both gates:
@@ -176,6 +194,30 @@ unchanged on 1.0+. To migrate:
 There is no way to silently downgrade from mTLS to plain — once
 the coord is started with TLS flags, every connection MUST present
 a valid client cert. This is by design.
+
+## Limitations
+
+### No CRL or OCSP
+
+Boruna's mTLS layer verifies client certs against the configured
+`--tls-client-ca` trust root at TLS handshake time, but does NOT
+consult Certificate Revocation Lists (CRLs) or perform OCSP checks.
+A leaked worker private key remains valid until the cert's natural
+`notAfter` expiry.
+
+### Mitigation: short-lived certs
+
+For deployments where revocation matters, issue **short-lived certs
+(≤24 hours)** and rotate them frequently. A leaked key then has a
+bounded blast radius. Recommended toolchains:
+
+- [smallstep/step-ca](https://smallstep.com/docs/step-ca) — automated
+  short-lived issuance.
+- [cfssl](https://github.com/cloudflare/cfssl) for static
+  configurations.
+- A simple cron job rotating certs from your existing PKI.
+
+CRL/OCSP support is on the post-1.0 roadmap.
 
 ## Adversarial properties
 
