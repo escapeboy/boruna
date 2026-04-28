@@ -83,14 +83,18 @@ struct WorkerSession {
     #[allow(dead_code)]
     capability_set_hash: String,
     /// Sprint `W3-A` — placement filter ONLY (operational state,
-    /// per project §15). When `Some(set)`, this worker only
-    /// receives steps whose policy-required capabilities are a
-    /// subset of `set`. When `None`, the worker is treated as a
-    /// full-fleet worker (matches every step). The capability
-    /// gateway in `boruna-vm` remains the security boundary; a
-    /// worker that lies about its advertised set is still denied
-    /// by policy at execution time.
-    advertised_capabilities: Option<BTreeSet<String>>,
+    /// per project §15). When `Some(map)`, this worker only
+    /// receives steps whose policy-required capabilities each
+    /// resolve to a `(name, version)` the worker has advertised.
+    /// When `None`, the worker is treated as a full-fleet worker
+    /// (matches every step). The capability gateway in `boruna-vm`
+    /// remains the security boundary; a worker that lies about its
+    /// advertised set is still denied by policy at execution time.
+    ///
+    /// Post-1.0 (T-1.3): the value is a map `name -> version`.
+    /// Coord normalizes legacy bare-string entries to the coord's
+    /// current `Capability::version()` for that name at parse time.
+    advertised_capabilities: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Clone)]
@@ -853,12 +857,55 @@ pub struct RegisterRequest {
     /// (e.g. `"net.fetch"`, `"db.query"`); unknown names
     /// reject registration with `coord.unknown_capability`.
     ///
+    /// Post-1.0 (T-1.3): each entry can be either a bare string
+    /// (legacy / pre-1.x worker) or a `{name, version}` object
+    /// (version-aware worker). Coord normalizes legacy entries to
+    /// the coord's current `Capability::version()` for that name
+    /// on receipt; from there everything is `(name, version)`-keyed.
+    ///
     /// **Operational state only** (project §15) — does NOT
     /// participate in `capability_set_hash` and is purely a
     /// placement filter. The VM's capability gateway remains
     /// the security boundary.
     #[serde(default)]
-    pub advertised_capabilities: Option<Vec<String>>,
+    pub advertised_capabilities: Option<Vec<CapabilityAdvertisement>>,
+}
+
+/// Wire shape for one entry in `RegisterRequest.advertised_capabilities`.
+///
+/// `untagged` so legacy bare-string entries from pre-1.1 workers
+/// continue to deserialize. The coord normalizes both to
+/// `(name, version)` immediately after parse.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CapabilityAdvertisement {
+    /// Legacy worker: just the capability name. The coord normalizes
+    /// to its own current `Capability::version()` for that name on
+    /// receipt.
+    Legacy(String),
+    /// Version-aware worker: explicit `(name, version)` pair.
+    Versioned { name: String, version: String },
+}
+
+impl CapabilityAdvertisement {
+    pub fn name(&self) -> &str {
+        match self {
+            CapabilityAdvertisement::Legacy(name) => name,
+            CapabilityAdvertisement::Versioned { name, .. } => name,
+        }
+    }
+}
+
+impl From<&str> for CapabilityAdvertisement {
+    fn from(name: &str) -> Self {
+        CapabilityAdvertisement::Legacy(name.to_string())
+    }
+}
+
+impl From<String> for CapabilityAdvertisement {
+    fn from(name: String) -> Self {
+        CapabilityAdvertisement::Legacy(name)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1029,31 +1076,84 @@ fn respond_err(status: StatusCode, body: ErrorBody) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// Sprint `W3-A` — validate the `advertised_capabilities` list at
-/// the parse boundary. Returns the deduplicated `BTreeSet` (or
-/// `None` if the field was absent), or the first unknown name on
-/// failure. Names are matched against `Capability::ALL` exact
-/// canonical names (e.g. `"net.fetch"`, `"db.query"`); aliases
-/// from `Capability::from_name` are NOT accepted here because the
-/// taxonomy needs to be unambiguous on the wire.
+/// Sprint `W3-A` (extended in post1-T-1.3) — validate and normalize
+/// the `advertised_capabilities` list at the parse boundary.
+/// Returns a `(name -> version)` map (or `None` if the field was
+/// absent), or the first unknown name on failure. Names are matched
+/// against `Capability::ALL` exact canonical names (e.g.
+/// `"net.fetch"`, `"db.query"`); aliases from `Capability::from_name`
+/// are NOT accepted here because the taxonomy needs to be
+/// unambiguous on the wire.
+///
+/// Legacy bare-string entries are normalized to the coord's current
+/// `Capability::version()` for that name. Versioned entries keep
+/// their explicit version (which may be older than the coord's, in
+/// which case the worker won't be eligible for steps requiring the
+/// newer version — see the claim filter).
 fn validate_advertised_capabilities(
-    list: Option<&[String]>,
-) -> Result<Option<BTreeSet<String>>, String> {
+    list: Option<&[CapabilityAdvertisement]>,
+) -> Result<Option<BTreeMap<String, String>>, String> {
     let Some(items) = list else {
         return Ok(None);
     };
-    let known: BTreeSet<&'static str> = boruna_bytecode::Capability::ALL
-        .iter()
-        .map(|c| c.name())
-        .collect();
-    let mut set = BTreeSet::new();
-    for name in items {
-        if !known.contains(name.as_str()) {
-            return Err(name.clone());
-        }
-        set.insert(name.clone());
+    let mut map = BTreeMap::new();
+    for entry in items {
+        let name = entry.name();
+        let cap = boruna_bytecode::Capability::from_name(name).ok_or_else(|| name.to_string())?;
+        let version = match entry {
+            CapabilityAdvertisement::Legacy(_) => cap.version().to_string(),
+            CapabilityAdvertisement::Versioned { version, .. } => version.clone(),
+        };
+        map.insert(name.to_string(), version);
     }
-    Ok(Some(set))
+    Ok(Some(map))
+}
+
+/// Post-1.0 (T-1.3) — outcome of comparing a worker's advertised
+/// `(name, version)` set against a step's required cap-names.
+///
+/// `Covered` — worker can claim the step.
+/// `MissingName` — worker doesn't advertise one of the required
+/// names at all. This is the W3-A placement filter (silent skip).
+/// `WrongVersion` — worker advertises a required name but at a
+/// different version than the coord's current
+/// `Capability::version()`. This surfaces
+/// `coord.capability_version_mismatch` to the operator so they
+/// can roll out matching workers.
+enum CoverageOutcome {
+    Covered,
+    MissingName,
+    WrongVersion,
+}
+
+fn worker_covers_required(
+    advertised: &BTreeMap<String, String>,
+    required: &BTreeSet<String>,
+) -> CoverageOutcome {
+    let mut wrong_version = false;
+    for name in required {
+        let Some(adv_ver) = advertised.get(name) else {
+            return CoverageOutcome::MissingName;
+        };
+        let Some(cap) = boruna_bytecode::Capability::from_name(name) else {
+            // Unknown cap on the required side — be conservative
+            // and treat as missing.
+            return CoverageOutcome::MissingName;
+        };
+        let required_ver = cap.version();
+        // Versions are `&str` compared by equality. The plan keeps
+        // versions as opaque tokens for 1.x; defining a `>=`
+        // ordering is a 2.0 concern. Equality means "the coord's
+        // current version" and is enough to surface drift.
+        if adv_ver != required_ver {
+            wrong_version = true;
+        }
+    }
+    if wrong_version {
+        CoverageOutcome::WrongVersion
+    } else {
+        CoverageOutcome::Covered
+    }
 }
 
 /// Sprint `W3-A` — extract the set of capability names a step
@@ -1273,7 +1373,7 @@ fn try_claim_one(
     state: &CoordinatorState,
     worker_id: &str,
     lease_ttl_ms: u64,
-    advertised: Option<&BTreeSet<String>>,
+    advertised: Option<&BTreeMap<String, String>>,
 ) -> Result<Option<WorkItem>, Response> {
     let now_ms = now_unix_ms();
     let lease_expires_at_ms = now_ms + lease_ttl_ms as i64;
@@ -1290,8 +1390,20 @@ fn try_claim_one(
             .map_err(|e| internal_error(&format!("scan pending: {e}")))?
     };
 
-    let Some((run_id, step_id, source, policy_json)) = candidate else {
-        return Ok(None);
+    let (run_id, step_id, source, policy_json) = match candidate {
+        PendingScanOutcome::Found(t) => t,
+        PendingScanOutcome::NoneAvailable => return Ok(None),
+        PendingScanOutcome::VersionMismatch => {
+            // post1-T-1.3 — pending steps exist but their required
+            // capability versions are not covered by this worker's
+            // advertisement. Surface a stable error_kind so the
+            // operator can scale up matching workers.
+            return Err(json_error_response(
+                axum::http::StatusCode::CONFLICT,
+                "coord.capability_version_mismatch",
+                "no advertised capability covers the version required by any pending step",
+            ));
+        }
     };
 
     let claim_id = {
@@ -1337,25 +1449,56 @@ fn try_claim_one(
 /// by [`find_one_pending_step`] when a claimable step exists.
 type PendingStepDescriptor = (String, String, String, String);
 
+/// Outcome of scanning for a pending step that the calling worker
+/// can claim.
+///
+/// `Found` — a matching step exists; the worker should claim it.
+/// `NoneAvailable` — no pending steps anywhere; the worker should
+/// long-poll. `VersionMismatch` — pending steps exist but every
+/// candidate requires a capability version this worker does not
+/// advertise; the coord surfaces `coord.capability_version_mismatch`
+/// in the claim response so the operator can scale up matching
+/// workers (post1-T-1.3).
+pub enum PendingScanOutcome {
+    Found(PendingStepDescriptor),
+    NoneAvailable,
+    VersionMismatch,
+}
+
 fn find_one_pending_step(
     store: &RunCheckpointStore,
-    advertised: Option<&BTreeSet<String>>,
-) -> Result<Option<PendingStepDescriptor>, Box<dyn std::error::Error>> {
+    advertised: Option<&BTreeMap<String, String>>,
+) -> Result<PendingScanOutcome, Box<dyn std::error::Error>> {
     let runs = store.list_runs_by_status(RunStatus::Running)?;
+    let mut saw_pending_but_mismatched = false;
     for run in runs {
         let steps = store.list_step_checkpoints(&run.run_id)?;
         for step in steps {
             if step.status == StepStatus::Pending {
-                // Sprint `W3-A` — placement filter. A worker that
-                // declared an advertised capability set sees only
-                // steps whose policy-required cap-set is a subset
-                // of its advertised set. Workers that did NOT
-                // advertise (i.e. `None`) match every step (the
-                // pre-W3-A behavior).
+                // Sprint `W3-A` (extended in post1-T-1.3) — placement
+                // filter. A worker that declared an advertised
+                // capability set sees only steps whose policy-required
+                // capabilities each resolve to a `(name, version)` the
+                // worker advertised at >= the coord's required version.
+                // Workers that did NOT advertise (i.e. `None`) match
+                // every step (the pre-W3-A behavior).
                 if let Some(adv) = advertised {
                     let required = required_capabilities_from_policy(&run.policy_json);
-                    if !required.is_subset(adv) {
-                        continue;
+                    match worker_covers_required(adv, &required) {
+                        CoverageOutcome::Covered => {}
+                        CoverageOutcome::MissingName => {
+                            // W3-A: silent skip; operator has
+                            // intentionally restricted this worker
+                            // to a subset of capabilities.
+                            continue;
+                        }
+                        CoverageOutcome::WrongVersion => {
+                            // post1-T-1.3: surface to the operator;
+                            // the worker's binary is out of step
+                            // with what the workflow needs.
+                            saw_pending_but_mismatched = true;
+                            continue;
+                        }
                     }
                 }
                 let source = extract_step_source(&run.metadata_json, &step.step_id)
@@ -1363,11 +1506,20 @@ fn find_one_pending_step(
                         "step {} in run {} has no inline source; metadata_json.step_sources missing",
                         step.step_id, run.run_id
                     ))?;
-                return Ok(Some((run.run_id, step.step_id, source, run.policy_json)));
+                return Ok(PendingScanOutcome::Found((
+                    run.run_id,
+                    step.step_id,
+                    source,
+                    run.policy_json,
+                )));
             }
         }
     }
-    Ok(None)
+    if saw_pending_but_mismatched {
+        Ok(PendingScanOutcome::VersionMismatch)
+    } else {
+        Ok(PendingScanOutcome::NoneAvailable)
+    }
 }
 
 /// Pull the step's `.ax` source from the run's metadata JSON.
@@ -1562,6 +1714,11 @@ fn validate_session(
 fn internal_error(msg: &str) -> Response {
     let body = ErrorBody::new("coord.invalid_request", msg);
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+}
+
+fn json_error_response(status: StatusCode, error_kind: &str, msg: &str) -> Response {
+    let body = ErrorBody::new(error_kind, msg);
+    (status, Json(body)).into_response()
 }
 
 fn now_unix_ms() -> i64 {
@@ -2791,6 +2948,127 @@ mod tests {
         let resp = app.clone().oneshot(claim_req).await.unwrap();
         // Worker can't claim — long-poll times out → 204.
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn legacy_string_advertisement_normalizes_to_versioned() {
+        // post1-T-1.3 — pre-1.x worker sends Vec<String>; coord
+        // normalizes each to Versioned { name, version: <coord's
+        // current Capability::version()> } at parse time. The
+        // worker is then eligible for any step whose required
+        // capabilities resolve to the same version.
+        let state = fresh_state();
+        pending_step_with_policy(
+            &state,
+            "run-legacy",
+            "fetch-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["net.fetch"]),
+        );
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec![CapabilityAdvertisement::Legacy(
+                "net.fetch".into(),
+            )]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let item: WorkItem = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(item.step_id, "fetch-step");
+    }
+
+    #[tokio::test]
+    async fn versioned_advertisement_at_correct_version_can_claim() {
+        // post1-T-1.3 — explicit Versioned advertisement at the
+        // coord's current version of `net.fetch` (always "1" in 1.x)
+        // routes correctly, demonstrating the wire shape works.
+        let state = fresh_state();
+        pending_step_with_policy(
+            &state,
+            "run-versioned",
+            "fetch-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["net.fetch"]),
+        );
+        let app = build_router(state.clone());
+        let coord_version = boruna_bytecode::Capability::NetFetch.version();
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec![CapabilityAdvertisement::Versioned {
+                name: "net.fetch".into(),
+                version: coord_version.into(),
+            }]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn versioned_advertisement_at_wrong_version_returns_mismatch() {
+        // post1-T-1.3 — worker advertises net.fetch@OLD, coord's
+        // current version differs. Claim returns 409 +
+        // coord.capability_version_mismatch so the operator can
+        // ship a worker build with the matching version.
+        let state = fresh_state();
+        pending_step_with_policy(
+            &state,
+            "run-mismatch",
+            "fetch-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["net.fetch"]),
+        );
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec![CapabilityAdvertisement::Versioned {
+                name: "net.fetch".into(),
+                version: "0".into(), // older than coord's "1"
+            }]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error_kind"], "coord.capability_version_mismatch");
     }
 
     #[tokio::test]

@@ -14,8 +14,8 @@ use boruna_vm::vm::Vm;
 use sha2::{Digest, Sha256};
 
 use crate::coordinator::{
-    CompleteRequest, ErrorBody, FailRequest, HeartbeatRequest, RegisterRequest, RegisterResponse,
-    WorkItem,
+    CapabilityAdvertisement, CompleteRequest, ErrorBody, FailRequest, HeartbeatRequest,
+    RegisterRequest, RegisterResponse, WorkItem,
 };
 
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
@@ -210,7 +210,16 @@ pub async fn run_worker(
             let req = client.post(&register_url).json(&RegisterRequest {
                 worker_id: worker_id.clone(),
                 capability_set_hash: capability_set_hash.clone(),
-                advertised_capabilities: advertised_capabilities.clone(),
+                advertised_capabilities: advertised_capabilities.as_ref().map(|names| {
+                    // Worker CLI advertises bare names (legacy form);
+                    // the coord normalizes to versioned on receipt
+                    // (post1-T-1.3). Versioned advertisement from the
+                    // CLI is a future feature.
+                    names
+                        .iter()
+                        .map(|n| CapabilityAdvertisement::Legacy(n.clone()))
+                        .collect()
+                }),
             });
             match add_bearer(req, &shared_secret).send().await {
                 Ok(reg_resp) => {

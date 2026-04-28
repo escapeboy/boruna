@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Worker capability advertisements now carry an optional version
+  (post1-T-1.3). `RegisterRequest.advertised_capabilities` accepts
+  either a bare string (legacy worker, normalized by the coord to
+  the coord's current `Capability::version()`) or an explicit
+  `{name, version}` object. Steps requiring a capability whose
+  version no registered worker advertises now surface
+  `coord.capability_version_mismatch` (HTTP 409) on the claim
+  response, rather than silently long-polling. The W3-A
+  silent-skip path still applies when a worker is missing the
+  capability NAME entirely. Documented in
+  `docs/reference/error-kinds.md` and noted in
+  `docs/spec/workflow-dag-1.0.md`.
+
 ### Changed
 
 - Parser and typeck error messages now include `did you mean: 'kw'?`
