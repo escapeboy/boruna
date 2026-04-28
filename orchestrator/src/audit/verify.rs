@@ -158,6 +158,15 @@ pub fn verify_bundle_with_kek(bundle_dir: &Path, kek: Option<&[u8; KEY_LEN]>) ->
             };
             match Envelope::unwrap(info, &key) {
                 Ok(env) => Some(env),
+                Err(EncryptionError::UnsupportedAlgorithm { found, expected }) => {
+                    return VerifyResult {
+                        valid: false,
+                        errors: vec![format!(
+                            "evidence.unsupported_algorithm: bundle declares algorithm={found:?}; \
+                             reader supports only {expected:?}"
+                        )],
+                    };
+                }
                 Err(EncryptionError::EncryptionKeyMismatch) => {
                     return VerifyResult {
                         valid: false,

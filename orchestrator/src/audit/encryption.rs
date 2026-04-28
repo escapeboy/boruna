@@ -92,6 +92,12 @@ pub enum EncryptionError {
         expected: usize,
         got: usize,
     },
+    /// Manifest declares an `algorithm` value the reader does not
+    /// support. Sprint W7: the spec at `docs/spec/evidence-bundle-1.0.md`
+    /// commits the 1.x reader to ONLY `aes-256-gcm`; reader rejects
+    /// anything else at parse time per project §1.
+    #[error("evidence.unsupported_algorithm: bundle declares algorithm={found:?}; reader supports only {expected:?}")]
+    UnsupportedAlgorithm { found: String, expected: String },
 }
 
 /// Envelope holding an unwrapped DEK plus the manifest metadata. The
@@ -150,6 +156,17 @@ impl Envelope {
     /// Reconstruct a DEK from manifest metadata using the supplied
     /// KEK. Used at verify time.
     pub fn unwrap(info: &EncryptionInfo, kek: &[u8; KEY_LEN]) -> Result<Self, EncryptionError> {
+        // Sprint W7 (NEW-1 from W7 security review): reject at parse —
+        // the `evidence-bundle-1.0.md` spec commits the 1.x reader to
+        // ONLY `aes-256-gcm`. Anything else is a tampered or future-
+        // major-version manifest; refuse to decrypt rather than fall
+        // through to a key-mismatch error which would mask the cause.
+        if info.algorithm != ALGORITHM {
+            return Err(EncryptionError::UnsupportedAlgorithm {
+                found: info.algorithm.clone(),
+                expected: ALGORITHM.to_string(),
+            });
+        }
         let wrapped =
             B64.decode(&info.wrapped_dek)
                 .map_err(|e| EncryptionError::InvalidBase64 {

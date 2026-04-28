@@ -217,3 +217,50 @@ fn encrypted_bundle_format_version_is_1_0() {
     let plain = build_plaintext_bundle(dir.path(), "run-plain-fmt");
     assert_eq!(plain.schema_version, 1);
 }
+
+#[test]
+fn bundle_verify_rejects_unknown_algorithm() {
+    // Sprint W7 (NEW-1 from W7 follow-up security review): the spec
+    // commits the 1.x reader to ONLY `aes-256-gcm`. A manifest
+    // declaring a different algorithm — whether tampered or from a
+    // hypothetical future major version — must be rejected at parse
+    // before any KEK-related work happens.
+    let dir = tempfile::tempdir().unwrap();
+    let kek = fixed_kek(7);
+    let manifest = build_encrypted_bundle(dir.path(), "run-enc-alg", &kek, "k-alg");
+    assert!(manifest.encryption.is_some());
+
+    let bundle_dir = dir.path().join("run-enc-alg");
+    let manifest_path = bundle_dir.join("manifest.json");
+
+    // Tamper with the on-disk manifest: rewrite algorithm to a value
+    // the reader does not support. Everything else stays valid.
+    let raw = std::fs::read_to_string(&manifest_path).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    value["encryption"]["algorithm"] = serde_json::Value::String("chacha20-poly1305".into());
+    std::fs::write(&manifest_path, value.to_string()).unwrap();
+
+    let result = verify_bundle_with_kek(&bundle_dir, Some(&kek));
+    assert!(
+        !result.valid,
+        "expected verify to fail on tampered algorithm"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.contains("evidence.unsupported_algorithm")),
+        "expected evidence.unsupported_algorithm, got {:?}",
+        result.errors
+    );
+    // The KEK is correct — the algorithm gate must fire BEFORE the
+    // KEK check, so we should NOT see encryption_key_mismatch.
+    assert!(
+        !result
+            .errors
+            .iter()
+            .any(|e| e.contains("evidence.encryption_key_mismatch")),
+        "algorithm gate must fire before KEK check; got {:?}",
+        result.errors
+    );
+}

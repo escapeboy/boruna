@@ -368,3 +368,123 @@ LOW: 7 (LOW-1, LOW-2, LOW-3, LOW-4, LOW-5, LOW-6, LOW-7)
 
 `ce-pr-comment-resolver` may filter on the bold `**HIGH**` / `**MEDIUM**` /
 `**LOW**` markers in the headings under §2/§3/§4.
+
+---
+
+## W7 follow-up review (2026-04-28)
+
+**Reviewer:** automated security-review pass (Opus 4.7, security-engineer persona)
+**Date:** 2026-04-28
+**Repo state:** master @ `0cda1fd` (merge: W7-Docs spec + taxonomy + mTLS doc polish)
+**Scope:** verify closure of the six MEDIUM findings raised in the W6 review and surface any new issues introduced by W7. W7 surface: 1 code commit (`c14f7ae`, +1 test file, +stdlib doc note) and 1 docs commit (`fc29066`, spec amendment + new taxonomy file + mTLS guide additions + CHANGELOG `Decided` entry).
+
+### 1. Closure status of W6 MEDIUM findings
+
+#### M-1 — Evidence bundle 1.0 spec documents `encryption` block — ⚠️ PARTIAL
+
+`docs/spec/evidence-bundle-1.0.md:130-197` adds §8 with the field shape, replay-verified vs. operational classification (§15-compliant), reader contract, and the §1 reject-at-parse contract. The 1.0-without-encryption fallback story (§8.2 last paragraph, lines 191-197) is correctly written.
+
+**Closure gap (also see N-1 below):** §8.1 lines 170-171 commit the reader to "MUST reject `encryption.algorithm` values other than `\"aes-256-gcm\"` with `evidence.unsupported_algorithm`" — but the implementation in `orchestrator/src/audit/verify.rs:130-180` and `orchestrator/src/audit/encryption.rs:152-197` (`Envelope::unwrap`) NEVER reads `info.algorithm`. A bundle with `algorithm: "chacha20"` and otherwise-valid AES-GCM-wrapped DEK would be accepted by the current reader. The spec promises behavior the code does not exhibit.
+
+The §1 reject-at-parse compliance for encryption fields IS otherwise good (lines 180-189) — wrapping/length errors do reject — but the algorithm gate is missing.
+
+#### M-2 — Canonical `error_kind` taxonomy — ⚠️ PARTIAL
+
+`docs/reference/error-kinds.md` exists, lists 19 `coord.*` (matched 1:1 against `crates/llmvm-cli/src/coordinator.rs` literals at lines 711, 1018, 1624, 1668, 1958, 1983, 2035 and `crates/llmvm-cli/src/worker.rs:221,358,440`), 4 `evidence.*`, 3 `workflow.*` (matched against `orchestrator/src/workflow/definition.rs:34-40`), 6 `policy.*` (matched against `crates/llmvm/src/policy_validate.rs:100-141`), and 3 MCP-layer kinds. HTTP statuses, sprint of origin, file:function references all present. LTS commitment language is at lines 7-17.
+
+**Closure gap (also see N-2 below):** the doc claims at lines 21-25 that "every entry below is verified against a literal-string grep of the `crates/` and `orchestrator/` trees" — the grep is NOT actually exhaustive. The MCP-layer section omits 7 `error_kind` literals that are emitted by the production binary today:
+- `framework_error` — `crates/boruna-mcp/src/tools/framework.rs:43,68,100`
+- `runtime_error` — `crates/boruna-mcp/src/tools/run.rs:246,1108`
+- `validation_failed` — `crates/boruna-mcp/src/tools/run.rs:520`
+- `template_error` — `crates/boruna-mcp/src/tools/template.rs:35,90`
+- `invalid_args` — `crates/boruna-mcp/src/tools/template.rs:55`
+- `parse_error` — `crates/boruna-mcp/src/tools/workflow.rs:15`
+- `validation_error` — `crates/boruna-mcp/src/tools/workflow.rs:51`
+- `serialization_error` — `crates/boruna-mcp/src/tools/compile.rs:51`
+- `limit_exceeded` — `crates/boruna-mcp/src/tools/run.rs:347` (this one IS referenced inline in the `boruna_run` description at `crates/boruna-mcp/src/server.rs:58,204` and gets a passing mention in the prose at `error-kinds.md:113`, but is not in the LTS-protected taxonomy table).
+
+`evidence.unsupported_algorithm` is listed as `(reserved)` at line 69 — see N-1: under §B.6 LTS commitment, this is a promise that the CODE does not yet keep, so the doc is technically correct ("reserved string") but the spec amendment in M-1 commits to the reader emitting it. The two artifacts contradict each other on the same release.
+
+#### M-3 — TLS 1.2 GA decision in CHANGELOG — ✅ CLOSED
+
+`CHANGELOG.md:56-68` adds a `### Decided` entry naming rustls 0.23 + `aws_lc_rs`, AEAD-only ciphers, ECDHE key exchange, and the rationale (older HTTP load balancers / worker hosts). The decision is grounded — `aws_lc_rs`'s TLS 1.2 cipher suite list is in fact AEAD-only (no CBC, no RC4, no export) and the wording does not overclaim. Re-evaluation at 2.0 is committed.
+
+#### M-4 — No-CRL/OCSP limitation documented — ✅ CLOSED
+
+`docs/guides/coord-mtls.md:198-220` adds a "Limitations" section with a "No CRL or OCSP" subsection (lines 200-206) and a "Mitigation: short-lived certs" subsection (lines 208-220) recommending ≤24h cert lifetimes and naming step-ca / cfssl / cron with operator's existing PKI. CRL/OCSP support is committed to the post-1.0 roadmap (line 220). This is actionable, not just a note.
+
+#### M-5 — CN comparison case-fold semantics documented — ✅ CLOSED
+
+`docs/guides/coord-mtls.md:83-99` adds a "CN comparison semantics" subsection. The doc explicitly names `eq_ignore_ascii_case`, walks through ASCII-case-folds-as-expected and non-ASCII-is-case-sensitive, and gives operators a clear two-option recommendation (lines 95-99): same case in cert + config, OR ASCII-only CNs. Correctly grounded against `crates/llmvm-cli/src/coordinator.rs:1141-1152`.
+
+#### M-6 — Inspect plaintext-leak gate test — ✅ CLOSED
+
+`crates/llmvm-cli/tests/cli_evidence_inspect_decrypt.rs:1-176` ships two tests:
+
+- `inspect_does_not_leak_plaintext_without_decrypt_flag` (lines 65-124): builds a real encrypted bundle via `EvidenceBundleBuilder::with_encryption` (line 41), embeds a fixed canary string in a step output (line 50), pre-asserts the canary IS NOT present in on-disk ciphertext (lines 75-81 — guards against the bundle silently being unencrypted), runs the production `boruna evidence inspect` binary, and asserts the canary appears in NEITHER stdout (line 105) NOR stderr (line 110). Also pins the operator-discoverability hint "is encrypted" at line 120.
+- `inspect_decrypt_flag_is_inert_when_payload_display_unimplemented` (lines 126-176): pins current behavior so a future change adding payload preview is forced to revisit both assertions.
+
+Convention §29 (adversarial cases as unit tests) is satisfied. The canary is a real plaintext that genuinely lives in the encrypted file; the bundle is built via the real encryption builder, not a mocked manifest.
+
+### 2. New findings introduced by W7
+
+#### **NEW-1 (MEDIUM)** — Spec promises an unimplemented reader behavior for `evidence.unsupported_algorithm`
+
+- **File:** `docs/spec/evidence-bundle-1.0.md:170-171` (§8.1 reader contract).
+- **Code that should implement it:** `orchestrator/src/audit/verify.rs:130-180` (envelope resolution path) and `orchestrator/src/audit/encryption.rs:152-197` (`Envelope::unwrap`).
+- **Issue:** The spec says a 1.x reader "MUST reject `encryption.algorithm` values other than `\"aes-256-gcm\"` with `evidence.unsupported_algorithm`". The reader code never reads `info.algorithm`. Forwarding a manifest with `algorithm: "rot13"` and a real AES-GCM-wrapped DEK would be silently processed. Not exploitable today (only AES-GCM is implemented in `Envelope::wrap`/`encrypt_file`, so only AES-GCM bundles exist), but if a future sprint adds a second algorithm and forgets to update `unwrap`, the spec's algorithm gate is missing entirely. Worse: a malicious/buggy producer could write a manifest with the wrong algorithm string and the reader would happily decrypt with AES-GCM, producing a "valid" bundle whose audit trail says it's a different cipher.
+- **Fix:** add an early `if info.algorithm != ALGORITHM { return Err(...) }` in `Envelope::unwrap` (`orchestrator/src/audit/encryption.rs:152`) and surface the failure as a new `EncryptionError::UnsupportedAlgorithm { found: String }` variant; promote `evidence.unsupported_algorithm` from `(reserved)` → wired in `docs/reference/error-kinds.md:69`. ALTERNATIVELY: weaken the spec wording in `evidence-bundle-1.0.md:170-171` from MUST to "is reserved for future algorithms; a 1.x reader MAY reject any value other than `\"aes-256-gcm\"`" to match current behavior, then promote to MUST when the gate ships. The first option is correct for an LTS contract; the second is the smaller diff but punts the work.
+- **Convention impact:** §1 (reject at parse, don't silently override) is currently violated for the `algorithm` field — the reader silently accepts unknown algorithms.
+
+#### **NEW-2 (MEDIUM)** — Taxonomy claims completeness but omits 8+ MCP-layer `error_kind` strings
+
+- **File:** `docs/reference/error-kinds.md:21-25` (claim) and `docs/reference/error-kinds.md:106-117` (MCP-layer table).
+- **Issue:** the doc explicitly states "every entry below is verified against a literal-string grep of the `crates/` and `orchestrator/` trees". The MCP-layer table lists 3 entries (`invalid_policy`, `invalid_output_schema`, `unsupported_limit`). A literal grep finds 8 additional MCP-emitted strings (enumerated under M-2 above) that are emitted by `crates/boruna-mcp/src/tools/{framework,run,template,workflow,compile}.rs`. Under the LTS contract committed at lines 7-17, these strings — once shipped in 1.0 GA — are STABLE FOREVER. Operators relying on the doc and switching only on the 3 listed kinds will get unhandled-error fallthroughs for the other 8.
+- **Risk:** moderate. The 8 missing kinds are NOT under-spec'd in the source: they ARE emitted today and their renaming would be a breach of the LTS contract. The risk is the OPPOSITE direction — Boruna may accidentally rename one of them in a 1.x patch release because the maintainer didn't realize it was LTS-protected (the doc said the catalogue was complete, so anything missing must be unstable).
+- **Fix:** either (a) add the missing 8 kinds to the MCP-layer table at `error-kinds.md:106-117`, OR (b) explicitly mark the MCP-layer kinds as not-LTS-protected in §B.6 of `docs/lts.md` and add a "future stabilization" note in `error-kinds.md`. (a) is the correct posture for GA. (b) is acceptable if there's an active intent to redesign the MCP error surface in 1.x — but that intent is not documented anywhere I checked.
+- **Convention impact:** §2 (typed `error_kind`, stable forever) — partially satisfied at the surface but the LTS guarantee is silently weaker than the doc claims.
+
+#### **NEW-3 (LOW)** — `EncryptionInfo::files` classified inconsistently (carryover from W6 §15 NIT)
+
+- **Files:** `docs/spec/evidence-bundle-1.0.md:147,151-155` ("`files` is OPERATIONAL metadata") and W6 review §5 (the doc/code mismatch noted there is now codified in the spec).
+- **Issue:** the spec amendment at line 151 calls `files` operational, while the W6 §15 review confirmed it IS in fact in the bundle hash (because the whole `EncryptionInfo` is serialized into the manifest before hashing). The spec is still strictly correct because it says "tampering with `files` cannot bypass decryption" — but a precise reader of §15 (replay-verified vs. operational) would interpret "operational" as "not in `bundle_hash`", which is wrong for `files`.
+- **Risk:** documentation-only. No exploitable surface.
+- **Fix:** clarify line 151 to say "`files` is informational metadata for human inspection; it participates in `bundle_hash` because it lives inside `manifest.json`, but the verify loop iterates `manifest.file_checksums` and so tampering with `files` cannot bypass decryption."
+
+### 3. Convention re-check
+
+- **§1 (reject at parse, don't silently override)** — **PASS for spec text, FAIL for code.** The spec amendment at `evidence-bundle-1.0.md:178-189` correctly applies §1 to the encryption metadata. The code at `orchestrator/src/audit/encryption.rs:152-197` does NOT reject unknown `algorithm` values — see NEW-1.
+- **§2 (typed `error_kind`, stable forever)** — **PARTIAL.** Closure of M-2 advances the convention but does not fully satisfy it; see NEW-2 (MCP layer omissions).
+- **§15 (replay-verified vs. operational classification)** — **PASS with NIT.** The spec amendment at `evidence-bundle-1.0.md:149-155` correctly classifies the four bundle-hash fields as replay-verified. The `files` field carryover (NEW-3) is a doc precision issue, not a violation.
+- **§29 (adversarial cases as unit tests)** — **PASS.** The M-6 test at `crates/llmvm-cli/tests/cli_evidence_inspect_decrypt.rs:65-176` is well-constructed: real encrypted bundle, real CLI process, sanity-check on the on-disk ciphertext, both stdout AND stderr asserted, and a regression-pinning second test. Better than the bar set by `bundle_encryption.rs`.
+
+### 4. GA readiness recommendation
+
+**Verdict: do NOT cut 1.0 GA on the current `master`. Two MEDIUM findings (NEW-1, NEW-2) materially impact LTS commitments and should be resolved first.**
+
+What blocks GA, in priority order:
+
+1. **NEW-1 (algorithm gate)** — the spec promises rejection of unknown `algorithm` values; the reader does not enforce it. Either ship the 5-line gate in `Envelope::unwrap` plus the new `EncryptionError::UnsupportedAlgorithm` variant and the new `error_kind` literal (preferred: makes `evidence.unsupported_algorithm` real, not "(reserved)"), OR weaken the spec wording from MUST to MAY and document that the gate ships in 1.1. Either fix is small. Shipping with the contradiction means a 1.x reader written to spec will diverge from the reference Boruna reader.
+2. **NEW-2 (MCP error_kind taxonomy completeness)** — adding 8 missing rows to `docs/reference/error-kinds.md` is a 5-minute documentation change. Pre-GA this is the right place to make it; post-GA those strings are LTS-frozen and the doc is misleading.
+
+Lower-priority (do not block GA, but track for 1.1):
+
+- NEW-3 (`files` field §15 wording precision).
+- The M-1 spec/code algorithm gap will resolve itself when NEW-1 is fixed.
+- The M-2 partial closure resolves cleanly when NEW-2 is fixed.
+
+After those two are in, M-1 and M-2 transition from PARTIAL → CLOSED, all six W6 MEDIUMs are CLOSED, no new MEDIUMs remain, and the 1.0 GA gate is clean.
+
+**Closure summary: 4 CLOSED / 2 PARTIAL / 0 NOT CLOSED out of 6.**
+**New findings: 2 MEDIUM, 1 LOW.**
+
+### 5. Files reviewed (W7 follow-up)
+
+- `docs/spec/evidence-bundle-1.0.md` (entire file; new §8 at lines 130-197)
+- `docs/reference/error-kinds.md` (entire file)
+- `docs/guides/coord-mtls.md` (entire file; new lines 83-99 and 198-220)
+- `CHANGELOG.md:7-68` (Unreleased section)
+- `crates/llmvm-cli/tests/cli_evidence_inspect_decrypt.rs` (entire file)
+- `orchestrator/src/audit/verify.rs:130-230` (encryption verify path)
+- `orchestrator/src/audit/encryption.rs:40-200` (envelope unwrap path)
+- Source-side grep verification of every `error_kind` literal in `crates/` and `orchestrator/`

@@ -109,11 +109,20 @@ Emitted by the `boruna-mcp` server's tool layer. These predate the
 namespaced `coord.*` / `evidence.*` schemes and are kept for
 back-compat per the LTS contract.
 
-| `error_kind` | Tool | Sprint | Caller-facing meaning |
-|---|---|---|---|
-| `invalid_policy` | `boruna_run` | `0.2.0` | Non-object policy input (string typo, array, number) was supplied. Object-form input that fails strict validation surfaces as a `policy.*` kind instead. |
-| `invalid_output_schema` | `boruna_run` | `0.4-S16` | The supplied output JSON-schema is malformed or the run's output does not validate against it. |
-| `unsupported_limit` | `boruna_run` | `0.4-S15` | A `limits.*` field is set to a value this binary cannot enforce yet. |
+| `error_kind` | Tool | Phase | Sprint | Caller-facing meaning |
+|---|---|---|---|---|
+| `invalid_policy` | `boruna_run` | serialization | `0.2.0` | Non-object policy input (string typo, array, number) was supplied. Object-form input that fails strict validation surfaces as a `policy.*` kind instead. |
+| `invalid_output_schema` | `boruna_run` | serialization | `0.4-S16` | The supplied output JSON-schema is malformed or the run's output does not validate against it. |
+| `unsupported_limit` | `boruna_run` | serialization | `0.4-S15` | A `limits.*` field is set to a value this binary cannot enforce yet. |
+| `parse_error` | `boruna_workflow_validate`, `boruna_compile` | serialization | `0.2.0` | Input JSON / source could not be parsed at the lexer or serde stage. |
+| `serialization_error` | `boruna_compile` | serialization | `0.2.0` | AST or compile output could not be serialized for return; internal-encoding failure. |
+| `validation_error` | `boruna_workflow_validate` | output_validation | `0.2.0` | Workflow JSON parsed but failed structural validation (cycle, missing field, unknown step reference). |
+| `validation_failed` | `boruna_run` | output_validation | `0.4-S16` | Run output failed JSON-schema validation. Response body carries per-path errors. |
+| `runtime_error` | `boruna_run` | execution | `0.2.0` | VM error during execution — capability denied, type mismatch, etc. The `error` field carries the message. |
+| `limit_exceeded` | `boruna_run` | execution / serialization | `0.4-S15` | A configured limit was hit. `limit_kind` discriminates: `step_limit`, `wall_ms` (execution), `output_bytes` (serialization). |
+| `framework_error` | `boruna_validate_app`, `boruna_framework_test` | execution | `0.2.0` | Framework App protocol validation or test-harness error (init/update/view shape mismatch, message dispatch failure). |
+| `template_error` | `boruna_template_apply` | execution | `0.2.0` | Template substitution failed (missing variable, unknown template, manifest-validation failure at apply time). |
+| `invalid_args` | `boruna_template_apply` | serialization | `0.2.0` | Template `--args` payload could not be parsed as `key=value` pairs. |
 
 ## Conventions
 
