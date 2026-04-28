@@ -24,3 +24,6 @@ llm_cache/
 
 # Serena MCP project cache
 .serena/
+
+# Local Claude Code agent state (worktrees, transcripts)
+/.claude/
