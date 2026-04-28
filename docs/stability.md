@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **0.1.0**. It is an early-stage project. This document is explicit about what is stable, what is experimental, and what is planned.
+Boruna is at version **1.0.0-rc1**. The first 1.0 release candidate. This document is explicit about what is stable, what is experimental, and what is planned.
 
 > **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
 > below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
@@ -10,30 +10,33 @@ Boruna is at version **0.1.0**. It is an early-stage project. This document is e
 
 ## Current status
 
-Boruna is a **working prototype** with a clear production trajectory. The core execution engine is functional and fully tested (557+ tests). The public API surface is not yet stable — breaking changes may occur in minor versions until 1.0.
+Boruna is feature-complete for the 1.0 surface and currently soak-testing as a release candidate. The core execution engine, distributed-execution stack, three formal versioned specifications (`.ax` language, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped and tested (1175+ tests, all passing).
 
 Boruna is appropriate for:
 - Evaluation and proof-of-concept workflows
-- Internal tooling where you control the version
-- Teams building audit-sensitive AI pipelines who want to evaluate the architecture early
+- Internal tooling and audit-sensitive AI pipelines
+- Teams that want to adopt the architecture before 1.0 GA
 
 Boruna is not yet appropriate for:
-- Production workloads requiring guaranteed API stability
-- Regulated environments requiring vendor certification
-- Large-scale deployments without an in-house Rust team
+- Regulated environments requiring vendor certification (book external security audit per [`lts.md`](./lts.md))
+- Workloads exceeding the [`PERFORMANCE.md`](./PERFORMANCE.md) budget without your own benchmarking
+- Storage layouts beyond local filesystem (cloud-storage adapters are 0.7.x territory)
 
 ## Stability tiers
 
-### Stable (breaking changes only in major versions)
+### Stable (LTS-protected at 1.0 GA — see [`lts.md`](./lts.md) §B)
 
-These components are complete, tested, and behave as documented:
+These components are complete, tested, and behave as documented. Every 1.0 program continues to work on every 1.y release:
 
-- **`.ax` language core** — syntax, type system, pattern matching, records, enums
+- **`.ax` language 1.0** — syntax, type system, pattern matching, records, enums; formal spec at [`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md)
 - **VM execution** — bytecode format, capability enforcement, determinism guarantees
-- **Workflow DAG** — `workflow.json` format, topological execution, step isolation
-- **Evidence bundles** — hash-chained log format, `evidence verify` output
-- **Capability system** — the 10 capabilities and their enforcement semantics
-- **CLI commands** — `run`, `compile`, `workflow validate/run`, `evidence inspect/verify`
+- **Workflow DAG 1.0** — `workflow.json` format with `schema_version: 1`, topological execution, step isolation; spec at [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md)
+- **Evidence bundle 1.0** — hash-chained log + `bundle.json` manifest with `format_version: "1.0"`, optional AES-256-GCM envelope encryption; spec at [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md)
+- **Capability system** — the capability set is frozen at 1.0; any additions in 1.x are additive
+- **CLI commands** — `run`, `compile`, `workflow validate/run/approve`, `evidence inspect/verify/gc-blobs`, `coordinator serve/wait`, `worker run`, `migrate`, `new`, `lang check/repair`, `template list/apply`
+- **Coord/worker HTTP protocol** — `protocol_version: 1` responses, locked `coord.*` and `evidence.*` `error_kind` taxonomy
+- **MCP tool response shapes** — `protocol_version: 1` carried on every response (success and failure)
+- **HA + mTLS surfaces** — multi-coord deployments, worker URL failover, X.509 client certs
 
 ### Experimental (may change in minor versions)
 
@@ -42,10 +45,10 @@ These components work but may change based on usage feedback:
 - **Actor system** — spawning, message passing, supervision semantics
 - **Multi-agent orchestration** — `boruna-orch` binary and its API
 - **Package system** — `boruna-pkg` manifest format and registry protocol
-- **MCP server** — tool schemas and JSON-RPC protocol
-- **Standard libraries** — `std-*` library APIs
+- **Standard libraries** — `std-*` library APIs (interfaces stabilizing across 1.x minors)
 - **App templates** — template variable names and generated code structure
 - **`trace2tests`** — test generation format and minimization behavior
+- **Migration tooling** — `boruna migrate` is currently in beta; covered migrators are stable, additional migrators may ship in 1.x
 
 ### Alpha (expect breaking changes)
 
@@ -55,38 +58,36 @@ These components are available but under active development:
 - **Replay verification** — semantics of `--verify` with partial replays
 - **Framework app testing** — `framework test` message protocol
 
-### Planned (not yet implemented)
+### Planned (post-1.0 — see [roadmap.md](./roadmap.md))
 
-These capabilities are on the roadmap but do not exist yet:
+These capabilities are on the roadmap but do not yet exist:
 
-- Persistent workflow state (survives process restart)
-- Distributed step execution across machines
+- Evidence bundle storage adapters (S3 / object storage / document store) — 0.7.x or 1.x minor
+- Rolling-upgrade per-capability version negotiation — 0.7.x
+- Streaming output from `boruna_run` — 1.x minor (FleetQ P1)
 - LLM provider registry and model routing
+- `boruna fmt` v2 (comment-preserving formatter) and `boruna run --watch`
 - Web-based evidence inspector
 - Commercial platform features (SSO, RBAC, policy management UI)
 
-See [roadmap.md](./roadmap.md) for the full timeline.
-
 ## What "stable" means
 
-For stable components: a `.ax` file that compiles and runs correctly on 0.1.x will continue to compile and run correctly on 0.2.x and 0.3.x. If a breaking change becomes necessary, it will be documented in `CHANGELOG.md` with a migration path.
+For stable components (LTS-protected at 1.0 GA): a `.ax` file, workflow.json, or evidence bundle that compiles, validates, or verifies on 1.0 will continue to do so on every 1.y release. Per [`lts.md`](./lts.md): `language_version: "1.x"`, workflow DAG `schema_version: 1`, and evidence bundle `format_version: "1.x"` are forward-compat-readable across the entire 1.x line.
 
-For experimental and alpha components: best-effort compatibility, with breakage documented in CHANGELOG.
+For experimental and alpha components: best-effort compatibility, with breakage documented in CHANGELOG `### Changed` or `### Deprecated`.
 
 ## Versioning policy
 
 Boruna follows [Semantic Versioning](https://semver.org):
 
-- **Patch** (0.1.x): Bug fixes, security patches, no API changes
-- **Minor** (0.x.0): New capabilities, experimental components may change, stable components preserved
-- **Major** (x.0.0): Breaking changes to stable API surface; full migration guide provided
-
-Until 1.0.0, the minor version increment may include breaking changes to experimental and alpha components without a major bump.
+- **Patch** (1.0.x): Bug fixes, security patches, no API changes
+- **Minor** (1.x.0): New capabilities, experimental components may change, stable components preserved per LTS contract
+- **Major** (x.0.0): Breaking changes to stable API surface; deprecation announced ≥6 months prior in a minor release; full migration tooling provided
 
 ## Dependency on nightly Rust
 
-Boruna currently builds on stable Rust. No nightly features are required. Minimum supported Rust version (MSRV): **1.75.0**.
+Boruna builds on stable Rust. No nightly features are required. Minimum supported Rust version (MSRV): **1.75.0**.
 
 ## Security
 
-See [SECURITY.md](../SECURITY.md) for the vulnerability disclosure policy and supported version matrix.
+See [SECURITY.md](../SECURITY.md) for the vulnerability disclosure policy, supported version matrix, and CVSS-based backport SLAs (CRITICAL/HIGH within 7 days of disclosure).

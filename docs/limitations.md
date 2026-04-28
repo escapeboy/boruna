@@ -36,25 +36,27 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 ## Workflow limitations
 
-**No async steps.** Steps run synchronously. A step that needs to wait for an external event (webhook callback, human approval via an external system) cannot be expressed natively. Approval gates pause the workflow synchronously and require an operator (`boruna workflow approve`) to advance — this is intentional, but does not generalize to webhook-triggered resumption. On the 0.3.0 roadmap.
-
-**`.ax` step-input access not yet wired through.** Workflow steps can declare `inputs: { document: "ingest.result" }` and the runner validates references at compile time, but `.ax` step bodies cannot yet *read* those resolved input values at runtime — steps remain self-contained today. The persisted output flows correctly between waves (downstream steps see upstream outputs in the data store), but the language-level access requires compiler work (`Op::CapCall` emission for capability-annotated functions). On the 0.3.0 roadmap.
+**Wall-clock-keyed enforcement is non-deterministic on failure.** Limits like `max_wall_ms` and `--max-wait-secs` are wall-clock-keyed: a workflow that completes within budget produces deterministic output, but one that times out may finish on a fast machine and time out on a slow one. Documented in 4 places per integrator surface (limits, OTel spans, coord wait).
 
 ## Evidence and audit limitations
 
-**Evidence bundles are local files.** There is no built-in mechanism to ship evidence bundles to a remote store. You must handle this yourself (copy to S3, push to a document store, etc.).
+**Evidence bundles are local files; remote storage is operator-owned.** Evidence bundles write to `<data-dir>/runs/<run-id>/`. Pluggable storage adapters (S3 / object storage / document store) are roadmap 0.7.x or 1.x. Today, ship bundles to remote storage with your own pipeline (rsync, S3 upload, etc.).
 
-**LLM response reproducibility is not guaranteed.** Evidence bundles capture LLM responses for replay, but if the LLM provider changes their model weights, a replay may produce different outputs if the real capability is used. Replay with recorded responses is always reproducible.
+**LLM response reproducibility is not guaranteed.** Evidence bundles capture LLM responses for replay, but if the LLM provider changes their model weights, a replay may produce different outputs if the real capability is used. Replay with recorded responses (sprint 0.5-S7 of FleetQ track) is always reproducible.
 
-**No evidence bundle encryption.** Evidence bundles are written as plaintext JSON. If they contain sensitive data (customer information, proprietary prompts), you must handle encryption at the storage layer.
+**Evidence bundle encryption KEK is operator-managed.** Sprint W6-B added envelope AES-256-GCM encryption — operators supply the KEK via env var or CLI flag. Boruna does not ship key management (no HSM/KMS integration); KEK lifecycle (storage, rotation, sealing) is the operator's responsibility. Key rotation tooling is roadmap.
+
+**Plaintext bundle.json metadata.** Even with `--encrypt-bundle`, the top-level `bundle.json` manifest is plaintext (chicken-and-egg with the wrapped DEK). It carries `format_version`, `boruna_version`, `run_id`, `workflow_hash`, and the wrapped DEK envelope. Run identifiers may be visible to a bundle inspector even when payload bytes are encrypted.
 
 ## Operational limitations
 
-**No web UI.** There is no dashboard for workflow history, run status, or evidence inspection. All interaction is via the CLI.
+**Single-coord SQLite source of truth.** Multi-coord active-active HA (W2) is supported, but all coords must connect to the same SQLite data-dir on a POSIX-compliant filesystem with strong advisory locks (NFSv3 with `nolock` is unsafe). Cross-host HA at the storage layer requires Litestream / VM live migration / equivalent — see [`guides/coord-ha.md`](./guides/coord-ha.md).
 
-**No authentication.** Boruna has no built-in access control. Access to the CLI and evidence bundles depends on your file system permissions.
+**No client-cert revocation.** mTLS (W6-A) verifies client certs at handshake but does NOT consult CRLs or OCSP. A leaked worker key remains valid until natural cert expiry. Mitigation: use short-lived certs (≤24h) and rotate frequently. Documented in [`guides/coord-mtls.md`](./guides/coord-mtls.md).
 
-**No multi-tenancy.** Boruna is designed for single-team deployment. Running workflows for multiple isolated teams requires OS-level separation.
+**Read-only dashboard.** The bundled dashboard (Axum + askama, sprint 0.4-S16; merged onto the coord listener in 0.5-S2d) is read-only. There are no UI controls for cancelling runs, modifying policies, or managing workers — all mutations remain CLI-driven. This is intentional for the audit-trail story.
+
+**Multi-tenancy is environment-namespaced, not cryptographically isolated.** The `--env` flag (sprint 0.4-S14) namespaces the data-dir and Prometheus labels per-environment. This separates run histories but does not provide cryptographic isolation between tenants — that requires OS-level separation or per-tenant deployments.
 
 **Minimum Rust version: 1.75.0.** Teams running older Rust toolchains will need to upgrade.
 

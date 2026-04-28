@@ -23,12 +23,15 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 
 ## What Boruna provides
 
-- **DAG workflow execution** — steps are `.ax` source files; the workflow is a `workflow.json` DAG definition
+- **DAG workflow execution** — steps are `.ax` source files; the workflow is a `workflow.json` DAG definition (`schema_version: 1` frozen at 1.0)
 - **Capability enforcement** — every side effect (LLM calls, HTTP, database, filesystem) is declared and policy-gated at the VM level
-- **Evidence bundles** — hash-chained tamper-evident logs, written automatically with `--record`
+- **Evidence bundles** — hash-chained tamper-evident logs, written automatically with `--record`. Optional **AES-256-GCM envelope encryption** for compliance-sensitive deployments
 - **Deterministic replay** — re-execute any recorded workflow with identical outputs, verified by the VM
-- **Approval gates** — pause workflow execution for human review before continuing
-- **Diagnostics and auto-repair** — `boruna lang check` and `boruna lang repair` for `.ax` files
+- **Distributed execution** — coord+workers HTTP cluster with active-active **HA**, worker URL failover, capability-tagged placement, and optional **mTLS** with per-worker client certs
+- **Approval gates** — pause workflow execution for human review or external triggers before continuing
+- **Diagnostics, auto-repair, and migration** — `boruna lang check`, `boruna lang repair`, `boruna migrate` for `.ax` files and bundle/workflow upgrades
+- **`boruna new`** — interactive scaffold for new workflows from templates
+- **Three formal versioned specifications** — `.ax` language 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
 - **MCP server** — exposes 10 tools for AI coding agent integration (Claude Code, Cursor, Codex)
 
 ## What Boruna is not
@@ -36,7 +39,7 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - Not a general-purpose language or runtime (use Rust, Python, Go for that)
 - Not an LLM framework (use LangChain, LCEL, etc. for prompt engineering)
 - Not a cloud service (Boruna runs wherever you deploy it)
-- Not yet production-ready (v0.1.0 — core is complete and tested, API evolving)
+- Not a key-management system (operators wire HSM / KMS integration themselves; bundle-encryption KEK lifecycle is operator-owned)
 
 ## Install
 
@@ -124,7 +127,7 @@ Boruna is a Rust workspace with 9 crates:
 | `boruna-tooling` | Diagnostics, repair, trace-to-tests, templates |
 | `boruna-pkg` | Package registry, resolver, lockfiles |
 
-557+ tests. `cargo test --workspace` — all pass.
+1175+ tests across 11 workspace members. `cargo test --workspace --features boruna-cli/serve` — all pass.
 
 ## Documentation
 
@@ -135,19 +138,27 @@ Boruna is a Rust workspace with 9 crates:
 | [Concepts: Capabilities](docs/concepts/capabilities.md) | Side effect declaration and policy gating |
 | [Concepts: Evidence Bundles](docs/concepts/evidence-bundles.md) | Hash-chained audit logs and replay |
 | [Guide: First Workflow](docs/guides/first-workflow.md) | Build a workflow from scratch |
+| [Guide: Coord HA](docs/guides/coord-ha.md) | Multi-coord deployment topologies |
+| [Guide: Coord mTLS](docs/guides/coord-mtls.md) | X.509 client certs + cert generation |
+| [Guide: Worker Capability Tagging](docs/guides/worker-capability-tagging.md) | Heterogeneous fleet placement |
+| [Guide: Migration](docs/guides/migration.md) | Upgrade legacy bundles and workflow files |
+| [Spec: `.ax` Language 1.0](docs/spec/ax-language-1.0.md) | Formal language specification |
+| [Spec: Workflow DAG 1.0](docs/spec/workflow-dag-1.0.md) | `workflow.json` schema |
+| [Spec: Evidence Bundle 1.0](docs/spec/evidence-bundle-1.0.md) | Bundle format + encryption envelope |
 | [Reference: CLI](docs/reference/cli.md) | All `boruna` commands |
-| [Reference: .ax Language](docs/reference/ax-language.md) | Syntax, types, capabilities |
+| [LTS contract](docs/lts.md) | Support windows + deprecation policy for 1.x |
+| [Performance](docs/PERFORMANCE.md) | Baseline numbers + 1.x performance budget |
 | [Stability](docs/stability.md) | What is stable, experimental, and planned |
-| [Roadmap](docs/roadmap.md) | 0.2.0 through 1.0.0 |
+| [Roadmap](docs/roadmap.md) | 0.2.0 → 1.0.0 → 1.x |
 | [Limitations](docs/limitations.md) | Real constraints, stated honestly |
 | [FAQ](docs/faq.md) | Common questions |
 | [All docs →](docs/README.md) | Full documentation index |
 
 ## Status
 
-Boruna is at **v0.1.0**. The core execution engine is complete and tested. The public API is not yet stable — breaking changes may occur before 1.0.
+Boruna is at **v1.0.0-rc1**. The core execution engine, distributed-execution stack, evidence bundles, and three formal versioned specifications are feature-complete. The 1.x line is committed to long-term-support per [`docs/lts.md`](docs/lts.md), which takes effect at 1.0 GA.
 
-The project is appropriate for evaluation, proof-of-concept workflows, and teams who want to adopt the architecture early. It is not yet appropriate for production workloads requiring API stability guarantees.
+The project is appropriate for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action before production GA**: book external security audit (Q4 2026 commitment), validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints.
 
 See [docs/stability.md](docs/stability.md) for the full maturity assessment.
 
