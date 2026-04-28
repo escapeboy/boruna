@@ -6,6 +6,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **CI clippy gate now uses `--all-targets`** (sprint `W1-A`).
+  All three clippy invocations in `.github/workflows/ci.yml` now
+  include `--all-targets` so test-code lint regressions surface
+  at PR time instead of only at release-runner time. Filed as a
+  followup in the B-2 retro after the workspace `--all-targets`
+  sweep landed.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of

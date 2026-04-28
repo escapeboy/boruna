@@ -76,13 +76,13 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Run Clippy with http feature
-        run: cargo clippy --workspace --features boruna-vm/http -- -D warnings
+        run: cargo clippy --workspace --features boruna-vm/http --all-targets -- -D warnings
 
       - name: Run Clippy with serve feature
-        run: cargo clippy -p boruna-cli --features serve -- -D warnings
+        run: cargo clippy -p boruna-cli --features serve --all-targets -- -D warnings
 
   fmt:
     name: Format
