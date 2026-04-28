@@ -185,6 +185,35 @@ Plus the `errors` shape from `boruna_compile` if compilation fails before the ru
 
 `Value::List` becomes a JSON array; `Value::Map` becomes a JSON object.
 
+**Progress notifications** (formalized as 1.x stable in
+post1-T-1.1; underlying mechanism shipped in sprint 0.4-S6).
+
+When the caller includes a `progressToken` in the request's `_meta`
+field — the standard MCP mechanism for streaming progress — the
+server drives the VM through `Vm::execute_bounded` in slices of
+~100,000 opcodes. Between slices it emits MCP
+`notifications/progress` events whose `progress` field is the
+cumulative VM step count:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/progress",
+  "params": {
+    "progressToken": "<echoed from request>",
+    "progress": 142000
+  }
+}
+```
+
+The events are coarse — slice-bounded, not per-opcode — so a
+long-running script emits several events per second on typical
+hardware. Clients that don't supply a `progressToken` see no
+notifications and no extra latency. The streaming and non-streaming
+paths share their semantics for `start_time`, `max_wall_ms`, error
+handling, and final response shape, so progress-aware clients see
+identical results to legacy clients on the same input.
+
 ---
 
 ### `boruna_check`

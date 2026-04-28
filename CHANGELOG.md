@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `boruna_run` MCP progress notifications are now part of the 1.x
+  LTS-stable surface (post1-T-1.1). When a client supplies the
+  standard MCP `progressToken` in the request's `_meta` field, the
+  server drives the VM in ~100k-opcode slices and emits
+  `notifications/progress` events between slices with the cumulative
+  step count. The underlying mechanism shipped in sprint 0.4-S6;
+  this entry formalizes the wire contract and adds reference docs
+  in `docs/reference/mcp-server.md` § "Progress notifications".
 - Worker capability advertisements now carry an optional version
   (post1-T-1.3). `RegisterRequest.advertised_capabilities` accepts
   either a bare string (legacy worker, normalized by the coord to
