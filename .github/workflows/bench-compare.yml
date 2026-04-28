@@ -1,0 +1,136 @@
+name: Bench compare
+
+# Sprint T-0.3 of post-1.0-execution-plan: PR-time perf-regression
+# detection. Runs the criterion bench harness on both the PR base
+# and the PR head, then posts a sticky comment with the deltas.
+#
+# Non-blocking by default: this job is NOT in branch protection's
+# required_status_checks set. A regression FAILS the job (so the
+# comment shows red), but does not prevent merging until the team
+# decides to promote it. Reviewers should treat ≥10% regressions
+# as "explain or justify" before merging.
+#
+# CI runner: self-hosted. Production-class hardware will give
+# cleaner deltas than a hosted runner; the 10% threshold is
+# calibrated to be larger than typical noise on this box. See
+# docs/PERFORMANCE.md.
+#
+# Bench-compare runs the full criterion suite. If a PR's perf
+# impact can be reasoned about without bench data (docs, CI
+# workflow tweaks, pure CHANGELOG edits), the path filter below
+# skips this job.
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'CHANGELOG.md'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench-compare:
+    name: Bench compare
+    runs-on: self-hosted
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-bench-
+
+      - name: Bench base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # BASE_REF is the PR's target branch (master/main); it cannot
+          # contain shell metacharacters because branch protection
+          # restricts which branches can be PR targets.
+          git fetch origin "$BASE_REF"
+          git checkout "origin/$BASE_REF"
+          # Enumerate the criterion bench targets explicitly so the lib's
+          # default test harness (which does not know --save-baseline)
+          # is skipped. Adding a new [[bench]] target requires updating
+          # this list.
+          cargo bench -p boruna-benches \
+            --bench compile --bench vm_throughput --bench evidence \
+            -- --save-baseline base
+
+      - name: Bench PR head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # HEAD_SHA is a 40-char git oid extracted by GitHub from the
+          # PR ref, not a user-supplied branch name; safe to checkout.
+          git checkout "$HEAD_SHA"
+          cargo bench -p boruna-benches \
+            --bench compile --bench vm_throughput --bench evidence \
+            -- --baseline base
+
+      - name: Render comparison
+        id: cmp
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bench_compare.py \
+            --criterion-dir target/criterion \
+            --threshold 0.10 \
+            --out comment.md \
+            --regressed-out regressed.txt
+          if [ -s regressed.txt ]; then
+            echo "regressed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "regressed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post sticky comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Body lives on disk; never interpolated through shell.
+          MARKER='<!-- bench-compare:sticky -->'
+          {
+            printf '%s\n' "$MARKER"
+            cat comment.md
+          } > body.md
+          existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
+            | head -1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" \
+              -F body=@body.md > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" \
+              -F body=@body.md > /dev/null
+          fi
+
+      - name: Fail on regression
+        if: steps.cmp.outputs.regressed == 'true'
+        run: |
+          echo "::error::One or more benchmarks regressed by >= 10%."
+          echo "See the bench-compare PR comment for details."
+          exit 1

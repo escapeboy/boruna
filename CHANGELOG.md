@@ -14,7 +14,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `0.7.x` (speculative) branch topology and cross-merge rules.
 - GitHub labels `wave-1`…`wave-4`, `branch-master`, `branch-0.7.x`,
   `post1-execution` for filtering post-1.0 PRs and issues.
-
+- `Bench compare` CI job and `.github/scripts/bench_compare.py` —
+  PR-time perf-regression detection that runs the criterion harness
+  on PR base and head, posts a sticky comment with per-benchmark
+  deltas, and fails on ≥10% mean regression. Non-blocking by
+  default (not in the required-status-checks set). See
+  `CONTRIBUTING.md` § "Reading the bench-compare PR comment".
 ## [1.0.0] - 2026-04-28
 
 **First stable release.** The 1.x LTS contract takes effect from
