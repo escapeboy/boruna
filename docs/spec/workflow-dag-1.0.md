@@ -282,6 +282,22 @@ schema generation under which a run was executed. Replay
 verification fails closed if the on-disk schema_version no longer
 matches the recorded hash.
 
+## Post-1.0 additive notes (no version bump)
+
+These behaviors are additive extensions of the 1.0 spec — they are
+visible only to operators who opt in, do not change the on-disk
+shape of any 1.0 workflow, and do not change the
+`schema_version: 1` constant.
+
+- **Versioned worker capability advertisements (post1-T-1.3).**
+  `RegisterRequest.advertised_capabilities` (the wire shape used at
+  worker registration, not part of the workflow def) now accepts
+  `{name, version}` objects in addition to bare strings. The coord
+  normalizes legacy strings to the coord's current
+  `Capability::version()` for that name. Routing and the new
+  `coord.capability_version_mismatch` claim error are documented in
+  `docs/reference/error-kinds.md`. No workflow JSON change.
+
 ## Cross-references
 
 - [`docs/architecture-coordinator-worker-http.md`](../architecture-coordinator-worker-http.md)

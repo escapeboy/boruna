@@ -54,6 +54,7 @@ is `{"error_kind": "...", "message": "...", "details": {...}?}` (see
 | `coord.blobs.bad_hash` | 400 | N/A | `coordinator.rs::handle_get_blob` | `0.5-S7` | Blob lookup hash is not 64 hex chars. |
 | `coord.blobs.not_found` | 404 | N/A | `coordinator.rs::handle_get_blob` | `0.5-S7` | No blob with the given content-hash exists in the coord's blob store. |
 | `coord.unavailable` | 503 | N/A | `coordinator.rs::handle_health` | `W2` | Coord HTTP surface is up but a downstream dependency (SQLite store) is unhealthy; emitted on `/api/health`. |
+| `coord.capability_version_mismatch` | 409 | N/A | `coordinator.rs::handle_claim` | `post1-T-1.3` | The worker's session covers every required capability NAME for at least one pending step, but at a version that does not match the coord's current `Capability::version()`. Operator action: roll out a worker build that advertises the matching version. Distinct from `coord.unknown_capability` (which fires at REGISTER for an unknown name) and from the silent W3-A skip (worker missing the capability entirely). |
 
 ## `evidence.*` — evidence bundle reader
 
