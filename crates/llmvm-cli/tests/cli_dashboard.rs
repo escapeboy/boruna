@@ -49,7 +49,36 @@ fn http_get(port: u16, path: &str) -> (u16, String) {
 }
 
 fn http_request(port: u16, method: &str, path: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to server");
+    // Retry-on-ConnectionRefused: the port-pick → spawn → wait_for_server
+    // → http_request chain has a small race window on busy CI runners
+    // (kernel re-assigning ephemeral ports, child process re-binding).
+    // Observed once on the self-hosted runner under v1.0.0-rc2 push.
+    // Retrying a few times with backoff is the standard fix; the test
+    // is exercising HTTP responses, not connect-establishment timing.
+    let mut last_err: Option<std::io::Error> = None;
+    let mut stream = (0..5)
+        .find_map(|attempt| {
+            match TcpStream::connect_timeout(
+                &format!("127.0.0.1:{port}").parse().unwrap(),
+                Duration::from_millis(500),
+            ) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+                    None
+                }
+            }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "connect to 127.0.0.1:{port} failed after 5 retries; last err: {}",
+                last_err
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )
+        });
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
