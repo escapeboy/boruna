@@ -54,6 +54,40 @@ jobs:
             cargo run --bin boruna -- workflow validate "$dir"
           done
 
+      - name: Smoke-test example workflows end-to-end
+        # Sprint W9-D: catches integration regressions where DAG validation
+        # passes but execution fails (compile errors in .ax sources,
+        # capability gating bugs, bundle-write failures). For each example,
+        # we RUN the workflow with --policy allow-all --record, then
+        # `evidence verify` the produced bundle.
+        #
+        # Why allow-all: examples ship with stub capability handlers in demo
+        # mode, so allow-all is safe and exercises the gating code path.
+        # We do NOT pass --live; no real network, db, or LLM calls.
+        run: |
+          set -euo pipefail
+          SMOKE_DIR=$(mktemp -d)
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          for dir in examples/workflows/*/; do
+            example=$(basename "$dir")
+            echo "=== smoke: $example ==="
+            DATA_DIR="$SMOKE_DIR/$example"
+            EV_DIR="$DATA_DIR/evidence"
+            mkdir -p "$DATA_DIR"
+            cargo run --bin boruna -- workflow run "$dir" \
+              --policy allow-all \
+              --record \
+              --data-dir "$DATA_DIR" \
+              --evidence-dir "$EV_DIR"
+            # Bundles land at $EV_DIR/<run-id>/.
+            run_id=$(ls "$EV_DIR" | head -1)
+            if [ -z "$run_id" ]; then
+              echo "ERROR: no run produced for $example" >&2
+              exit 1
+            fi
+            cargo run --bin boruna -- evidence verify "$EV_DIR/$run_id"
+          done
+
       - name: Compile benches (no-run)
         # Sprint W8: regression-gate the criterion bench harness so a
         # bench refactor that breaks compilation surfaces at PR time.
