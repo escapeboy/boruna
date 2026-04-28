@@ -6,7 +6,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-28
+
+**Theme: distributed execution.** Boruna can now run a fleet of
+worker processes coordinated by a single HTTP coordinator,
+drive workflows over the wire from CI runners that don't share
+a data-dir, handle large LLM step outputs without bloating the
+SQLite store, and serve human-in-the-loop and webhook-driven
+gates against a remote cluster. Read paths are consistent across
+in-process resume, evidence-bundle creation, dashboard
+rendering, and the `step_input` builtin — every persistence
+reader of step outputs goes through the same accessor.
+
+The 0.5-S2a → 0.5-S2f sub-sprint cycle landed during 0.4.x and
+is included in this tag for the first time as a versioned
+release (the distributed-execution stack: claim/lease
+persistence, coordinator/worker HTTP MVP, lease-expiry sweep,
+coord+dashboard listener-merge, `workflow run --submit-only`,
+`coordinator wait`).
+
 ### Added
+
+- **Workspace clippy `--all-targets` is clean** (sprint `B-2`).
+  Pre-existing test-code lints from rustc 1.91+ in 4 crates
+  (boruna-bytecode, boruna-vm, boruna-framework, boruna-compiler)
+  plus a few in production paths cleared in one sweep. Auto-fix
+  handled `needless_borrows_for_generic_args`, `manual_contains`,
+  `clone_on_copy`, `for_kv_map`, `manual_is_multiple_of`. Manual
+  fixes for `module_inception` (4× tests.rs files,
+  `#[allow]` on inner mod), `type_complexity` (3 sites in
+  `llmvm/capability_gateway` tests, factored to a
+  `RecordedCalls` type alias), `approx_constant` (test fixture
+  used 3.14 for arbitrary roundtrip — replaced with 2.5),
+  `await_holding_lock` (existing test had a `MutexGuard`
+  whose binding scope spanned an `.await` across an explicit
+  `drop()`; rebound inside a block scope so drop is automatic
+  before any await).
 
 - **Dashboard renders step outputs with blob-aware fallback**
   (sprint `0.5-S7b`). The per-run detail HTML page gains an
@@ -1758,7 +1793,8 @@ Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna
   `std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`, `std-notifications`, `std-testing`
 - 557+ tests across 9 crates
 
-[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/escapeboy/boruna/releases/tag/v0.5.0
 [0.4.0]: https://github.com/escapeboy/boruna/releases/tag/v0.4.0
 [0.3.0]: https://github.com/escapeboy/boruna/releases/tag/v0.3.0
 [0.2.0]: https://github.com/escapeboy/boruna/releases/tag/v0.2.0
