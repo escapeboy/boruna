@@ -18,6 +18,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   registration with unknown capability names. Operational
   metadata only — placement filter, not a security gate;
   the VM's capability gateway remains the authority.
+- **Blob GC** (sprint `W3-B`). New `boruna evidence gc-blobs`
+  command sweeps orphan content-addressed blobs from the
+  data-dir's `blobs/` tree (output blobs no longer referenced
+  by any step checkpoint). `--dry-run` reports without
+  deleting; `--json` emits a structured report. Closes the
+  0.5-S7 accepted limitation around manual blob cleanup.
+  Library APIs `BlobStore::find_orphans`, `BlobStore::delete`,
+  and `RunCheckpointStore::all_referenced_blob_hashes` are
+  also exposed for future coord-side periodic-sweep wiring.
 - **Coordinator HA / failover** (sprint `W2`). Multiple
   `boruna coordinator serve` processes can run against the
   same SQLite data-dir for active-active HA. Workers accept

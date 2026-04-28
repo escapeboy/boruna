@@ -104,6 +104,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
 - [x] **Coordinator HA / failover** (sprint `W2`) — multi-coord active-active against shared SQLite, worker URL failover at registration, `/api/health` for LB probes; deployment guide at [`guides/coord-ha.md`](./guides/coord-ha.md). The ADR 002 "coord restart = all leases void" assumption was audited and confirmed already-safe (threshold-based sweep preserves healthy leases under concurrent coords).
 - [x] **Worker capability tagging / placement** (sprint `W3-A`) — workers advertise a SUBSET of the coord's capability set via `--advertise-caps`; coord filters claims to caps the worker covers. Backwards-compatible (omitted flag = full fleet). New `coord.unknown_capability` error_kind.
+- [x] **Blob GC sweep** (sprint `W3-B`) — `boruna evidence gc-blobs` reclaims orphan blobs in `<data-dir>/blobs/`. Closes the 0.5-S7 accepted limitation around manual cleanup.
 - [ ] **Rolling upgrades** — heterogeneous worker versions via per-capability version negotiation
 
 ### (b) Spec freeze
