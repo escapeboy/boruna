@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Mutual TLS auth + per-worker client certificates** (sprint
+  `W6-A`). Operators can now require X.509 client certs on the
+  coord HTTP surface via `--tls-cert`, `--tls-key`, and
+  `--tls-client-ca`. Workers present client certs via
+  `--tls-cert` / `--tls-key` / `--tls-server-ca`. The cert
+  subject CN drives worker identity; mismatch with a body
+  `worker_id` returns `coord.identity_mismatch`. mTLS is
+  additive: shared-secret bearer auth (sprint 0.5-S3)
+  continues to work unchanged. Operator guide:
+  [`docs/guides/coord-mtls.md`](./docs/guides/coord-mtls.md).
+  New error_kind: `coord.identity_mismatch`.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of

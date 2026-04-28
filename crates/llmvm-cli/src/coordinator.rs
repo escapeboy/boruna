@@ -38,11 +38,18 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
+// mTLS surface (sprint W6-A). All TLS types live behind an Option
+// in the coordinator config — when no mTLS flags are set the
+// coordinator's listener path is identical to the pre-W6 plain TCP
+// behavior.
 use boruna_bytecode::compute_capability_set_hash;
 use boruna_orchestrator::persistence::{
     BlobStoreError, ClaimOutcome, ExtendOutcome, RunCheckpointStore, RunStatus, StepStatus,
     TerminalOutcome,
 };
+use rustls::pki_types::CertificateDer;
+use rustls::server::WebPkiClientVerifier;
+use rustls::RootCertStore;
 use serde::{Deserialize, Serialize};
 
 const PROTOCOL_VERSION: u32 = 1;
@@ -93,6 +100,14 @@ pub struct CoordinatorConfig {
     /// `BORUNA_COORD_SECRET` env var. The same value MUST be set
     /// on every worker via the analogous flag or env var.
     pub shared_secret: Option<String>,
+    /// Whether mTLS is enabled on this coord (sprint `W6-A`).
+    /// When `true`, the `auth_middleware` requires every request
+    /// to carry a [`ClientIdentity`] extension (extracted from
+    /// the TLS handshake's client cert). Defense-in-depth: if a
+    /// request reaches the middleware without an identity (e.g.
+    /// because of a bug in the TLS plumbing) the request is
+    /// rejected with 401 `coord.unauthorized`.
+    pub mtls_required: bool,
 }
 
 /// Minimum sweep interval. Lower values would cause the
@@ -100,6 +115,58 @@ pub struct CoordinatorConfig {
 /// integration tests; production operators pick something
 /// larger via `--sweep-interval-ms`.
 const MIN_SWEEP_INTERVAL_MS: u64 = 100;
+
+/// File-path bundle for the coord's mTLS server config (sprint
+/// `W6-A`). All three paths are required together — passing
+/// fewer than three is a typed startup error so misconfigurations
+/// surface at parse time rather than as a silent fallback to
+/// plaintext.
+#[derive(Debug, Clone)]
+pub struct ServerTlsPaths {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub client_ca: PathBuf,
+}
+
+impl ServerTlsPaths {
+    /// Validate the three optional paths and produce either
+    /// `None` (no TLS — pre-W6 behavior) or a fully-populated
+    /// triple. Mixing-and-matching (e.g. `--tls-cert` without
+    /// `--tls-key`) is a startup error per project §1.
+    pub fn from_optional(
+        cert: Option<PathBuf>,
+        key: Option<PathBuf>,
+        client_ca: Option<PathBuf>,
+    ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        match (cert, key, client_ca) {
+            (None, None, None) => Ok(None),
+            (Some(cert), Some(key), Some(client_ca)) => Ok(Some(Self {
+                cert,
+                key,
+                client_ca,
+            })),
+            _ => Err("--tls-cert, --tls-key, --tls-client-ca must all be provided together".into()),
+        }
+    }
+}
+
+/// Compiled rustls server config + the path-shaped originals
+/// (kept so the run_serve path can log them at startup). Wrapped
+/// in `Arc` so [`CoordinatorState`] stays cheap-clone.
+#[derive(Clone)]
+struct CompiledServerTls {
+    config: Arc<rustls::ServerConfig>,
+}
+
+/// Per-connection identity extracted from a presented client
+/// certificate. The CN drives worker identity per the W6-A
+/// design: handlers compare incoming `worker_id` body fields
+/// (case-insensitively) against this CN; mismatch returns
+/// `coord.identity_mismatch`.
+#[derive(Clone, Debug)]
+pub struct ClientIdentity {
+    pub common_name: String,
+}
 
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
@@ -111,6 +178,7 @@ pub async fn run_serve(
     poll_timeout_ms: u64,
     sweep_interval_ms: u64,
     shared_secret: Option<String>,
+    tls_paths: Option<ServerTlsPaths>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let db_path = data_dir.join("runs.db");
     if !db_path.exists() {
@@ -157,17 +225,28 @@ pub async fn run_serve(
             .map(|(n, v)| (n.as_str(), v.as_str())),
     );
 
-    let auth_state = match shared_secret.as_deref() {
-        Some(_) => "enabled (shared-secret bearer)",
-        None if bind.is_loopback() => "disabled (loopback bind only)",
-        None => "DISABLED (non-loopback bind without --shared-secret)",
+    // Compile TLS config first so we know whether mTLS is on
+    // before we record the auth state.
+    let compiled_tls = match tls_paths.as_ref() {
+        Some(paths) => Some(build_server_tls(paths)?),
+        None => None,
+    };
+    let mtls_required = compiled_tls.is_some();
+
+    let auth_state = match (shared_secret.as_deref(), mtls_required) {
+        (Some(_), true) => "enabled (mTLS + shared-secret bearer)",
+        (Some(_), false) => "enabled (shared-secret bearer)",
+        (None, true) => "enabled (mTLS only)",
+        (None, false) if bind.is_loopback() => "disabled (loopback bind only)",
+        (None, false) => "DISABLED (non-loopback bind without --shared-secret or mTLS)",
     };
     eprintln!("    auth: {auth_state}");
-    if shared_secret.is_none() && !bind.is_loopback() {
+    if shared_secret.is_none() && !mtls_required && !bind.is_loopback() {
         eprintln!(
-            "[WARNING] coordinator is bound to a non-loopback address with NO --shared-secret. \
+            "[WARNING] coordinator is bound to a non-loopback address with NO --shared-secret \
+             and NO --tls-cert/--tls-key/--tls-client-ca. \
              Anyone with network access can SUBMIT and CONTROL distributed work. \
-             Pass --shared-secret <hex> (or BORUNA_COORD_SECRET env) to enable auth."
+             Pass --shared-secret <hex> (or BORUNA_COORD_SECRET env), or enable mTLS, to enable auth."
         );
     }
 
@@ -181,6 +260,7 @@ pub async fn run_serve(
             poll_timeout_ms,
             bind_warning,
             shared_secret,
+            mtls_required,
         },
     };
 
@@ -206,17 +286,324 @@ pub async fn run_serve(
     let app = build_router(state);
 
     let addr = std::net::SocketAddr::new(bind, port);
-    eprintln!("coordinator serving on http://{addr}");
+    let scheme = if compiled_tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    eprintln!("coordinator serving on {scheme}://{addr}");
     eprintln!("    data-dir: {}", data_dir.display());
     eprintln!("    max_lease_ttl_ms: {max_lease_ttl_ms}");
     eprintln!("    poll_timeout_ms: {poll_timeout_ms}");
     eprintln!("    sweep_interval_ms: {effective_sweep_ms}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let result = axum::serve(listener, app).await;
+    let result = match compiled_tls {
+        Some(tls) => serve_with_tls(listener, app, tls).await,
+        None => axum::serve(listener, app).await,
+    };
     sweep_task.abort();
     result?;
     Ok(())
+}
+
+/// Build a rustls `ServerConfig` that REQUIRES client cert
+/// authentication. Loads cert + key for the server identity and
+/// the client CA as a webpki trust root for verifying connecting
+/// workers' certs.
+fn build_server_tls(
+    paths: &ServerTlsPaths,
+) -> Result<CompiledServerTls, Box<dyn std::error::Error>> {
+    install_default_crypto_provider()?;
+
+    let cert_chain = load_cert_chain(&paths.cert)?;
+    let key = load_private_key(&paths.key)?;
+    let client_ca = load_cert_chain(&paths.client_ca)?;
+
+    let mut roots = RootCertStore::empty();
+    for cert in client_ca {
+        roots
+            .add(cert)
+            .map_err(|e| format!("invalid client CA cert: {e}"))?;
+    }
+
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| format!("build client cert verifier: {e}"))?;
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(cert_chain, key)
+        .map_err(|e| format!("rustls ServerConfig: {e}"))?;
+
+    Ok(CompiledServerTls {
+        config: Arc::new(server_config),
+    })
+}
+
+/// Install the rustls default crypto provider exactly once. Calls
+/// after the first successfully-installed provider are idempotent;
+/// rustls returns an error on second-call so we swallow it.
+fn install_default_crypto_provider() -> Result<(), Box<dyn std::error::Error>> {
+    // The provider may already be installed by another part of the
+    // process (e.g. reqwest in the same binary). `install_default`
+    // returns Err if a provider is already present — that's fine.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    Ok(())
+}
+
+fn load_cert_chain(
+    path: &std::path::Path,
+) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
+    let pem =
+        std::fs::read(path).map_err(|e| format!("read certificate {}: {e}", path.display()))?;
+    let mut reader = std::io::Cursor::new(pem);
+    let chain: Result<Vec<_>, _> = rustls_pemfile::certs(&mut reader).collect();
+    let chain = chain.map_err(|e| format!("parse certificate {}: {e}", path.display()))?;
+    if chain.is_empty() {
+        return Err(format!("no PEM certificates found in {}", path.display()).into());
+    }
+    Ok(chain)
+}
+
+fn load_private_key(
+    path: &std::path::Path,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
+    let pem = std::fs::read(path).map_err(|e| format!("read key {}: {e}", path.display()))?;
+    let mut reader = std::io::Cursor::new(pem);
+    let key = rustls_pemfile::private_key(&mut reader)
+        .map_err(|e| format!("parse key {}: {e}", path.display()))?
+        .ok_or_else(|| format!("no private key found in {}", path.display()))?;
+    Ok(key)
+}
+
+/// Per-connection TLS accept loop. Wraps each accepted TCP stream
+/// in a `tokio_rustls::TlsAcceptor`, extracts the client cert
+/// subject CN from the completed handshake, and stuffs a
+/// `ClientIdentity` into the request extensions so handlers and
+/// the auth middleware can see it.
+///
+/// Failed handshakes (no cert, untrusted cert, bad cipher) are
+/// logged at the connection layer and the connection is dropped —
+/// no HTTP response is produced (the client never made it past
+/// the TLS layer). Successful handshakes hand off to axum's
+/// hyper service for normal HTTP processing.
+async fn serve_with_tls(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    tls: CompiledServerTls,
+) -> std::io::Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder;
+    use hyper_util::service::TowerToHyperService;
+    use tokio_rustls::TlsAcceptor;
+    use tower::ServiceBuilder;
+    use tower_service::Service;
+
+    let acceptor = TlsAcceptor::from(tls.config);
+    let make_service = router.into_make_service();
+    loop {
+        let (tcp, peer) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("coordinator TLS accept: {e}");
+                continue;
+            }
+        };
+        let acceptor = acceptor.clone();
+        let mut make_service = make_service.clone();
+        tokio::spawn(async move {
+            let tls_stream = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(e) => {
+                    // No client cert / untrusted CA / cipher
+                    // mismatch all surface here. Per W6-A this is
+                    // expected for adversarial probes; log at
+                    // debug-level only.
+                    eprintln!("coordinator TLS handshake from {peer}: {e}");
+                    return;
+                }
+            };
+
+            // Pull the peer cert chain off the completed handshake
+            // and convert the leaf into a `ClientIdentity`. Without
+            // a peer cert (which `with_client_cert_verifier`
+            // requires) the connection wouldn't reach this point —
+            // but defense-in-depth: if the chain is empty we let
+            // the auth middleware reject the request cleanly.
+            let identity = client_identity_from_stream(&tls_stream);
+
+            // Resolve the per-connection axum Service from the
+            // make_service. axum's IntoMakeService::call is
+            // infallible so we can unwrap.
+            let tower_service = match make_service.call(()).await {
+                Ok(svc) => svc,
+                Err(_infallible) => return,
+            };
+
+            // Wrap the axum Service with a layer that stamps the
+            // ClientIdentity into the request extensions. Using
+            // `tower::ServiceBuilder::map_request` keeps the
+            // identity attached for every request on this
+            // connection. Note: hyper hands axum requests over as
+            // `Request<hyper::body::Incoming>`, NOT
+            // `axum::extract::Request`, so we type the closure
+            // generically.
+            let svc = ServiceBuilder::new()
+                .map_request(move |mut req: axum::http::Request<hyper::body::Incoming>| {
+                    if let Some(id) = identity.clone() {
+                        req.extensions_mut().insert(id);
+                    }
+                    req
+                })
+                .service(tower_service);
+
+            let hyper_service = TowerToHyperService::new(svc);
+            let io = TokioIo::new(tls_stream);
+            if let Err(e) = Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, hyper_service)
+                .await
+            {
+                eprintln!("coordinator TLS connection from {peer}: {e}");
+            }
+        });
+    }
+}
+
+/// Extract a `ClientIdentity` from a completed TLS stream. Pulls
+/// the subject CN out of the leaf certificate using the limited
+/// DN parser in `cn_from_subject_der`; returns `None` if no peer
+/// certs are present (shouldn't happen with a `WebPkiClientVerifier`
+/// but defended against anyway).
+fn client_identity_from_stream<S>(
+    stream: &tokio_rustls::server::TlsStream<S>,
+) -> Option<ClientIdentity> {
+    let (_, conn) = stream.get_ref();
+    let chain = conn.peer_certificates()?;
+    let leaf = chain.first()?;
+    cn_from_cert_der(leaf.as_ref()).map(|cn| ClientIdentity { common_name: cn })
+}
+
+/// Pull the CN out of an X.509 certificate's Subject DN.
+///
+/// Mini-parser that walks the TBSCertificate to the Subject
+/// field and reads the CN attribute. The Subject in
+/// `TBSCertificate` sits AFTER the issuer DN, so a naive scan
+/// for OID 2.5.4.3 would return the issuer's CN — which is the
+/// CA, not the worker. We walk explicitly:
+///
+/// ```text
+///   Certificate ::= SEQUENCE { tbsCertificate, sigAlg, sigValue }
+///   TBSCertificate ::= SEQUENCE {
+///     [0] version, serialNumber, signature, issuer,
+///     validity, subject, subjectPublicKeyInfo, ...
+///   }
+/// ```
+///
+/// Returns `None` on malformed DER. Corrupt input is unexpected
+/// in production — `WebPkiClientVerifier` rejects bad certs
+/// before they reach here.
+fn cn_from_cert_der(der: &[u8]) -> Option<String> {
+    // Outer Certificate SEQUENCE — read the TLV and the
+    // RETURN VALUE is the contents (the three sub-SEQUENCEs).
+    let (cert_inner, _) = read_tag_value(der, 0x30)?;
+    // First inner SEQUENCE = tbsCertificate.
+    let (tbs, _) = read_tag_value(cert_inner, 0x30)?;
+
+    let mut cursor = tbs;
+    // Optional [0] version — explicit tag 0xA0.
+    if let Some(rest) = skip_tag_if(cursor, 0xA0) {
+        cursor = rest;
+    }
+    // serialNumber INTEGER (0x02).
+    let (_, cursor) = read_tag_skip(cursor, 0x02)?;
+    // signature AlgorithmIdentifier SEQUENCE (0x30).
+    let (_, cursor) = read_tag_skip(cursor, 0x30)?;
+    // issuer Name SEQUENCE (0x30) — skip.
+    let (_, cursor) = read_tag_skip(cursor, 0x30)?;
+    // validity SEQUENCE (0x30) — skip.
+    let (_, cursor) = read_tag_skip(cursor, 0x30)?;
+    // subject Name SEQUENCE (0x30) — this is where CN lives.
+    let (subject, _) = read_tag_skip(cursor, 0x30)?;
+    cn_from_dn(subject)
+}
+
+/// Read an ASN.1 DER tag-length-value triple; return
+/// `(value_bytes, remainder_after_tlv)`. Supports definite
+/// short-form (one length byte) AND definite long-form
+/// (multi-byte length) lengths so 256+-byte issuer DNs from
+/// large CAs don't trip the parser.
+fn read_tag_value(input: &[u8], expected_tag: u8) -> Option<(&[u8], &[u8])> {
+    let &tag = input.first()?;
+    if tag != expected_tag {
+        return None;
+    }
+    let &len_byte = input.get(1)?;
+    let (len, header_len) = if len_byte & 0x80 == 0 {
+        (len_byte as usize, 2)
+    } else {
+        let n = (len_byte & 0x7f) as usize;
+        if n == 0 || n > 4 {
+            return None;
+        }
+        let len_bytes = input.get(2..2 + n)?;
+        let mut len = 0usize;
+        for b in len_bytes {
+            len = (len << 8) | (*b as usize);
+        }
+        (len, 2 + n)
+    };
+    let value = input.get(header_len..header_len + len)?;
+    let rest = input.get(header_len + len..)?;
+    Some((value, rest))
+}
+
+/// Like [`read_tag_value`] but returns `(value, remainder)` and
+/// renames the tuple convention to "skip past this TLV."
+fn read_tag_skip(input: &[u8], expected_tag: u8) -> Option<(&[u8], &[u8])> {
+    read_tag_value(input, expected_tag)
+}
+
+/// Skip a TLV if the tag matches; return `None` if it doesn't,
+/// indicating the caller should NOT advance.
+fn skip_tag_if(input: &[u8], expected_tag: u8) -> Option<&[u8]> {
+    if input.first() == Some(&expected_tag) {
+        let (_, rest) = read_tag_value(input, expected_tag)?;
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+/// Walk a Distinguished Name SEQUENCE OF SET OF AttributeTypeAndValue
+/// looking for OID 2.5.4.3 (commonName).
+fn cn_from_dn(dn_seq: &[u8]) -> Option<String> {
+    // OID 2.5.4.3 = CN. Encoded as 06 03 55 04 03.
+    const CN_OID: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
+    let mut cursor = dn_seq;
+    while !cursor.is_empty() {
+        // RelativeDistinguishedName ::= SET OF (0x31)
+        let (rdn, rest) = read_tag_value(cursor, 0x31)?;
+        cursor = rest;
+        let mut atv_cursor = rdn;
+        while !atv_cursor.is_empty() {
+            // AttributeTypeAndValue ::= SEQUENCE { type OID, value ANY }
+            let (atv, after_atv) = read_tag_value(atv_cursor, 0x30)?;
+            atv_cursor = after_atv;
+            if atv.starts_with(CN_OID) {
+                let after_oid = &atv[CN_OID.len()..];
+                // Value is one of: PrintableString (0x13),
+                // UTF8String (0x0c), IA5String (0x16),
+                // TeletexString (0x14). Accept any and decode
+                // as UTF-8 (a CN with non-ASCII is unusual but
+                // we don't reject it here).
+                let &tag = after_oid.first()?;
+                let (value, _) = read_tag_value(after_oid, tag)?;
+                return std::str::from_utf8(value).ok().map(str::to_owned);
+            }
+        }
+    }
+    None
 }
 
 /// Background lease-expiry sweep task. Runs for the lifetime
@@ -301,30 +688,44 @@ fn unauthorized_response() -> Response {
     (StatusCode::UNAUTHORIZED, Json(body)).into_response()
 }
 
-/// Axum middleware that validates the `Authorization: Bearer <secret>`
-/// header against the coordinator's configured shared-secret. When no
-/// shared-secret is configured, the middleware is a pass-through (the
-/// pre-0.5-S3 no-auth behavior).
+/// Axum middleware that validates BOTH gates the operator has
+/// configured:
+///
+/// - **mTLS** — when `mtls_required`, the request MUST carry a
+///   [`ClientIdentity`] extension installed by the TLS listener
+///   (sprint `W6-A`). Missing identity → 401 `coord.unauthorized`
+///   (defense-in-depth: the listener guarantees a cert was
+///   presented; this catches plumbing bugs).
+/// - **Shared-secret bearer** — when `shared_secret` is `Some`,
+///   the request MUST carry a matching `Authorization: Bearer …`
+///   header (sprint `0.5-S3`).
+///
+/// Both gates compose: an mTLS-only coord skips the bearer check;
+/// a bearer-only coord skips the cert check; a coord with both
+/// enabled requires both. A coord with neither (no flags, no
+/// secret) is a pass-through — the pre-0.5-S3 behavior.
 async fn auth_middleware(
     State(state): State<CoordinatorState>,
     headers: HeaderMap,
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let Some(expected) = state.config.shared_secret.as_deref() else {
-        return next.run(request).await;
-    };
-    let Some(header_val) = headers.get(axum::http::header::AUTHORIZATION) else {
+    if state.config.mtls_required && request.extensions().get::<ClientIdentity>().is_none() {
         return unauthorized_response();
-    };
-    let Ok(header_str) = header_val.to_str() else {
-        return unauthorized_response();
-    };
-    let Some(provided) = header_str.strip_prefix("Bearer ") else {
-        return unauthorized_response();
-    };
-    if !constant_time_bytes_eq(provided.as_bytes(), expected.as_bytes()) {
-        return unauthorized_response();
+    }
+    if let Some(expected) = state.config.shared_secret.as_deref() {
+        let Some(header_val) = headers.get(axum::http::header::AUTHORIZATION) else {
+            return unauthorized_response();
+        };
+        let Ok(header_str) = header_val.to_str() else {
+            return unauthorized_response();
+        };
+        let Some(provided) = header_str.strip_prefix("Bearer ") else {
+            return unauthorized_response();
+        };
+        if !constant_time_bytes_eq(provided.as_bytes(), expected.as_bytes()) {
+            return unauthorized_response();
+        }
     }
     next.run(request).await
 }
@@ -570,6 +971,7 @@ fn respond_err(status: StatusCode, body: ErrorBody) -> Response {
 
 async fn handle_register(
     State(state): State<CoordinatorState>,
+    identity: Option<axum::extract::Extension<ClientIdentity>>,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
     if req.capability_set_hash != state.capability_set_hash {
@@ -584,10 +986,38 @@ async fn handle_register(
         return respond_err(StatusCode::CONFLICT, body);
     }
 
-    let worker_id = req
-        .worker_id
-        .unwrap_or_else(|| format!("wkr-{}", uuid::Uuid::new_v4().simple()));
+    // mTLS identity reconciliation (sprint W6-A). When the request
+    // arrived over a verified mTLS channel the listener stamps a
+    // `ClientIdentity` extension carrying the cert subject CN. If
+    // the body also includes a `worker_id` it MUST match
+    // (case-insensitive) — otherwise a worker holding a valid
+    // cert could impersonate any worker_id, defeating per-worker
+    // identity. Mismatch → 401 `coord.identity_mismatch`.
+    let cert_cn = identity.map(|axum::extract::Extension(id)| id.common_name);
+    if let (Some(cn), Some(body_id)) = (cert_cn.as_deref(), req.worker_id.as_deref()) {
+        if !cn.eq_ignore_ascii_case(body_id) {
+            return respond_err(
+                StatusCode::UNAUTHORIZED,
+                ErrorBody::new(
+                    "coord.identity_mismatch",
+                    format!("client cert CN '{cn}' does not match request worker_id '{body_id}'"),
+                ),
+            );
+        }
+    }
+
+    // CN drives identity when present; otherwise honor the body
+    // worker_id, otherwise auto-generate as before.
+    let worker_id = match (cert_cn, req.worker_id) {
+        (Some(cn), _) => cn,
+        (None, Some(id)) => id,
+        (None, None) => format!("wkr-{}", uuid::Uuid::new_v4().simple()),
+    };
     let session_token = format!("sess-{}", uuid::Uuid::new_v4().simple());
+
+    if state.config.mtls_required {
+        eprintln!("coordinator: registering worker '{worker_id}' via mTLS cert");
+    }
 
     {
         let mut workers = match state.workers.lock() {
@@ -1876,6 +2306,7 @@ mod tests {
                 poll_timeout_ms: 200,
                 bind_warning: None,
                 shared_secret: None,
+                mtls_required: false,
             },
         }
     }
@@ -2566,6 +2997,7 @@ mod tests {
                 poll_timeout_ms: 200,
                 bind_warning: None,
                 shared_secret: None,
+                mtls_required: false,
             },
         };
         (state, dir)
@@ -2682,5 +3114,137 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error_kind"], "coord.unauthorized");
+    }
+
+    // ── mTLS surface (sprint W6-A) ──
+
+    #[test]
+    fn parse_tls_flags_requires_all_three_or_none() {
+        // None of the three flags = no TLS, ok.
+        assert!(ServerTlsPaths::from_optional(None, None, None)
+            .unwrap()
+            .is_none());
+        // All three present = ok.
+        let p = std::path::PathBuf::from("/tmp/x");
+        let triple =
+            ServerTlsPaths::from_optional(Some(p.clone()), Some(p.clone()), Some(p.clone()))
+                .unwrap();
+        assert!(triple.is_some());
+        // Any partial combination is rejected.
+        for (a, b, c) in [
+            (Some(p.clone()), None, None),
+            (None, Some(p.clone()), None),
+            (None, None, Some(p.clone())),
+            (Some(p.clone()), Some(p.clone()), None),
+            (Some(p.clone()), None, Some(p.clone())),
+            (None, Some(p.clone()), Some(p.clone())),
+        ] {
+            let err = ServerTlsPaths::from_optional(a, b, c).unwrap_err();
+            assert!(
+                err.to_string().contains("must all be provided together"),
+                "unexpected err: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_rejects_when_tls_required_but_no_cert() {
+        // Synthesize a state with mtls_required=true but DON'T
+        // provide a ClientIdentity extension on the request. The
+        // middleware must reject with 401 + coord.unauthorized
+        // even when no shared_secret is configured.
+        let mut state = fresh_state();
+        state.config.mtls_required = true;
+        let app = build_router(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/workers/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&register_payload(state.capability_set_hash.clone())).unwrap(),
+            ))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.unauthorized");
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_accepts_when_tls_required_and_identity_present() {
+        // With mtls_required=true and a synthesized ClientIdentity
+        // extension, the request goes through.
+        let mut state = fresh_state();
+        state.config.mtls_required = true;
+        let app = build_router(state.clone());
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/workers/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&RegisterRequest {
+                    worker_id: Some("worker-7".into()),
+                    capability_set_hash: state.capability_set_hash.clone(),
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        req.extensions_mut().insert(ClientIdentity {
+            common_name: "worker-7".into(),
+        });
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn handle_register_rejects_cn_worker_id_mismatch() {
+        // mTLS-on. Cert says "worker-A" but body claims "worker-B".
+        // Must return 401 + coord.identity_mismatch.
+        let mut state = fresh_state();
+        state.config.mtls_required = true;
+        let app = build_router(state.clone());
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/workers/register")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&RegisterRequest {
+                    worker_id: Some("worker-B".into()),
+                    capability_set_hash: state.capability_set_hash.clone(),
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        req.extensions_mut().insert(ClientIdentity {
+            common_name: "worker-A".into(),
+        });
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error_kind"], "coord.identity_mismatch");
+    }
+
+    #[test]
+    fn cn_extraction_pulls_subject_correctly() {
+        // Generate a self-signed cert with rcgen, then run
+        // cn_from_cert_der over the DER and assert we recover the
+        // CN. This locks the CN parser against the same DER shape
+        // rcgen / openssl produce.
+        let mut params = rcgen::CertificateParams::new(vec!["worker-cn-extract-test".into()])
+            .expect("CertificateParams::new");
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "worker-cn-extract-test");
+        params.distinguished_name = dn;
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = params.self_signed(&key_pair).expect("self-sign");
+        let der = cert.der();
+        let cn = cn_from_cert_der(der.as_ref()).expect("CN found");
+        assert_eq!(cn, "worker-cn-extract-test");
     }
 }

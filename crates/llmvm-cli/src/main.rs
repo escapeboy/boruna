@@ -217,6 +217,25 @@ enum CoordinatorCommand {
         /// for loopback-only deployments).
         #[arg(long, env = "BORUNA_COORD_SECRET")]
         shared_secret: Option<String>,
+        /// Server certificate chain (PEM) for mTLS (sprint
+        /// `W6-A`). Required together with `--tls-key` and
+        /// `--tls-client-ca`; passing only some is a startup
+        /// error. Operators generate certs out-of-band — see
+        /// `docs/guides/coord-mtls.md`.
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Server private key (PEM) for mTLS. Required with
+        /// `--tls-cert` and `--tls-client-ca`.
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
+        /// Trust root for verifying CLIENT certificates (PEM).
+        /// When all three TLS flags are set the coord requires
+        /// every connection to present a client cert chained to
+        /// this root. The cert subject CN drives worker identity
+        /// and is matched against any `worker_id` in the request
+        /// body — mismatch returns `coord.identity_mismatch`.
+        #[arg(long)]
+        tls_client_ca: Option<PathBuf>,
     },
     /// Drive a submit-only workflow run to terminal status by
     /// computing downstream-ready successors as workers complete
@@ -282,6 +301,24 @@ enum WorkerCommand {
         /// sent — only works when the coord also has no secret.
         #[arg(long, env = "BORUNA_COORD_SECRET")]
         shared_secret: Option<String>,
+        /// Client certificate chain (PEM) for mTLS (sprint
+        /// `W6-A`). Required together with `--tls-key` and
+        /// `--tls-server-ca`; passing only some is a startup
+        /// error. The cert's subject CN MUST match
+        /// `--worker-id` (case-insensitive) when both are set —
+        /// mismatch surfaces as `coord.identity_mismatch` at
+        /// registration time.
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Client private key (PEM) for mTLS. Required with
+        /// `--tls-cert` and `--tls-server-ca`.
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
+        /// Trust root for verifying the COORD's server
+        /// certificate (PEM). Required with `--tls-cert` and
+        /// `--tls-key`.
+        #[arg(long)]
+        tls_server_ca: Option<PathBuf>,
     },
 }
 
@@ -1108,6 +1145,9 @@ fn run_coordinator(
             poll_timeout_ms,
             sweep_interval_ms,
             shared_secret,
+            tls_cert,
+            tls_key,
+            tls_client_ca,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
@@ -1115,6 +1155,8 @@ fn run_coordinator(
                 let bind_addr: std::net::IpAddr = bind
                     .parse()
                     .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
+                let tls_config =
+                    coordinator::ServerTlsPaths::from_optional(tls_cert, tls_key, tls_client_ca)?;
                 coordinator::run_serve(
                     resolved,
                     port,
@@ -1123,6 +1165,7 @@ fn run_coordinator(
                     poll_timeout_ms,
                     sweep_interval_ms,
                     shared_secret,
+                    tls_config,
                 )?;
             }
             #[cfg(not(feature = "persist-sqlite"))]
@@ -1135,6 +1178,9 @@ fn run_coordinator(
                     poll_timeout_ms,
                     sweep_interval_ms,
                     shared_secret,
+                    tls_cert,
+                    tls_key,
+                    tls_client_ca,
                 );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
             }
@@ -1173,13 +1219,19 @@ fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> 
             lease_ttl_ms,
             poll_timeout_ms,
             shared_secret,
+            tls_cert,
+            tls_key,
+            tls_server_ca,
         } => {
+            let tls_config =
+                worker::ClientTlsPaths::from_optional(tls_cert, tls_key, tls_server_ca)?;
             worker::run_worker(
                 coordinator,
                 worker_id,
                 lease_ttl_ms,
                 poll_timeout_ms,
                 shared_secret,
+                tls_config,
             )?;
         }
     }
