@@ -124,7 +124,7 @@ Target: Q2 2027
 Milestone: the stable API surface is locked. 0.5+ programs compile and run unchanged. This is mostly a *commitment* release, not a feature release — the engineering between 0.5 and 1.0 is small but the durability promise is large.
 
 - [ ] **Security audit** of the VM and capability enforcement (external auditor; bookable months in advance — must commit Q4 2026 to land Q2 2027)
-- [ ] **Performance benchmarks** — published baseline for compile time, step throughput, evidence bundle write/verify time
+- [x] **Performance benchmarks** — published baseline for compile time, step throughput, evidence bundle write/verify time (sprint `W5-A`; see [`PERFORMANCE.md`](./PERFORMANCE.md))
 - [x] **Long-term support commitment for 1.x** — backports for security fixes, deprecation policy (sprint W5-B; see [`lts.md`](./lts.md))
 - [ ] **Migration tooling stable** (graduated from 0.5 beta)
 - [ ] All schemas (language, DAG, evidence) finalized and documented

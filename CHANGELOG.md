@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Performance benchmarks baseline** (sprint `W5-A`). New
+  `benches/` workspace member with `criterion`-based benchmarks
+  for compile time, VM throughput, and evidence bundle
+  write/verify. Documented baseline + 1.x performance budget
+  commitments at [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md).
+  Benches are not gated in CI; run locally via
+  `cargo bench -p boruna-benches`.
 - **Long-term-support contract for 1.x** (sprint `W5-B`). New
   [`docs/lts.md`](docs/lts.md) documents the support windows (1.x active
   for 18 months from 1.0 GA, security-supported for 24 months; 0.x EOL on

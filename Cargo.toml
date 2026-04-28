@@ -11,6 +11,7 @@ members = [
     "packages",
     "tooling",
     "crates/boruna-mcp",
+    "benches",
 ]
 
 [workspace.package]
