@@ -51,6 +51,28 @@ struct WorkerHandle {
     shared_secret: Option<String>,
 }
 
+/// Parse a `--coordinator` value that may carry one or more
+/// comma-separated coord URLs into a normalized `Vec<String>`.
+/// Sprint W2: multi-URL workers fail over at registration time.
+///
+/// Whitespace around commas is trimmed; empty entries are
+/// dropped; trailing slashes are removed for stable comparison
+/// in error messages. Returns `Err` if the value parses to zero
+/// usable URLs (e.g. `--coordinator " , "` or empty string).
+pub fn parse_coordinator_urls(raw: &str) -> Result<Vec<String>, String> {
+    let urls: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if urls.is_empty() {
+        return Err(format!(
+            "--coordinator must be one or more comma-separated URLs, got '{raw}'"
+        ));
+    }
+    Ok(urls)
+}
+
 #[tokio::main]
 pub async fn run_worker(
     coordinator: String,
@@ -59,6 +81,7 @@ pub async fn run_worker(
     poll_timeout_ms: u64,
     shared_secret: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let coord_urls = parse_coordinator_urls(&coordinator)?;
     let client = reqwest::Client::builder()
         // Long-poll buffer: client timeout MUST be greater than
         // server-side poll_timeout_ms so a 30s long-poll doesn't
@@ -75,38 +98,83 @@ pub async fn run_worker(
             .map(|(n, v)| (n.as_str(), v.as_str())),
     );
 
-    // Register.
-    let register_url = format!("{}/api/workers/register", coordinator.trim_end_matches('/'));
-    let reg_resp = add_bearer(
-        client.post(&register_url).json(&RegisterRequest {
-            worker_id: worker_id.clone(),
-            capability_set_hash,
-        }),
-        &shared_secret,
-    )
-    .send()
-    .await?;
-    let status = reg_resp.status();
-    if !status.is_success() {
-        let body: ErrorBody = reg_resp.json().await.unwrap_or(ErrorBody {
-            protocol_version: 1,
-            error_kind: "coord.invalid_request".into(),
-            message: "registration failed; could not parse error body".into(),
-            current_claim_id: None,
-            current_status: None,
-            expected_hash: None,
-            max_bytes: None,
-        });
-        return Err(format!("register {status}: {} ({})", body.error_kind, body.message).into());
-    }
-    let reg: RegisterResponse = reg_resp.json().await?;
+    // Sprint W2: register against the first reachable URL in the
+    // operator-supplied list. After registration succeeds, we
+    // "stick" to that coord for the lifetime of this worker
+    // process — `session_token` is per-coord, so mid-session
+    // failover would require re-register against a different
+    // coord. Operators recover from a sticky-coord crash by
+    // restarting the worker; on next start it picks the next
+    // healthy URL. This is the standard k8s liveness-probe model.
+    let mut last_err: Option<String> = None;
+    let (winning_url, reg) = {
+        let mut found: Option<(String, RegisterResponse)> = None;
+        for candidate in &coord_urls {
+            let register_url = format!("{}/api/workers/register", candidate);
+            let req = client.post(&register_url).json(&RegisterRequest {
+                worker_id: worker_id.clone(),
+                capability_set_hash: capability_set_hash.clone(),
+            });
+            match add_bearer(req, &shared_secret).send().await {
+                Ok(reg_resp) => {
+                    let status = reg_resp.status();
+                    if !status.is_success() {
+                        let body: ErrorBody = reg_resp.json().await.unwrap_or(ErrorBody {
+                            protocol_version: 1,
+                            error_kind: "coord.invalid_request".into(),
+                            message: "registration failed; could not parse error body".into(),
+                            current_claim_id: None,
+                            current_status: None,
+                            expected_hash: None,
+                            max_bytes: None,
+                        });
+                        last_err = Some(format!(
+                            "register against {candidate} returned {status}: {} ({})",
+                            body.error_kind, body.message
+                        ));
+                        if coord_urls.len() > 1 {
+                            eprintln!(
+                                "worker register: {candidate} returned {status}; trying next"
+                            );
+                        }
+                        continue;
+                    }
+                    let reg: RegisterResponse = reg_resp.json().await?;
+                    found = Some((candidate.clone(), reg));
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(format!("connect to {candidate} failed: {e}"));
+                    if coord_urls.len() > 1 {
+                        eprintln!(
+                            "worker register: connect to {candidate} failed ({e}); trying next"
+                        );
+                    }
+                    continue;
+                }
+            }
+        }
+        match found {
+            Some(t) => t,
+            None => {
+                let detail = last_err.unwrap_or_else(|| "no candidates tried".into());
+                return Err(format!(
+                    "worker could not register against any of {} coord URL(s): {detail}",
+                    coord_urls.len()
+                )
+                .into());
+            }
+        }
+    };
     eprintln!(
-        "worker {} registered with coordinator {}",
-        reg.worker_id, coordinator
+        "worker {} registered with coordinator {} (selected from {} candidate(s))",
+        reg.worker_id,
+        winning_url,
+        coord_urls.len()
     );
 
     let handle = WorkerHandle {
-        coord_url: coordinator.trim_end_matches('/').to_string(),
+        coord_url: winning_url,
         worker_id: reg.worker_id,
         session_token: reg.session_token,
         client,
@@ -413,5 +481,63 @@ mod tests {
     fn urlencoding_passes_through_safe_chars() {
         assert_eq!(urlencoding_simple("wkr-abc123"), "wkr-abc123");
         assert_eq!(urlencoding_simple("hello world"), "hello%20world");
+    }
+
+    // Sprint W2 — coordinator URL parsing for HA failover.
+
+    #[test]
+    fn parse_single_coord_url_keeps_one_entry() {
+        let urls = parse_coordinator_urls("http://coord:8090").unwrap();
+        assert_eq!(urls, vec!["http://coord:8090".to_string()]);
+    }
+
+    #[test]
+    fn parse_strips_trailing_slash_for_stable_logging() {
+        let urls = parse_coordinator_urls("http://coord:8090/").unwrap();
+        assert_eq!(urls, vec!["http://coord:8090".to_string()]);
+    }
+
+    #[test]
+    fn parse_multiple_coord_urls_preserves_order() {
+        let urls =
+            parse_coordinator_urls("http://coord-1:8090,http://coord-2:8090,http://coord-3:8090")
+                .unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "http://coord-1:8090".to_string(),
+                "http://coord-2:8090".to_string(),
+                "http://coord-3:8090".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_tolerates_whitespace_around_commas() {
+        let urls = parse_coordinator_urls("http://a:1 ,  http://b:2  , http://c:3").unwrap();
+        assert_eq!(
+            urls,
+            vec![
+                "http://a:1".to_string(),
+                "http://b:2".to_string(),
+                "http://c:3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_drops_empty_entries() {
+        let urls = parse_coordinator_urls("http://a:1,,http://b:2").unwrap();
+        assert_eq!(
+            urls,
+            vec!["http://a:1".to_string(), "http://b:2".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_empty_string_is_an_error() {
+        assert!(parse_coordinator_urls("").is_err());
+        assert!(parse_coordinator_urls(" , ").is_err());
+        assert!(parse_coordinator_urls(",,,").is_err());
     }
 }

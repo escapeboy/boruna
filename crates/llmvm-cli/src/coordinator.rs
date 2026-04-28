@@ -60,6 +60,11 @@ pub struct CoordinatorState {
     workflow_dirs: Arc<Mutex<HashMap<String, PathBuf>>>,
     capability_set_hash: String,
     config: CoordinatorConfig,
+    /// Process start time, captured once at `run_serve` entry. Used
+    /// by the `/api/health` endpoint to report uptime so operators
+    /// can detect coord restarts during a multi-coord rollout
+    /// (sprint W2).
+    start_time_ms: i64,
 }
 
 #[derive(Clone)]
@@ -124,17 +129,28 @@ pub async fn run_serve(
     let store = RunCheckpointStore::open(&db_path)
         .map_err(|e| format!("failed to open {}: {e}", db_path.display()))?;
 
-    // On startup, sweep stale leases. Per ADR 002 ("coordinator
-    // restart = all leases void"), any row in `Running` status is
-    // a leftover from a prior coordinator process; void its lease
-    // and re-enqueue.
+    // On startup, eagerly sweep expired leases. The persistence
+    // layer's `expire_leases_and_requeue(threshold)` only voids
+    // leases whose `lease_expires_at < threshold` (CAS update on
+    // a strict comparison) — so this is HA-safe under concurrent
+    // coords: peer coords with healthy in-flight leases (those
+    // with `lease_expires_at >= now_ms`) are unaffected.
+    //
+    // Note (sprint W2 audit): an earlier comment claimed this
+    // sweep voids "any row in Running status." That was misleading
+    // — the SQL filter on `lease_expires_at < ?1` always preserved
+    // healthy leases. The ADR 002 phrase "coordinator restart =
+    // all leases void" was the design intent before the lease
+    // mechanism stabilized; the actual implementation is the
+    // safer threshold-based variant we keep here.
     let now_ms = now_unix_ms();
     let n = store
         .expire_leases_and_requeue(now_ms + 1)
         .map_err(|e| format!("startup lease sweep failed: {e}"))?;
     if n > 0 {
-        eprintln!("coordinator startup: requeued {n} stale-lease step(s)");
+        eprintln!("coordinator startup: requeued {n} expired-lease step(s)");
     }
+    let start_time_ms = now_ms;
 
     let bind_warning = if bind.is_loopback() {
         None
@@ -182,6 +198,7 @@ pub async fn run_serve(
             bind_warning,
             shared_secret,
         },
+        start_time_ms,
     };
 
     // Background lease-expiry sweep (sprint 0.5-S2c). Wakes
@@ -311,6 +328,14 @@ async fn auth_middleware(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
+    // Sprint W2: liveness/readiness probes bypass auth so external
+    // load balancers (and concerned operators with `curl`) can
+    // verify a coord is up without holding the shared secret.
+    // Health responses are non-sensitive — uptime, capability hash,
+    // and version — so the bypass does not leak secret state.
+    if request.uri().path() == "/api/health" {
+        return next.run(request).await;
+    }
     let Some(expected) = state.config.shared_secret.as_deref() else {
         return next.run(request).await;
     };
@@ -375,6 +400,13 @@ pub fn build_router(state: CoordinatorState) -> Router {
         // checkpoint under this run, preventing the route from
         // serving as a generic blob server. Same auth as the rest.
         .route("/api/runs/{run_id}/blobs/{hash}", get(handle_get_blob))
+        // Sprint W2: liveness/readiness probe for HA deployments.
+        // Returns 200 + a small JSON document when the coord is
+        // healthy; 503 when the SQLite store is unreachable. The
+        // health check probes the store via a lightweight query
+        // (PRAGMA quick_check would be too expensive; we just take
+        // and release the mutex guard).
+        .route("/api/health", get(handle_health))
         // The 8 MiB DefaultBodyLimit applies to coord routes
         // ONLY (not dashboard routes) because Axum's per-
         // router layer scoping means layers attached pre-merge
@@ -1333,6 +1365,51 @@ async fn handle_get_blob(
     }
 }
 
+/// Health/readiness probe response. Sprint W2.
+///
+/// Non-sensitive content only — load balancers and external probes
+/// receive this without bearer-auth (see `auth_middleware` bypass).
+/// `boruna_version` is read from the workspace package version at
+/// build time. `capability_set_hash` lets workers verify they're
+/// addressing a coord with a compatible capability table before
+/// committing to a registration.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HealthResponse {
+    pub protocol_version: u32,
+    pub status: String,
+    pub boruna_version: &'static str,
+    pub capability_set_hash: String,
+    pub uptime_ms: i64,
+}
+
+async fn handle_health(State(state): State<CoordinatorState>) -> Response {
+    // Probe the store mutex to detect a poisoned lock — that's the
+    // only failure mode that wouldn't already surface as a TCP
+    // connect error. We don't run any SQL against the store: a
+    // crashed-process replacement coord still has a fresh
+    // connection, and forcing every probe through SQL would amplify
+    // load-balancer-driven query traffic.
+    if state.store.lock().is_err() {
+        return respond_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorBody::new(
+                "coord.unavailable",
+                "store mutex poisoned; coord is not ready",
+            ),
+        );
+    }
+    let now_ms = now_unix_ms();
+    let uptime_ms = now_ms.saturating_sub(state.start_time_ms);
+    let body = HealthResponse {
+        protocol_version: PROTOCOL_VERSION,
+        status: "ready".to_string(),
+        boruna_version: env!("CARGO_PKG_VERSION"),
+        capability_set_hash: state.capability_set_hash.clone(),
+        uptime_ms,
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 /// Map a `WorkflowRunError` from the approve path to an HTTP
 /// response with the locked `coord.approve.*` error_kind taxonomy.
 /// Sprint 0.5-S6.
@@ -1877,6 +1954,7 @@ mod tests {
                 bind_warning: None,
                 shared_secret: None,
             },
+            start_time_ms: 0,
         }
     }
 
@@ -2567,6 +2645,7 @@ mod tests {
                 bind_warning: None,
                 shared_secret: None,
             },
+            start_time_ms: 0,
         };
         (state, dir)
     }
@@ -2682,5 +2761,55 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error_kind"], "coord.unauthorized");
+    }
+
+    // Sprint W2 — health endpoint + auth bypass.
+
+    #[tokio::test]
+    async fn health_returns_ready_status_and_metadata() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let (status, bytes) = get_request(&app, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["protocol_version"], 1);
+        assert_eq!(v["status"], "ready");
+        assert_eq!(v["boruna_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["capability_set_hash"], state.capability_set_hash);
+        assert!(
+            v["uptime_ms"].as_i64().unwrap() >= 0,
+            "uptime must be non-negative"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_bypasses_auth_when_secret_configured() {
+        // Per W2 design: load balancers and external probes don't
+        // hold the bearer secret. /api/health must answer 200 even
+        // with the secret enabled.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("super-secret-token-not-leaked".into());
+        let app = build_router(state);
+        let (status, bytes) = get_request(&app, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["status"], "ready");
+        // The secret itself MUST NOT leak into health output.
+        let body_str = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body_str.contains("super-secret-token-not-leaked"),
+            "shared secret leaked into /api/health response"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_routes_still_require_auth_when_secret_configured() {
+        // Sanity: the W2 health bypass MUST NOT relax auth on
+        // any other route. Verify a non-health GET still 401s.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("super-secret".into());
+        let app = build_router(state);
+        let (status, _bytes) = get_request(&app, "/api/runs").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

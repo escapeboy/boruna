@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Coordinator HA / failover** (sprint `W2`). Multiple
+  `boruna coordinator serve` processes can run against the
+  same SQLite data-dir for active-active HA. Workers accept
+  comma-separated URLs in `--coordinator` and try them in
+  order at registration time, sticking to the first reachable
+  one. New `GET /api/health` endpoint returns
+  `{status, boruna_version, capability_set_hash, uptime_ms}`
+  and bypasses bearer auth so external load balancers can
+  probe without holding the secret. Deployment topologies and
+  failure-mode walkthroughs are documented at
+  [`docs/guides/coord-ha.md`](./docs/guides/coord-ha.md).
 - **CI clippy gate now uses `--all-targets`** (sprint `W1-A`).
   All three clippy invocations in `.github/workflows/ci.yml` now
   include `--all-targets` so test-code lint regressions surface

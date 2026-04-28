@@ -261,7 +261,14 @@ enum WorkerCommand {
     /// Run a worker that polls the named coordinator for work.
     Run {
         /// Coordinator base URL, e.g.
-        /// `http://coord.internal:8090`.
+        /// `http://coord.internal:8090`. Sprint W2: accepts a
+        /// comma-separated list of URLs for HA failover at
+        /// registration time, e.g.
+        /// `http://coord-1:8090,http://coord-2:8090`. The worker
+        /// tries URLs in order and registers against the first
+        /// reachable one. After successful registration the
+        /// worker sticks to that coord for its lifetime — operator
+        /// restarts pick a different healthy URL.
         #[arg(long)]
         coordinator: String,
         /// Optional worker id; auto-generated if absent.
