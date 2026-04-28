@@ -1,0 +1,169 @@
+name: Smoke test (musl)
+
+# Sprint T-1.6 of post-1.0-execution-plan: container-based smoke
+# tests for the Linux musl release artifacts.
+#
+# Triggers on rc tags so each release-candidate cut produces a
+# fresh report. Operator may also dispatch manually for an existing
+# tag via workflow_dispatch.
+#
+# Two targets:
+#   1. x86_64-unknown-linux-musl, run natively under alpine:3.19.
+#   2. aarch64-unknown-linux-musl, run via qemu-user-static. NOT a
+#      real-hardware smoke; the report annotates this. Real-hardware
+#      smoke on actual aarch64 silicon stays operator-side.
+#
+# After both jobs finish, a final job opens a PR with the new
+# reports.
+
+on:
+  push:
+    tags:
+      - 'v*-rc*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to smoke-test (e.g. v1.0.0-rc2)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  smoke-x86_64:
+    name: Smoke (x86_64-unknown-linux-musl)
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        env:
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            printf 'tag=%s\n' "$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            printf 'tag=%s\n' "${REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run smoke
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARGET: x86_64-unknown-linux-musl
+          IMAGE: alpine:3.19
+          KIND: native
+        run: |
+          set -euo pipefail
+          .github/scripts/smoke_musl.sh "$TAG" "$TARGET" "$IMAGE" "$KIND"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report-x86_64
+          path: docs/release-smoke-tests/${{ steps.tag.outputs.tag }}-musl-x86_64.md
+
+  smoke-aarch64:
+    name: Smoke (aarch64-unknown-linux-musl, emulated)
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        env:
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            printf 'tag=%s\n' "$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            printf 'tag=%s\n' "${REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up qemu-user-static
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64 || true
+
+      - name: Run smoke (qemu)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARGET: aarch64-unknown-linux-musl
+          IMAGE: arm64v8/alpine:3.19
+          KIND: emulated
+        run: |
+          set -euo pipefail
+          .github/scripts/smoke_musl.sh "$TAG" "$TARGET" "$IMAGE" "$KIND"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report-aarch64
+          path: docs/release-smoke-tests/${{ steps.tag.outputs.tag }}-musl-aarch64.md
+
+  open-pr:
+    name: Open PR with reports
+    needs: [smoke-x86_64, smoke-aarch64]
+    runs-on: self-hosted
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        env:
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            printf 'tag=%s\n' "$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            printf 'tag=%s\n' "${REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download reports
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/smoke-reports
+
+      - name: Move reports into tree
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs/release-smoke-tests
+          # download-artifact creates one subdir per artifact name.
+          for src in /tmp/smoke-reports/*/*.md; do
+            cp "$src" docs/release-smoke-tests/
+          done
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="post1/T-1.6-smoke-${TAG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add docs/release-smoke-tests/
+          if git diff --staged --quiet; then
+            echo "no report changes; skipping PR"
+            exit 0
+          fi
+          git commit -m "docs(release-smoke): add musl smoke reports for ${TAG}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --base master \
+            --head "$BRANCH" \
+            --title "docs(release-smoke): musl smoke reports for ${TAG}" \
+            --body "Auto-generated by .github/workflows/smoke-musl.yml on tag ${TAG}."

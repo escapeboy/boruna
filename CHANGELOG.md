@@ -20,6 +20,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   deltas, and fails on ≥10% mean regression. Non-blocking by
   default (not in the required-status-checks set). See
   `CONTRIBUTING.md` § "Reading the bench-compare PR comment".
+- `Smoke test (musl)` CI workflow and `.github/scripts/smoke_musl.sh`
+  — automated container-based smoke tests for the
+  `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`
+  release artifacts. Runs on every `v*-rc*` tag (or via
+  `workflow_dispatch` for an existing tag), verifies SHA-256,
+  launches the binary under `alpine:3.19`, runs the
+  `llm_code_review` example end-to-end, verifies the evidence
+  bundle, and opens a PR with `docs/release-smoke-tests/<tag>-musl-<arch>.md`
+  reports. The aarch64 leg runs under qemu-user-static and is
+  explicitly NOT a real-hardware smoke; that remains operator-side.
 - `boruna run --watch` — re-execute a `.ax` file on every change.
   Debounces filesystem events to 200ms, prints a
   `── reloading <path> at HH:MM:SS ──` separator before each rerun,
