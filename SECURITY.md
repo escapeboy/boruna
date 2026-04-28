@@ -8,6 +8,10 @@ Only the current release receives security patches.
 |---------|-----------|
 | 0.1.x   | ✓         |
 
+Once 1.0 ships, the long-term-support contract in [`docs/lts.md`](docs/lts.md)
+takes effect: 1.x is supported actively for 18 months from 1.0 GA and receives
+security fixes for 24 months. The 0.x line is EOL on 1.0 GA.
+
 ## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
@@ -32,6 +36,24 @@ Include in your report:
 (workflow runner, evidence bundle verification), `boruna-mcp` server.
 
 **Out of scope**: example files, documentation, third-party dependencies.
+
+## Backport Policy
+
+Security fixes are backported to every supported 1.y minor line for which
+the vulnerability applies. Fix versions are cut as patch releases (e.g.
+`1.3.4`) on each affected line; patch releases contain the security fix
+and any trivially related test or doc changes only.
+
+Severity follows [CVSS v4](https://www.first.org/cvss/v4-0/):
+
+- **CRITICAL or HIGH** — fix released within 7 days of confirmed
+  disclosure (or an interim advisory with mitigations if no fix is ready).
+- **MEDIUM** — fix released within 30 days of confirmed disclosure.
+- **LOW** — bundled with the next scheduled patch release on each
+  supported line.
+
+Pre-1.0, only the latest 0.x release receives fixes. Full backport contract
+and support-window definitions live in [`docs/lts.md`](docs/lts.md).
 
 ## Disclosure Policy
 

@@ -6,6 +6,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Long-term-support contract for 1.x** (sprint `W5-B`). New
+  [`docs/lts.md`](docs/lts.md) documents the support windows (1.x active
+  for 18 months from 1.0 GA, security-supported for 24 months; 0.x EOL on
+  1.0 GA), the LTS-protected surface (.ax `language_version: "1.x"`,
+  workflow DAG schema, evidence bundle format, MCP `protocol_version: 1`
+  responses, CLI commands and flags, `error_kind` strings, HTTP API
+  wire format), the deprecation policy (announce in 1.y → runtime warning
+  → 6-month notice → migration tooling) for breaking changes in 2.x, the
+  security-fix backport policy (CVSS v4, CRITICAL/HIGH within 7 days),
+  and the 12-month end-of-life procedure. `docs/stability.md` cross-links
+  to the LTS contract and clarifies which tiers are LTS-protected. The
+  README gains an LTS line near the badges. `SECURITY.md` gains a
+  backport-policy section. Doc-only sprint, no code changes.
+
+### Decided
+
+- **1.x is the long-term-support line.** At 1.0 GA, the surfaces listed
+  in [`docs/lts.md`](docs/lts.md) section B are LTS-protected for the
+  full 1.x line: every 1.0 `.ax` program, workflow.json, evidence bundle,
+  MCP integration, and CLI invocation continues to work unchanged on every
+  1.y. Active support runs 18 months from 1.0 GA, security support 24
+  months. Breaking changes ride the 2.0 boat with at least 6 months of
+  deprecation notice and migration tooling for any mechanically-derivable
+  upgrade. Internal Rust APIs, default values, and logging output formats
+  are explicitly out of scope — Boruna ships a CLI + binary, not a Rust
+  library. See `docs/lts.md` for the full contract.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of
