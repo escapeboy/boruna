@@ -6,6 +6,38 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0-rc3] - 2026-04-28
+
+**Theme: final GA-readiness polish.** rc2 shipped W6 (mTLS +
+bundle encryption) and W7 (security-review closures). rc3
+folds the W8-W11 GA-polish work into a tagged candidate so
+operators have a single artifact representing the actual GA
+candidate to soak. Highlights:
+
+- **4th formal versioned specification** (bytecode 1.0)
+  publishes alongside the existing three (.ax language,
+  workflow DAG, evidence bundle), all locked behind reader
+  constants per `docs/lts.md` §B.
+- **Algorithm-gate enforcement in evidence bundle decryption**
+  (W7 NEW-1): `Envelope::unwrap` now rejects bundles declaring
+  algorithm ≠ aes-256-gcm with `evidence.unsupported_algorithm`,
+  before any KEK-related work — matches the spec's reader
+  contract.
+- **CI hardening**: bench harness compiles on every PR
+  (W8); examples run end-to-end + verify on every PR (W9-D);
+  parallel-test flakes fixed (W10).
+- **Operator-facing GA-cut tooling**: `scripts/pre-release-check.sh`
+  is the single command that confirms GA-readiness before
+  tagging (W11-A).
+- **CHANGELOG-driven release notes** (W9-B): the GitHub
+  Release page body is now the CHANGELOG section for the tag,
+  not auto-generated commit noise. **First release using this
+  flow is rc3 itself.**
+
+After rc3 soak, the v1.0.0 GA tag is a 5-min coding step:
+`bash scripts/pre-release-check.sh 1.0.0` → bump to `1.0.0`
+→ tag → push.
+
 ### Added
 
 - **Versioned bytecode 1.0 specification** at
@@ -28,6 +60,59 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `--policy allow-all --record` and the produced bundle is
   `evidence verify`-ed on every push/PR. Catches integration
   regressions where DAG validation passes but execution fails.
+- **`cargo bench --no-run` gate in CI** (sprint `W8`). The
+  criterion bench harness now compiles on every push/PR so
+  refactors that break bench compilation surface at PR time
+  instead of at the next operator-run baseline.
+- **Pre-release validation script** at
+  `scripts/pre-release-check.sh` (sprint `W11-A`). Read-only
+  script the operator runs before tagging that confirms repo
+  state, version alignment, CHANGELOG coverage, all spec
+  constants, every CI gate, and the examples smoke flow.
+- **`evidence.unsupported_algorithm` typed error** (sprint
+  `W7` NEW-1). `Envelope::unwrap` now rejects bundles with an
+  algorithm field other than `aes-256-gcm` BEFORE any KEK
+  work — matches the
+  [`evidence-bundle-1.0.md`](./docs/spec/evidence-bundle-1.0.md)
+  reader contract. Closes the spec/code gap flagged by the
+  W7 follow-up security review.
+- **Smoke-test report for v1.0.0-rc2 macOS arm64 artifact** at
+  `docs/release-smoke-tests/v1.0.0-rc2.md` (sprint `W9-C`).
+  End-to-end verification of the published GitHub Releases
+  binary; pre-GA sign-off for the macOS arm64 target. Linux
+  musl targets remain operator smoke tests on real hardware.
+- **9 missing MCP-layer `error_kind` strings** added to
+  `docs/reference/error-kinds.md` (sprint `W7` NEW-2): closes
+  the taxonomy completeness gap flagged by the W7 follow-up
+  security review. The doc now enumerates 36+ stable
+  `error_kind` strings across `coord.*`, `evidence.*`,
+  `workflow.*`, `policy.*`, and MCP-layer namespaces.
+
+### Changed
+
+- **`scripts/ci.sh` refreshed** (sprint `W11-A`) to match the
+  current `.github/workflows/ci.yml`: clippy `--all-targets`
+  (W1-A), serve-feature clippy run, bench compile gate (W8).
+- **`docs/INTEGRATION_GUIDE.md` v0.1.0 references** replaced
+  with v1.0-GA-aware framing (sprint `W10` H-1). The body of
+  the guide remains structurally accurate for v1.0; only the
+  trailing "What Boruna Does Not Do" section was patched.
+- **`docs/FRAMEWORK_API.md` version label** dropped (sprint
+  `W10` H-2). The framework crate is in the **Experimental**
+  stability tier per `docs/stability.md`; the doc now cross-
+  links to that tier definition + the LTS contract instead of
+  carrying a misleading `(v0.1.0)` heading next to the
+  workspace's 1.0.0-rc tag.
+
+### Decided
+
+- **Cut a third release candidate (`v1.0.0-rc3`) instead of
+  GA directly** (sprint `W11`). rc2 was published before
+  W7-W11 work landed; cutting GA on current master would skip
+  the soak window entirely and lock the LTS contract on
+  unverified-in-field surfaces (notably the W7 NEW-1 algorithm
+  gate change in `Envelope::unwrap`). rc3 represents the
+  actual GA candidate; soak runs against rc3, then GA cut.
 
 ## [1.0.0-rc2] - 2026-04-28
 

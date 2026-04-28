@@ -127,7 +127,7 @@ check_const "crates/llmbc/src/lib.rs" \
 check_const "orchestrator/src/audit/mod.rs" \
   'pub const BUNDLE_FORMAT_VERSION: &str = "1\.0"' \
   "BUNDLE_FORMAT_VERSION = 1.0"
-check_const "orchestrator/src/lib.rs" \
+check_const "orchestrator/src/workflow/definition.rs" \
   'pub const WORKFLOW_DAG_SCHEMA_VERSION: u32 = 1' \
   "WORKFLOW_DAG_SCHEMA_VERSION = 1"
 
