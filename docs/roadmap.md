@@ -114,7 +114,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [ ] **Versioned `.ax` language specification** — formal grammar, type rules, capability semantics. Each future release publishes against a `language_version`.
 - [ ] **Versioned workflow DAG schema** — JSON Schema for `workflow.json` with `schema_version` field; backwards-compatible parser.
 - [ ] **Versioned evidence bundle format** — schema for the bundle directory contents, `format_version` field, forward-compat reader.
-- [ ] **Migration tooling beta** — `boruna migrate <from-version>` upgrade path for any pre-1.0 breaking change.
+- [x] **Migration tooling beta** — `boruna migrate <from-version>` upgrade path for any pre-1.0 breaking change. (sprint `W5-C`)
 
 ## 1.0.0 — Production readiness
 
