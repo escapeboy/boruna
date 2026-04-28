@@ -1,6 +1,7 @@
-# Framework Public API (v0.1.0)
+# Framework Public API
 
-Stability: **0.x** — breaking changes allowed between minor versions.
+Stability: **Experimental** within the Boruna 1.x line. The framework is the Elm-architecture runtime exposed by `boruna_framework`; it ships with the rest of Boruna under the workspace version (currently `v1.0.0-rc2`) but its public types are NOT included in the [LTS contract](./lts.md) §B. Expect API changes between Boruna 1.x minor releases as adoption feedback comes in. See [stability.md](./stability.md) for the tier definitions and [lts.md](./lts.md) for the surfaces that ARE LTS-protected.
+
 All unlisted types/functions are internal and may change without notice.
 
 ## boruna_framework (crate root re-exports)
