@@ -2,19 +2,19 @@
 
 This directory holds **formal, versioned** specifications for the surfaces Boruna commits to keeping stable.
 
-Each spec carries a `language_version` / `format_version` / `protocol_version` field in its front matter. Implementations against a `1.x` spec MUST keep working against any later `1.y` (`y >= x`).
+Each spec carries a `language_version` / `format_version` / `schema_version` field in its front matter or top-level shape. Implementations against a `1.x` spec MUST keep working against any later `1.y` (`y >= x`).
 
 ## Current specs
 
-| Surface | Latest | Status | File |
-|---------|:------:|:------:|------|
-| `.ax` language | 1.0 | stable | [ax-language-1.0.md](./ax-language-1.0.md) |
-| Evidence bundle format | 1.0 | stable | [evidence-bundle-1.0.md](./evidence-bundle-1.0.md) |
+| Surface | Latest | Status | Sprint | Reader constant |
+|---------|:------:|:------:|--------|-----------------|
+| `.ax` language | 1.0 | stable | W1-B | `boruna_compiler::LANGUAGE_VERSION` |
+| Evidence bundle format | 1.0 | stable | W1-C | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
+| Workflow DAG schema | 1.0 | stable | W4 | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
 
 Future entries (planned, not yet frozen):
 
 - `bytecode-1.0.md` — the binary opcode set, capability ID table, and module format. The informal version lives at [`docs/bytecode-spec.md`](../bytecode-spec.md) and is the source for the future formal freeze.
-- `workflow-dag-1.0.md` — the `workflow.json` schema with `schema_version`.
 
 ## Authoring rules
 
@@ -33,8 +33,15 @@ Future entries (planned, not yet frozen):
 
 There is no patch version on specs; clarifying edits keep the same minor.
 
+## Reader contract
+
+- **Hard reject across a major.** A reader built for `N.x` MUST refuse `N+1.0` documents with a typed `Unsupported*Version` error rather than guess.
+- **Forward-compat within a major.** A reader built for `N.x` MUST accept `N.y` documents (y >= x) and silently ignore unknown additive fields.
+- **Replay invariant.** Versions feed into the canonical-JSON serialization that produces `workflow_hash`/bundle hashes, binding evidence to a specific schema generation.
+
 ## Cross-links
 
 - Stability tiers across the codebase: [`../stability.md`](../stability.md)
 - Roadmap (which specs are planned): [`../roadmap.md`](../roadmap.md)
 - User-friendly references (not specs): [`../reference/`](../reference/)
+- Migration tooling for upgrades across major versions: [`../guides/migration.md`](../guides/migration.md)

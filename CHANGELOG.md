@@ -45,6 +45,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   probe without holding the secret. Deployment topologies and
   failure-mode walkthroughs are documented at
   [`docs/guides/coord-ha.md`](./docs/guides/coord-ha.md).
+- **Versioned workflow DAG schema** (sprint `W4`). New
+  `schema_version: 1` field required on every `workflow.json`.
+  Spec at [`docs/spec/workflow-dag-1.0.md`](./docs/spec/workflow-dag-1.0.md).
+  `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION = 1`
+  exposed for compatible readers. Forward-compat: 1.x readers
+  accept any 1.y workflow (additive fields ignored).
 - **CI clippy gate now uses `--all-targets`** (sprint `W1-A`).
   All three clippy invocations in `.github/workflows/ci.yml` now
   include `--all-targets` so test-code lint regressions surface
@@ -70,6 +76,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   v0.5.0 and earlier must be migrated (migration tool planned
   for sprint `W5-C`; until then, re-record against a current
   binary).
+- **BREAKING:** `workflow.json` files without `schema_version`
+  are now rejected (sprint `W4`). All bundled examples updated.
+  Operator action: add `"schema_version": 1` to existing
+  workflow definitions before upgrading.
 
 ## [0.5.0] - 2026-04-28
 

@@ -1,14 +1,83 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-fn default_schema_version() -> u32 {
-    1
+/// Highest workflow-DAG schema major version this build understands.
+///
+/// See `docs/spec/workflow-dag-1.0.md` for the formal contract.
+/// Forward-compat: a 1.x reader accepts any 1.y workflow (additive
+/// fields are ignored, never required). A `schema_version >= 2`
+/// document is rejected — those readers must come from a future
+/// build that knows the new shape.
+pub const WORKFLOW_DAG_SCHEMA_VERSION: u32 = 1;
+
+/// Typed errors from `WorkflowDef::from_json` (sprint W4).
+///
+/// Surface contract:
+/// - `MissingSchemaVersion` → `error_kind: workflow.missing_schema_version`
+/// - `UnsupportedSchemaVersion` → `error_kind: workflow.unsupported_schema_version`
+/// - `InvalidJson` → `error_kind: workflow.invalid_json`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowParseError {
+    /// `schema_version` field absent. Reject per spec §1 (no
+    /// silent default — legacy fixtures must be migrated).
+    MissingSchemaVersion,
+    /// `schema_version` major exceeds what this build supports.
+    UnsupportedSchemaVersion { found: u32, supported_max: u32 },
+    /// JSON failed to parse, or required structural fields are
+    /// missing / wrong-typed.
+    InvalidJson(String),
 }
 
+impl WorkflowParseError {
+    /// Stable string for surfacing over MCP / HTTP per project
+    /// conventions §2.
+    pub fn error_kind(&self) -> &'static str {
+        match self {
+            Self::MissingSchemaVersion => "workflow.missing_schema_version",
+            Self::UnsupportedSchemaVersion { .. } => "workflow.unsupported_schema_version",
+            Self::InvalidJson(_) => "workflow.invalid_json",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingSchemaVersion => write!(
+                f,
+                "workflow.json is missing required field `schema_version` \
+                 (expected `\"schema_version\": {WORKFLOW_DAG_SCHEMA_VERSION}`); \
+                 see docs/spec/workflow-dag-1.0.md"
+            ),
+            Self::UnsupportedSchemaVersion {
+                found,
+                supported_max,
+            } => write!(
+                f,
+                "workflow.json `schema_version: {found}` is not supported \
+                 by this build (max supported: {supported_max}); upgrade \
+                 Boruna to read this workflow"
+            ),
+            Self::InvalidJson(msg) => write!(f, "invalid workflow.json: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for WorkflowParseError {}
+
 /// A workflow definition — a DAG of steps with typed data flow.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Persistent shape: `workflow.json` on disk. Spec frozen at sprint
+/// W4: see `docs/spec/workflow-dag-1.0.md`. The `schema_version`
+/// field is REQUIRED on every workflow.json. The custom
+/// `Deserialize` impl rejects missing or unsupported versions with
+/// `WorkflowParseError`.
+///
+/// Forward-compat: 1.x readers accept any 1.y workflow (additive
+/// fields tolerated by serde defaults / `#[serde(default)]`). Do
+/// NOT add `#[serde(deny_unknown_fields)]`.
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkflowDef {
-    #[serde(default = "default_schema_version")]
     pub schema_version: u32,
     pub name: String,
     pub version: String,
@@ -16,6 +85,98 @@ pub struct WorkflowDef {
     pub description: String,
     pub steps: BTreeMap<String, StepDef>,
     pub edges: Vec<(String, String)>,
+}
+
+impl WorkflowDef {
+    /// Parse a workflow.json document. Rejects missing or
+    /// unsupported `schema_version` with a typed error per
+    /// project-conventions §1 (reject at parse, not later).
+    pub fn from_json(json: &str) -> Result<Self, WorkflowParseError> {
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| WorkflowParseError::InvalidJson(e.to_string()))?;
+
+        // Gate 1: `schema_version` MUST be present and an integer.
+        let sv = match value.get("schema_version") {
+            None => return Err(WorkflowParseError::MissingSchemaVersion),
+            Some(serde_json::Value::Null) => return Err(WorkflowParseError::MissingSchemaVersion),
+            Some(v) => v
+                .as_u64()
+                .ok_or_else(|| WorkflowParseError::InvalidJson(
+                    "field `schema_version` must be a non-negative integer".into(),
+                ))?,
+        };
+        let sv: u32 = sv.try_into().map_err(|_| {
+            WorkflowParseError::UnsupportedSchemaVersion {
+                found: u32::MAX,
+                supported_max: WORKFLOW_DAG_SCHEMA_VERSION,
+            }
+        })?;
+
+        // Gate 2: major version bound. 1.x readers accept any 1.y;
+        // 2+ is a hard reject (future format).
+        if sv > WORKFLOW_DAG_SCHEMA_VERSION {
+            return Err(WorkflowParseError::UnsupportedSchemaVersion {
+                found: sv,
+                supported_max: WORKFLOW_DAG_SCHEMA_VERSION,
+            });
+        }
+
+        // Gate 3: parse the rest. Forward-compat: unknown fields
+        // are ignored (no `deny_unknown_fields`).
+        serde_json::from_value::<Self>(value)
+            .map_err(|e| WorkflowParseError::InvalidJson(e.to_string()))
+    }
+}
+
+// Custom `Deserialize` so every existing call site
+// (`serde_json::from_str::<WorkflowDef>(_)`) goes through the same
+// gate — including the persistence layer's metadata blob and the
+// CLI's workflow.json reader. The error message is folded into a
+// generic `serde::de::Error` because callers read the textual form;
+// the typed `WorkflowParseError` is reachable via `from_json`.
+impl<'de> Deserialize<'de> for WorkflowDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        // Mirror of the public struct without the custom
+        // Deserialize, used purely for the structural decode after
+        // schema_version is gated.
+        #[derive(Deserialize)]
+        struct Raw {
+            schema_version: Option<u32>,
+            name: String,
+            version: String,
+            #[serde(default)]
+            description: String,
+            steps: BTreeMap<String, StepDef>,
+            edges: Vec<(String, String)>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        let sv = raw.schema_version.ok_or_else(|| {
+            D::Error::custom(WorkflowParseError::MissingSchemaVersion.to_string())
+        })?;
+        if sv > WORKFLOW_DAG_SCHEMA_VERSION {
+            return Err(D::Error::custom(
+                WorkflowParseError::UnsupportedSchemaVersion {
+                    found: sv,
+                    supported_max: WORKFLOW_DAG_SCHEMA_VERSION,
+                }
+                .to_string(),
+            ));
+        }
+        Ok(WorkflowDef {
+            schema_version: sv,
+            name: raw.name,
+            version: raw.version,
+            description: raw.description,
+            steps: raw.steps,
+            edges: raw.edges,
+        })
+    }
 }
 
 /// Definition of a single workflow step.

@@ -113,7 +113,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **Output JSON Schema validation as first-class gate** ([#8](https://github.com/escapeboy/boruna/issues/8)) (0.5-S6 of FleetQ track)
 - [x] **Record/replay for `net.fetch`** ([#7](https://github.com/escapeboy/boruna/issues/7)) (0.5-S7 of FleetQ track)
 - [x] **Versioned `.ax` language specification** — formal grammar, type rules, capability semantics. Each future release publishes against a `language_version`. (Sprint `W1-B`, [`docs/spec/ax-language-1.0.md`](./spec/ax-language-1.0.md), `boruna_compiler::LANGUAGE_VERSION = "1.0"`.)
-- [ ] **Versioned workflow DAG schema** — JSON Schema for `workflow.json` with `schema_version` field; backwards-compatible parser.
+- [x] **Versioned workflow DAG schema** — JSON Schema for `workflow.json` with `schema_version` field; backwards-compatible parser. (sprint `W4`; spec at [`docs/spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md), `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION = 1`.)
 - [x] **Versioned evidence bundle format** — schema for the bundle directory contents, `format_version` field, forward-compat reader. Shipped sprint `W1-C`; spec at [`docs/spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md).
 - [ ] **Migration tooling beta** — `boruna migrate <from-version>` upgrade path for any pre-1.0 breaking change.
 

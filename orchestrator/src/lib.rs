@@ -10,3 +10,8 @@ pub mod patch;
 pub mod persistence;
 pub mod storage;
 pub mod workflow;
+
+/// Highest workflow-DAG schema major version this build understands.
+/// Re-exported from `crate::workflow::definition` for the public
+/// crate surface. See `docs/spec/workflow-dag-1.0.md`.
+pub use workflow::definition::WORKFLOW_DAG_SCHEMA_VERSION;

@@ -2698,6 +2698,7 @@ mod tests {
         // registers it; compilability of the source is the
         // worker's concern.
         serde_json::json!({
+            "schema_version": 1,
             "name": "wf-s4",
             "version": "1.0.0",
             "steps": {
@@ -2833,6 +2834,7 @@ mod tests {
         // Pending; we manually mark it Completed in tests, then a
         // tick opens the gate, then approve/reject closes it.
         serde_json::json!({
+            "schema_version": 1,
             "name": "wf-s6-approve",
             "version": "1.0.0",
             "steps": {
