@@ -10,10 +10,11 @@ cargo fmt --all -- --check
 echo "PASS: formatting"
 echo ""
 
-# 2. Clippy (zero warnings)
+# 2. Clippy (zero warnings, --all-targets includes test code per sprint W1-A)
 echo "--- Clippy ---"
-cargo clippy --workspace -- -D warnings
-cargo clippy --workspace --features boruna-vm/http -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --features boruna-vm/http --all-targets -- -D warnings
+cargo clippy -p boruna-cli --features serve --all-targets -- -D warnings
 echo "PASS: clippy"
 echo ""
 
@@ -26,9 +27,15 @@ echo ""
 
 # 4. Unit + integration tests
 echo "--- Tests ---"
-cargo test --workspace
+cargo test --workspace --features boruna-cli/serve
 cargo test -p boruna-vm --features http
 echo "PASS: tests"
+echo ""
+
+# 4a. Bench harness compiles (sprint W8 gate; no execution)
+echo "--- Bench compile ---"
+cargo bench -p boruna-benches --no-run
+echo "PASS: benches compile"
 echo ""
 
 # 5. Workflow validation (all example workflows)
