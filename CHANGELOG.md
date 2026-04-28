@@ -6,6 +6,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-28
+
+**First stable release.** The 1.x LTS contract takes effect from
+this tag forward — every 1.0 `.ax` program, `workflow.json`,
+evidence bundle, MCP integration, and CLI invocation is committed
+to keep working on every 1.y release per [`docs/lts.md`](./docs/lts.md)
+§B.
+
+Same surface as `1.0.0-rc3`. No code changes between `rc3` and
+this GA cut; this tag exists to crystallize the 1.0 LTS commitment
+and ship final-named binaries.
+
+The four formal versioned specifications frozen at 1.0:
+- [`docs/spec/ax-language-1.0.md`](./docs/spec/ax-language-1.0.md) — `LANGUAGE_VERSION = "1.0"`
+- [`docs/spec/bytecode-1.0.md`](./docs/spec/bytecode-1.0.md) — `BYTECODE_VERSION = "1.0"`
+- [`docs/spec/workflow-dag-1.0.md`](./docs/spec/workflow-dag-1.0.md) — `WORKFLOW_DAG_SCHEMA_VERSION = 1`
+- [`docs/spec/evidence-bundle-1.0.md`](./docs/spec/evidence-bundle-1.0.md) — `BUNDLE_FORMAT_VERSION = "1.0"`
+
+For the full feature scope shipped between `v0.5.0` and `v1.0.0`,
+see the `[1.0.0-rc1]`, `[1.0.0-rc2]`, and `[1.0.0-rc3]` sections
+below.
+
+### Decided
+
+- **1.x LTS contract is now in force.** [`docs/lts.md`](./docs/lts.md)
+  §B surfaces are stable through 2027-11 (active) / 2028-05 (security).
+  Surfaces classified Experimental in [`docs/stability.md`](./docs/stability.md)
+  remain Experimental within 1.x; pin to a specific Boruna release
+  tag if your integration depends on those.
+
 ## [1.0.0-rc3] - 2026-04-28
 
 **Theme: final GA-readiness polish.** rc2 shipped W6 (mTLS +

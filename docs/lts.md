@@ -17,8 +17,8 @@ The 1.0.0 release closes the spec on every surface listed in section B. After
 
 | Track | Status | First release | Last release | Active support | Security support |
 |-------|--------|---------------|--------------|----------------|------------------|
-| 1.x | LTS | TBD (1.0 GA) | TBD | 18 months from 1.0 GA | 24 months from 1.0 GA |
-| 0.x | Pre-LTS; EOL when 1.0 ships | 2026-02-21 (LLM-Lang) → 2026-04-28 ([v0.5.0](../CHANGELOG.md#050--2026-04-28)) | TBD | EOL on 1.0 GA | None |
+| 1.x | **LTS — IN FORCE** | 2026-04-28 ([v1.0.0](../CHANGELOG.md#100--2026-04-28)) | TBD | through 2027-11-15 (18 months from GA) | through 2028-05-15 (24 months from GA) |
+| 0.x | EOL | 2026-02-21 (LLM-Lang) → 2026-04-28 ([v0.5.0](../CHANGELOG.md#050--2026-04-28)) | 2026-04-28 (1.0 GA) | EOL | None |
 
 Definitions:
 

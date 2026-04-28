@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0--rc3-orange.svg)](CHANGELOG.md)
-[![Status: Release Candidate](https://img.shields.io/badge/status-1.0--rc-yellow.svg)](docs/stability.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+[![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
-> **LTS:** 1.x will be the long-term-support line. See [`docs/lts.md`](./docs/lts.md) for the support-window, deprecation, and security-backport policy that takes effect at 1.0 GA.
+> **LTS — in force.** 1.x is the long-term-support line: through 2027-11-15 active and 2028-05-15 security. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 
@@ -156,11 +156,11 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v1.0.0-rc1**. The core execution engine, distributed-execution stack, evidence bundles, and three formal versioned specifications are feature-complete. The 1.x line is committed to long-term-support per [`docs/lts.md`](docs/lts.md), which takes effect at 1.0 GA.
+Boruna is at **v1.0.0** — first stable release. The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) are feature-complete and frozen. The 1.x line is now under long-term-support per [`docs/lts.md`](docs/lts.md): every 1.0 program, workflow, and bundle keeps working on every 1.y release.
 
-The project is appropriate for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action before production GA**: book external security audit (Q4 2026 commitment), validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints.
+The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 
-See [docs/stability.md](docs/stability.md) for the full maturity assessment.
+See [docs/stability.md](docs/stability.md) for the stability tier breakdown.
 
 ## For coding agents
 

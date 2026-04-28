@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **1.0.0-rc1**. The first 1.0 release candidate. This document is explicit about what is stable, what is experimental, and what is planned.
+Boruna is at version **1.0.0** — first stable release. This document is explicit about what is stable, what is experimental, and what is planned.
 
 > **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
 > below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
@@ -10,17 +10,17 @@ Boruna is at version **1.0.0-rc1**. The first 1.0 release candidate. This docume
 
 ## Current status
 
-Boruna is feature-complete for the 1.0 surface and currently soak-testing as a release candidate. The core execution engine, distributed-execution stack, three formal versioned specifications (`.ax` language, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped and tested (1175+ tests, all passing).
+Boruna 1.0 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested (1183+ tests, all passing), and frozen for the 1.x line.
 
 Boruna is appropriate for:
-- Evaluation and proof-of-concept workflows
-- Internal tooling and audit-sensitive AI pipelines
-- Teams that want to adopt the architecture before 1.0 GA
+- Production workloads on the LTS-protected surface (`lts.md` §B)
+- Evaluation, proof-of-concept, and internal tooling
+- Audit-sensitive AI pipelines
 
-Boruna is not yet appropriate for:
-- Regulated environments requiring vendor certification (book external security audit per [`lts.md`](./lts.md))
+Boruna is not yet certified for:
+- Regulated environments requiring third-party security audit attestation (booking is the Q4 2026 commitment per `lts.md`; results expected Q2 2027)
 - Workloads exceeding the [`PERFORMANCE.md`](./PERFORMANCE.md) budget without your own benchmarking
-- Storage layouts beyond local filesystem (cloud-storage adapters are 0.7.x territory)
+- Storage layouts beyond local filesystem (cloud-storage adapters are post-1.0 work)
 
 ## Stability tiers
 

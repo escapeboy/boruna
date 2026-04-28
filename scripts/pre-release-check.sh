@@ -75,10 +75,13 @@ fi
 hdr "README version badge"
 
 README_DASHES_VERSION=$(echo "$VERSION" | sed 's/-/--/g')
-if grep -q "version-${README_DASHES_VERSION}-orange" README.md; then
+# Color is informational (orange = rc, blue = stable, red = security
+# advisory, etc.); accept any color so a GA cut isn't blocked by the
+# rc badge change.
+if grep -E "version-${README_DASHES_VERSION}-(orange|blue|green|red|yellow|brightgreen|lightgrey)" README.md >/dev/null 2>&1; then
   ok "README badge matches $VERSION"
 else
-  fail "README badge does NOT mention $VERSION (looking for: 'version-${README_DASHES_VERSION}-orange')"
+  fail "README badge does NOT mention $VERSION (looking for: 'version-${README_DASHES_VERSION}-<color>')"
   echo "    Fix: update the version badge line in README.md" >&2
 fi
 
