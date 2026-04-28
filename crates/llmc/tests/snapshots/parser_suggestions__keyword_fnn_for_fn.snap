@@ -1,0 +1,6 @@
+---
+source: crates/llmc/tests/parser_suggestions.rs
+expression: "render_error(\"fnn main() -> Int {\\n    1\\n}\\n\")"
+---
+parse error at line 1: expected item, found 'fnn'
+  did you mean: 'fn'?

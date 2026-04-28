@@ -15,9 +15,13 @@ pub fn enhance_compiler_diagnostic(
 }
 
 /// For "undefined variable: X", suggest the closest defined name.
+///
+/// The compiler may append a multi-line " did you mean: '...'?"
+/// suggestion (post1-T-1.5); strip everything after the first line
+/// before extracting the identifier name.
 fn enhance_undefined_var(diag: &mut Diagnostic, file: &str, source: &str, program: &Program) {
-    let name = diag
-        .message
+    let first_line = diag.message.lines().next().unwrap_or(&diag.message);
+    let name = first_line
         .strip_prefix("undefined variable: ")
         .unwrap_or("")
         .to_string();

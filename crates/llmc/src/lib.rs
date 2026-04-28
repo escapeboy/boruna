@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod error;
 pub mod lexer;
 pub mod parser;
+pub mod suggest;
 #[cfg(test)]
 mod tests;
 pub mod typeck;

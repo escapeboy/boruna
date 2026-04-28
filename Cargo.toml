@@ -42,6 +42,16 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc
 # Dev-only cert generation for the mTLS integration test.
 rcgen = "0.13"
 
+# String-similarity for compiler typo suggestions (post1-T-1.5).
+# Used by boruna-compiler's `suggest` module to surface
+# Levenshtein-distance-1 keyword and identifier suggestions in
+# parser/typeck error messages.
+strsim = "0.11"
+
+# Snapshot testing for compiler diagnostic fixtures (post1-T-1.5).
+# Dev-dep only; never compiled into shipped artifacts.
+insta = { version = "1", default-features = false }
+
 # Filesystem watcher for `boruna run --watch` (post1-T-1.4).
 # Default features are kept enabled here because they are the
 # platform-specific watcher backends (fsevent on macOS, inotify on

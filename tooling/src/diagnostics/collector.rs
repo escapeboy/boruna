@@ -86,13 +86,23 @@ impl<'a> DiagnosticCollector<'a> {
 }
 
 /// Classify a type error string into a specific error code and try to find the line.
+///
+/// Strip any " did you mean: '...'?" suffix that the compiler may
+/// append (post1-T-1.5) before extracting the identifier name.
 fn classify_type_error(msg: &str, source: &str) -> (&'static str, Option<usize>) {
-    if msg.starts_with("undefined variable: ") {
-        let name = msg.strip_prefix("undefined variable: ").unwrap_or("");
+    // The compiler emits multi-line errors when a typo suggestion
+    // exists. Take only the first line for classification.
+    let first_line = msg.lines().next().unwrap_or(msg);
+    if first_line.starts_with("undefined variable: ") {
+        let name = first_line
+            .strip_prefix("undefined variable: ")
+            .unwrap_or("");
         let line = find_identifier_line(source, name);
         (E003_UNDEFINED_VAR, line)
-    } else if msg.starts_with("undefined function: ") {
-        let name = msg.strip_prefix("undefined function: ").unwrap_or("");
+    } else if first_line.starts_with("undefined function: ") {
+        let name = first_line
+            .strip_prefix("undefined function: ")
+            .unwrap_or("");
         let line = find_identifier_line(source, name);
         (E004_UNDEFINED_FN, line)
     } else {

@@ -2,6 +2,25 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::error::CompileError;
+use crate::suggest;
+
+/// Build a `did you mean: '...'?` suffix from in-scope locals and
+/// known function names, or empty string when no unique candidate
+/// exists. (post1-T-1.5)
+fn ident_suggestion_suffix(
+    typo: &str,
+    locals: &HashSet<String>,
+    functions: &HashMap<String, usize>,
+) -> String {
+    let candidates = locals
+        .iter()
+        .map(String::as_str)
+        .chain(functions.keys().map(String::as_str));
+    match suggest::suggestion_from(typo, candidates) {
+        Some(name) => format!("\n  did you mean: '{name}'?"),
+        Option::None => String::new(),
+    }
+}
 
 /// Type checking pass.
 /// For MVP, this does basic validation: name resolution, basic type consistency.
@@ -98,7 +117,10 @@ impl TypeChecker {
             }
             Stmt::Assign { target, value } => {
                 if !locals.contains(target) && !self.functions.contains_key(target) {
-                    return Err(CompileError::Type(format!("undefined variable: {target}")));
+                    let suffix = ident_suggestion_suffix(target, locals, &self.functions);
+                    return Err(CompileError::Type(format!(
+                        "undefined variable: {target}{suffix}"
+                    )));
                 }
                 self.check_expr(value, locals)?;
             }
@@ -117,7 +139,10 @@ impl TypeChecker {
     fn check_expr(&self, expr: &Expr, locals: &HashSet<String>) -> Result<(), CompileError> {
         match expr {
             Expr::Ident(name) if !locals.contains(name) && !self.functions.contains_key(name) => {
-                return Err(CompileError::Type(format!("undefined variable: {name}")));
+                let suffix = ident_suggestion_suffix(name, locals, &self.functions);
+                return Err(CompileError::Type(format!(
+                    "undefined variable: {name}{suffix}"
+                )));
             }
             Expr::Ident(_) => {}
             Expr::Binary { left, right, .. } => {
