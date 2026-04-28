@@ -28,6 +28,7 @@
 //! - `busy_timeout = 5000` — paired with the explicit retry loop in
 //!   [`with_busy_retry`] for `BEGIN IMMEDIATE` writes.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
@@ -1486,6 +1487,43 @@ impl RunCheckpointStore {
         })
     }
 
+    /// Return every `output_blob_ref` hash currently referenced by some
+    /// row in `step_checkpoints`. The set is the GC root for blob
+    /// reachability — any blob file on disk whose hash is NOT in this
+    /// set is an orphan and may be reclaimed by
+    /// [`BlobStore::find_orphans`].
+    ///
+    /// Sprint `W3-B`. Read-only (no `BEGIN IMMEDIATE`); SQLite's
+    /// `busy_timeout = 5000` PRAGMA is enough for a read against
+    /// concurrent writers. The result set is streamed row-by-row and
+    /// inserted into a `BTreeSet` so we never materialize a row count
+    /// equal to the checkpoint count just to dedup hashes.
+    ///
+    /// Bad hashes (non-64-hex values that somehow ended up in the
+    /// column) are **logged-and-skipped** per project convention §1
+    /// rather than aborting the GC sweep — a single corrupt row should
+    /// not block reclamation of every other orphan.
+    pub fn all_referenced_blob_hashes(&self) -> Result<BTreeSet<String>, PersistenceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT output_blob_ref FROM step_checkpoints \
+             WHERE output_blob_ref IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for r in rows {
+            let hash = r?;
+            if !is_valid_blob_hash(&hash) {
+                eprintln!(
+                    "warning: skipping malformed output_blob_ref in step_checkpoints: {:?}",
+                    truncate_for_log(&hash)
+                );
+                continue;
+            }
+            set.insert(hash);
+        }
+        Ok(set)
+    }
+
     /// List all checkpoints for one run, ordered by `(run_id, step_id)` —
     /// deterministic. Resume logic walks this in order to find the next
     /// pending step.
@@ -2089,6 +2127,31 @@ impl RunCheckpointStore {
 /// Used by the v1→v2 migration to distinguish a fresh database
 /// (where the canonical creation script already includes the v2
 /// columns) from an actual v1 database that needs the ALTER TABLE.
+/// Validate a hash string is exactly 64 lowercase hex characters.
+/// Used by [`RunCheckpointStore::all_referenced_blob_hashes`] to
+/// filter out malformed `output_blob_ref` values rather than letting
+/// them poison the orphan-reachability set.
+fn is_valid_blob_hash(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Truncate a string at `len` chars for safe diagnostic logging.
+/// We don't want to spew an arbitrary-length untrusted column value
+/// at stderr.
+fn truncate_for_log(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i >= 80 {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, PersistenceError> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -4421,5 +4484,125 @@ mod tests {
             .unwrap();
         let err = store.read_step_output("R1", "s1").unwrap_err();
         assert!(matches!(err, PersistenceError::BlobStore(_)));
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Sprint W3-B: blob GC roots — `all_referenced_blob_hashes`.
+    // ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn all_referenced_blob_hashes_empty_for_fresh_store() {
+        let store = fresh_store();
+        let set = store.all_referenced_blob_hashes().unwrap();
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn all_referenced_blob_hashes_returns_blob_offloaded_outputs() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        // Two large outputs → both go to blob store.
+        let big1 = format!("\"{}\"", "a".repeat(100 * 1024));
+        let big2 = format!("\"{}\"", "b".repeat(100 * 1024));
+        complete_running_step(&store, "R1", "s1", &big1);
+        complete_running_step(&store, "R2", "s2", &big2);
+
+        let set = store.all_referenced_blob_hashes().unwrap();
+        assert_eq!(set.len(), 2);
+        let cp1 = &store.list_step_checkpoints("R1").unwrap()[0];
+        let cp2 = &store.list_step_checkpoints("R2").unwrap()[0];
+        assert!(set.contains(cp1.output_blob_ref.as_ref().unwrap()));
+        assert!(set.contains(cp2.output_blob_ref.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn all_referenced_blob_hashes_excludes_inline_outputs() {
+        let (store, _dir) = fresh_store_with_blob_store();
+        // Small inline output → no blob ref.
+        complete_running_step(&store, "R1", "s1", "\"small\"");
+        let set = store.all_referenced_blob_hashes().unwrap();
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn all_referenced_blob_hashes_skips_malformed_values() {
+        // A row with a syntactically-bad output_blob_ref must NOT
+        // poison the result set; it's logged-and-skipped.
+        let store = fresh_store();
+        store.insert_run(&sample_run("R1")).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO step_checkpoints \
+                 (run_id, step_id, status, output_blob_ref, attempt_count, claim_id) \
+                 VALUES ('R1', 's-bad', 'completed', 'not-hex-not-64', 1, 1), \
+                        ('R1', 's-good', 'completed', ?1, 1, 1)",
+                params!["a".repeat(64)],
+            )
+            .unwrap();
+        let set = store.all_referenced_blob_hashes().unwrap();
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn gc_blobs_dry_run_does_not_delete() {
+        // Integration: produce one referenced blob + one orphan,
+        // simulate dry-run GC, verify nothing was deleted.
+        let (store, dir) = fresh_store_with_blob_store();
+        let big = format!("\"{}\"", "a".repeat(100 * 1024));
+        complete_running_step(&store, "R1", "s1", &big);
+        // Manually drop an orphan blob into the store.
+        let orphan_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let bs = store.blob_store().unwrap();
+        bs.write(orphan_hash, b"orphan bytes").unwrap();
+
+        let referenced = store.all_referenced_blob_hashes().unwrap();
+        let orphans = bs.find_orphans(&referenced).unwrap();
+        assert_eq!(orphans, vec![orphan_hash.to_string()]);
+
+        // Dry-run path: don't call delete.
+        // Both files must still be on disk afterward.
+        let blob_root = dir.path().join("blobs");
+        let referenced_hash = store.list_step_checkpoints("R1").unwrap()[0]
+            .output_blob_ref
+            .clone()
+            .unwrap();
+        assert!(blob_root
+            .join(&referenced_hash[..2])
+            .join(&referenced_hash)
+            .is_file());
+        assert!(blob_root
+            .join(&orphan_hash[..2])
+            .join(orphan_hash)
+            .is_file());
+    }
+
+    #[test]
+    fn gc_blobs_actual_deletes_orphans() {
+        let (store, dir) = fresh_store_with_blob_store();
+        let big = format!("\"{}\"", "a".repeat(100 * 1024));
+        complete_running_step(&store, "R1", "s1", &big);
+        let orphan_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let bs = store.blob_store().unwrap();
+        bs.write(orphan_hash, b"orphan bytes").unwrap();
+
+        let referenced = store.all_referenced_blob_hashes().unwrap();
+        let orphans = bs.find_orphans(&referenced).unwrap();
+        for h in &orphans {
+            bs.delete(h).unwrap();
+        }
+
+        // Referenced blob still on disk.
+        let referenced_hash = store.list_step_checkpoints("R1").unwrap()[0]
+            .output_blob_ref
+            .clone()
+            .unwrap();
+        let blob_root = dir.path().join("blobs");
+        assert!(blob_root
+            .join(&referenced_hash[..2])
+            .join(&referenced_hash)
+            .is_file());
+        // Orphan gone.
+        assert!(!blob_root.join(&orphan_hash[..2]).join(orphan_hash).exists());
     }
 }

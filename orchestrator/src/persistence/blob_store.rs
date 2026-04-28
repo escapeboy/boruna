@@ -37,6 +37,7 @@
 //! any filesystem access. Anything else returns
 //! [`BlobStoreError::BadHash`] without touching the disk.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -192,6 +193,120 @@ impl BlobStore {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    /// Delete the blob at `hash`. Idempotent — `NotFound` is reported
+    /// as `Ok(())` rather than an error so a GC sweep that races with
+    /// another deleter (or with a manual `rm`) does not abort.
+    ///
+    /// Sprint `W3-B`. Used by [`crate::audit`] / `boruna evidence
+    /// gc-blobs` to reclaim orphan blob files. Also tries to prune the
+    /// shard directory `<root>/<aa>/` if it ends up empty after the
+    /// delete; failure to prune the shard is logged-and-ignored
+    /// (another concurrent writer may have just placed a sibling
+    /// blob in it). The blob root itself is never removed.
+    ///
+    /// Like every other method, validates the hash before touching the
+    /// filesystem.
+    pub fn delete(&self, hash: &str) -> Result<(), BlobStoreError> {
+        validate_hash(hash)?;
+        let path = self.blob_path(hash);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(BlobStoreError::Io(e)),
+        }
+        // Best-effort shard prune. `remove_dir` only succeeds on an
+        // empty directory so this is naturally race-safe — if a
+        // concurrent writer just placed a sibling, `remove_dir` errors
+        // with `ENOTEMPTY` and we simply ignore it.
+        if let Some(shard) = path.parent() {
+            let _ = fs::remove_dir(shard);
+        }
+        Ok(())
+    }
+
+    /// Walk the blobs/ tree and return every on-disk hash that is NOT
+    /// in `referenced`. Used by `boruna evidence gc-blobs` to find
+    /// orphan blobs left behind when their referencing checkpoint
+    /// row was deleted (e.g., a future `runs prune` command, or a
+    /// pre-W3-B run where the checkpoint upsert overwrote
+    /// `output_blob_ref` with NULL on a re-attempt).
+    ///
+    /// Sprint `W3-B`. The walk is rooted at `<root>/<aa>/<bb>` (where
+    /// `<aa>` is the 2-char shard prefix and `<bb>` is the full 64-char
+    /// hash filename). Anything else encountered in the tree (a
+    /// stray file, a `.tmp.<pid>.<seq>` from a crashed writer, a
+    /// non-shard-shaped directory) is **skipped, not an error** — the
+    /// goal is to report orphan content-addressed blobs, not to act
+    /// as a tree-shape linter.
+    ///
+    /// The returned vector is in deterministic ascending order
+    /// (BTreeSet iteration order). Caller is responsible for the
+    /// TOCTOU window between this read and any subsequent
+    /// [`Self::delete`] — see `boruna evidence gc-blobs` for the
+    /// exclusive-lock strategy.
+    pub fn find_orphans(
+        &self,
+        referenced: &BTreeSet<String>,
+    ) -> Result<Vec<String>, BlobStoreError> {
+        let mut on_disk: BTreeSet<String> = BTreeSet::new();
+        // The blobs/ root may not exist yet on a brand-new data-dir
+        // that has never written a >64KiB output. Treat that as
+        // "no orphans" rather than an error.
+        let shard_iter = match fs::read_dir(&self.root) {
+            Ok(it) => it,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(BlobStoreError::Io(e)),
+        };
+        for shard_entry in shard_iter {
+            let shard_entry = shard_entry?;
+            let shard_path = shard_entry.path();
+            // Only descend into 2-char hex shard directories. Skip
+            // stray files at root, non-hex names, and anything with
+            // an unexpected length.
+            if !shard_path.is_dir() {
+                continue;
+            }
+            let shard_name = match shard_entry.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if shard_name.len() != 2 || !is_hex_lower(&shard_name) {
+                continue;
+            }
+            for blob_entry in fs::read_dir(&shard_path)? {
+                let blob_entry = blob_entry?;
+                if !blob_entry.file_type()?.is_file() {
+                    continue;
+                }
+                let name = match blob_entry.file_name().into_string() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                // Only count files whose name is itself a valid
+                // 64-char lowercase hex string AND lives under the
+                // matching shard. A file at <root>/aa/bbbb…bbbb
+                // (shard "aa", hash starts "bb") is structural noise,
+                // not a referenced blob.
+                if validate_hash(&name).is_err() {
+                    continue;
+                }
+                if name[..2] != shard_name {
+                    continue;
+                }
+                on_disk.insert(name);
+            }
+        }
+        Ok(on_disk.difference(referenced).cloned().collect())
+    }
+}
+
+/// Helper used by [`BlobStore::find_orphans`] to filter shard
+/// directories. Mirrors the constraint inside [`validate_hash`] but
+/// for arbitrary-length strings.
+fn is_hex_lower(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Validate a hash string: exactly 64 lowercase hex characters.
@@ -377,6 +492,137 @@ mod tests {
         assert!(root.join("aa").is_dir());
         // The blob should be at <root>/aa/<full hash>
         assert!(root.join("aa").join(A64).is_file());
+        cleanup(&root);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Sprint W3-B: blob GC primitives.
+    // ────────────────────────────────────────────────────────────
+
+    const C64: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    #[test]
+    fn delete_removes_blob_and_returns_ok() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        store.write(A64, b"x").unwrap();
+        assert!(store.exists(A64));
+        store.delete(A64).unwrap();
+        assert!(!store.exists(A64));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn delete_is_idempotent_for_missing_hash() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        // Never wrote anything. Delete must succeed (not NotFound).
+        store.delete(A64).unwrap();
+        // Second call also Ok.
+        store.delete(A64).unwrap();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn delete_rejects_bad_hash() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        let err = store.delete("not-a-hash").unwrap_err();
+        assert!(matches!(err, BlobStoreError::BadHash));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn delete_prunes_empty_shard_directory() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        store.write(A64, b"x").unwrap();
+        assert!(root.join("aa").is_dir());
+        store.delete(A64).unwrap();
+        // Shard "aa" should now be gone.
+        assert!(!root.join("aa").exists());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn delete_keeps_shard_when_sibling_remains() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        // Two blobs sharing shard "aa": A64 and another aa-prefixed hash.
+        let a_sibling = "aa00000000000000000000000000000000000000000000000000000000000000";
+        store.write(A64, b"x").unwrap();
+        store.write(a_sibling, b"y").unwrap();
+        store.delete(A64).unwrap();
+        assert!(root.join("aa").is_dir());
+        assert!(root.join("aa").join(a_sibling).is_file());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn find_orphans_returns_empty_when_all_blobs_referenced() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        store.write(A64, b"a").unwrap();
+        store.write(B64, b"b").unwrap();
+        let mut referenced = BTreeSet::new();
+        referenced.insert(A64.to_string());
+        referenced.insert(B64.to_string());
+        let orphans = store.find_orphans(&referenced).unwrap();
+        assert!(orphans.is_empty(), "expected no orphans, got {orphans:?}");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn find_orphans_returns_empty_for_fresh_root_without_blobs_dir() {
+        // A data-dir whose blobs/ subdir was never created should be
+        // treated as "no orphans", not an I/O error.
+        let root = unique_root();
+        // Don't open via BlobStore::open (which create_dir_alls) —
+        // construct one against a non-existent path. We have to use
+        // open() to keep field privacy, but immediately delete the
+        // dir to simulate the never-written case.
+        let store = BlobStore::open(root.clone()).unwrap();
+        cleanup(&root);
+        let referenced = BTreeSet::new();
+        let orphans = store.find_orphans(&referenced).unwrap();
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn find_orphans_returns_unreferenced_hashes() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        store.write(A64, b"a").unwrap();
+        store.write(B64, b"b").unwrap();
+        store.write(C64, b"c").unwrap();
+        let mut referenced = BTreeSet::new();
+        referenced.insert(A64.to_string()); // only A is referenced
+        let mut orphans = store.find_orphans(&referenced).unwrap();
+        orphans.sort();
+        assert_eq!(orphans, vec![B64.to_string(), C64.to_string()]);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn find_orphans_skips_unrelated_files_and_dirs() {
+        let root = unique_root();
+        let store = BlobStore::open(root.clone()).unwrap();
+        store.write(A64, b"a").unwrap();
+        // Stray junk at root and inside a valid shard. None should
+        // be reported as orphans.
+        std::fs::write(root.join("README"), "not a blob").unwrap();
+        std::fs::create_dir_all(root.join("not-hex")).unwrap();
+        std::fs::write(root.join("aa").join("not-a-hash"), "junk").unwrap();
+        // A leftover .tmp file from a crashed writer.
+        std::fs::write(root.join("aa").join(format!("{A64}.tmp.123.0")), "crash").unwrap();
+        // A blob in the wrong shard (shard "bb" but hash starts "aa").
+        std::fs::create_dir_all(root.join("bb")).unwrap();
+        std::fs::write(root.join("bb").join(A64), "wrong shard").unwrap();
+
+        let mut referenced = BTreeSet::new();
+        referenced.insert(A64.to_string());
+        let orphans = store.find_orphans(&referenced).unwrap();
+        assert!(orphans.is_empty(), "unexpected orphans: {orphans:?}");
         cleanup(&root);
     }
 }

@@ -102,6 +102,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
 - [x] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
 - [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
+- [x] **Blob GC sweep** (sprint `W3-B`) — `boruna evidence gc-blobs` reclaims orphan blobs in `<data-dir>/blobs/`. Closes the 0.5-S7 accepted limitation around manual cleanup.
 - [ ] **Coordinator HA / failover** — eliminates the single-coord SPOF; worker leases survive coord failover
 - [ ] **Worker capability tagging / placement** — workers advertise capabilities; coord routes work to compatible workers (gates `coord.binary_mismatch` relaxation)
 - [ ] **Rolling upgrades** — heterogeneous worker versions via per-capability version negotiation

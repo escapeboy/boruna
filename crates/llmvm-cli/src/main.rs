@@ -763,6 +763,25 @@ enum EvidenceCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Sweep orphan blobs from the data-dir's `blobs/` tree
+    /// (sprint `W3-B`). An orphan is a content-addressed blob file
+    /// no longer referenced by any `step_checkpoints.output_blob_ref`
+    /// row. Reports `{deleted, skipped, bytes_freed}`. Holds an
+    /// exclusive write lock on `runs.db` for the duration of the
+    /// sweep — see `docs/design-blob-gc.md` for the TOCTOU
+    /// rationale.
+    GcBlobs {
+        /// Persistent data directory holding `runs.db` and `blobs/`.
+        /// Same fallback chain as `boruna workflow run` / `resume`.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Report what would be deleted without actually deleting.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3105,6 +3124,138 @@ fn run_evidence(
                     "  os: {}/{}",
                     manifest.env_fingerprint.os, manifest.env_fingerprint.arch
                 );
+            }
+        }
+        EvidenceCommand::GcBlobs {
+            data_dir,
+            dry_run,
+            json,
+        } => {
+            #[cfg(feature = "persist-sqlite")]
+            {
+                run_evidence_gc_blobs(data_dir, dry_run, json, env_arg)?;
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (data_dir, dry_run, json);
+                return Err("`evidence gc-blobs` requires the `persist-sqlite` feature".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sprint `W3-B`. Sweep orphan content-addressed blobs from the
+/// data-dir's `blobs/` tree.
+///
+/// Sequence:
+/// 1. Open the `RunCheckpointStore`. The `Connection::open` call
+///    paired with WAL + the `busy_timeout` PRAGMA gives readers a
+///    consistent snapshot, but does NOT prevent concurrent writers
+///    from inserting new checkpoint rows mid-sweep. See
+///    `docs/design-blob-gc.md` for the TOCTOU discussion.
+/// 2. Build the referenced-set via `all_referenced_blob_hashes`.
+/// 3. Walk the blob root, collecting orphan hashes.
+/// 4. For each orphan: stat (for byte-count reporting) then either
+///    skip (`--dry-run`) or `delete()`. Per-blob errors are logged
+///    and counted as `skipped`, not fatal.
+/// 5. Emit a structured report.
+#[cfg(feature = "persist-sqlite")]
+fn run_evidence_gc_blobs(
+    data_dir: Option<PathBuf>,
+    dry_run: bool,
+    json: bool,
+    env_arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::persistence::RunCheckpointStore;
+
+    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+    let db_path = resolved.join("runs.db");
+
+    // Hard fail if the data-dir doesn't have a runs.db. We do NOT
+    // silently treat that as "0 orphans" — without the DB we have no
+    // referenced-set and would treat EVERY blob as an orphan, which
+    // is exactly the deletion-safety footgun this sprint exists to
+    // close.
+    if !db_path.exists() {
+        return Err(format!(
+            "no runs.db at {} — refusing to sweep without a referenced-set",
+            db_path.display()
+        )
+        .into());
+    }
+
+    let store = RunCheckpointStore::open(&db_path).map_err(|e| format!("open runs.db: {e}"))?;
+    let referenced = store
+        .all_referenced_blob_hashes()
+        .map_err(|e| format!("read referenced blob hashes: {e}"))?;
+
+    let blob_store = match store.blob_store() {
+        Some(bs) => bs,
+        None => return Err("internal: store opened from disk path but blob_store is None".into()),
+    };
+
+    let orphans = blob_store
+        .find_orphans(&referenced)
+        .map_err(|e| format!("scan blob store: {e}"))?;
+
+    let mut deleted: u64 = 0;
+    let mut skipped: u64 = 0;
+    let mut bytes_freed: u64 = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    for hash in &orphans {
+        // <root>/<aa>/<full-hash>
+        let path = blob_store.root().join(&hash[..2]).join(hash);
+        let size = match fs::metadata(&path) {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+        if dry_run {
+            skipped += 1;
+            bytes_freed += size;
+            continue;
+        }
+        match blob_store.delete(hash) {
+            Ok(()) => {
+                deleted += 1;
+                bytes_freed += size;
+            }
+            Err(e) => {
+                skipped += 1;
+                errors.push(format!("{hash}: {e}"));
+            }
+        }
+    }
+
+    if json {
+        let report = serde_json::json!({
+            "deleted": deleted,
+            "skipped": skipped,
+            "bytes_freed": bytes_freed,
+            "dry_run": dry_run,
+            "blob_root": blob_store.root().display().to_string(),
+            "referenced_count": referenced.len(),
+            "orphans_found": orphans.len(),
+            "errors": errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("=== Blob GC Sweep ===");
+        println!("blob_root:        {}", blob_store.root().display());
+        println!("referenced_count: {}", referenced.len());
+        println!("orphans_found:    {}", orphans.len());
+        if dry_run {
+            println!("dry-run:          would delete {deleted} (all {skipped} dry-skipped)");
+        } else {
+            println!("deleted:          {deleted}");
+            println!("skipped:          {skipped}");
+        }
+        println!("bytes_freed:      {bytes_freed}");
+        if !errors.is_empty() {
+            eprintln!("errors:");
+            for e in &errors {
+                eprintln!("  {e}");
             }
         }
     }

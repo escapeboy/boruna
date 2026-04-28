@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Blob GC** (sprint `W3-B`). New `boruna evidence gc-blobs`
+  command sweeps orphan content-addressed blobs from the
+  data-dir's blobs/ tree (output blobs no longer referenced
+  by any step checkpoint). `--dry-run` reports without
+  deleting; `--json` emits a structured report. Closes the
+  0.5-S7 accepted limitation around manual blob cleanup.
+  Library APIs `BlobStore::find_orphans`, `BlobStore::delete`,
+  and `RunCheckpointStore::all_referenced_blob_hashes` are
+  also exposed for future coord-side periodic-sweep wiring.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of
