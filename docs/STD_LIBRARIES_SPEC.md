@@ -13,12 +13,17 @@ Official, batteries-included standard libraries for the Boruna VM + Framework.
 
 ## Versioning Policy
 
-- All std libraries start at `0.1.0`
+Standard library versions are **independently tracked from the Boruna workspace version**. Each `std.*` library carries its own semver in `package.ax.json`.
+
+- All std libraries currently sit at `v0.1.0` — this is **intentional** and signals their position in the **Experimental** stability tier (see [`stability.md`](./stability.md)). The interfaces are usable but may change in 1.x minor releases as adoption feedback comes in.
+- Bumping a stdlib to `v1.0.0` is the same commitment Boruna's core surface makes at GA: every 1.0 program continues to work on every 1.y release. That commitment is taken per-library, not in lockstep with the workspace.
 - Semver: MAJOR.MINOR.PATCH
 - Breaking changes bump MAJOR
 - New features bump MINOR
 - Bug fixes bump PATCH
 - All libraries in a release are tested together
+
+> **For the Boruna v1.0 GA**: the stdlib stays at `v0.x` and remains in the Experimental stability tier. The 11 libraries are functional and tested, but operators relying on stable stdlib APIs across the Boruna 1.x line should pin to a specific Boruna release tag rather than tracking `latest`. The path to `std.* v1.0` runs through usage-driven stabilization in 1.x minor releases, not a coordinated GA freeze.
 
 ## Stability Guarantees
 
