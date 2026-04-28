@@ -3400,7 +3400,6 @@ fn run_evidence(
                 }
             }
 
-
             if json {
                 let merged = serde_json::json!({
                     "format_version": bundle_meta
