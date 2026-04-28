@@ -26,7 +26,7 @@
 //! responses also carry `error_kind: "<stable_string>"` from
 //! the locked `coord.*` taxonomy.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -70,6 +70,15 @@ struct WorkerSession {
     /// rolling-upgrade detection (per ADR 002 open question 5).
     #[allow(dead_code)]
     capability_set_hash: String,
+    /// Sprint `W3-A` — placement filter ONLY (operational state,
+    /// per project §15). When `Some(set)`, this worker only
+    /// receives steps whose policy-required capabilities are a
+    /// subset of `set`. When `None`, the worker is treated as a
+    /// full-fleet worker (matches every step). The capability
+    /// gateway in `boruna-vm` remains the security boundary; a
+    /// worker that lies about its advertised set is still denied
+    /// by policy at execution time.
+    advertised_capabilities: Option<BTreeSet<String>>,
 }
 
 #[derive(Clone)]
@@ -396,6 +405,22 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub worker_id: Option<String>,
     pub capability_set_hash: String,
+    /// Sprint `W3-A` — optional list of capability names this
+    /// worker advertises. When `None` (the default for
+    /// pre-W3-A workers), the coord treats the worker as a
+    /// full-fleet worker holding ALL capabilities. When
+    /// `Some(list)`, the coord only routes steps whose
+    /// policy-required capabilities are a subset of `list`.
+    /// Names are drawn from `boruna_bytecode::Capability::ALL`
+    /// (e.g. `"net.fetch"`, `"db.query"`); unknown names
+    /// reject registration with `coord.unknown_capability`.
+    ///
+    /// **Operational state only** (project §15) — does NOT
+    /// participate in `capability_set_hash` and is purely a
+    /// placement filter. The VM's capability gateway remains
+    /// the security boundary.
+    #[serde(default)]
+    pub advertised_capabilities: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -566,6 +591,68 @@ fn respond_err(status: StatusCode, body: ErrorBody) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// Sprint `W3-A` — validate the `advertised_capabilities` list at
+/// the parse boundary. Returns the deduplicated `BTreeSet` (or
+/// `None` if the field was absent), or the first unknown name on
+/// failure. Names are matched against `Capability::ALL` exact
+/// canonical names (e.g. `"net.fetch"`, `"db.query"`); aliases
+/// from `Capability::from_name` are NOT accepted here because the
+/// taxonomy needs to be unambiguous on the wire.
+fn validate_advertised_capabilities(
+    list: Option<&[String]>,
+) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(items) = list else {
+        return Ok(None);
+    };
+    let known: BTreeSet<&'static str> = boruna_bytecode::Capability::ALL
+        .iter()
+        .map(|c| c.name())
+        .collect();
+    let mut set = BTreeSet::new();
+    for name in items {
+        if !known.contains(name.as_str()) {
+            return Err(name.clone());
+        }
+        set.insert(name.clone());
+    }
+    Ok(Some(set))
+}
+
+/// Sprint `W3-A` — extract the set of capability names a step
+/// requires from its workflow's serialized `Policy`. A capability
+/// is "required" if (a) it appears in `rules` with `allow: true`,
+/// or (b) `default_allow == true`, in which case ALL capabilities
+/// are potentially required (a worker MUST advertise the full
+/// fleet to claim such a step). Best-effort placement only —
+/// malformed JSON falls back to "no requirements known", which
+/// remains safe because the VM gateway re-checks at execution.
+fn required_capabilities_from_policy(policy_json: &str) -> BTreeSet<String> {
+    let mut required = BTreeSet::new();
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(policy_json) else {
+        return required;
+    };
+    let default_allow = v
+        .get("default_allow")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    if default_allow {
+        // Wildcard policy — caller MUST advertise every capability.
+        for cap in boruna_bytecode::Capability::ALL.iter() {
+            required.insert(cap.name().to_string());
+        }
+        return required;
+    }
+    if let Some(rules) = v.get("rules").and_then(|x| x.as_object()) {
+        for (name, rule) in rules {
+            let allow = rule.get("allow").and_then(|x| x.as_bool()).unwrap_or(false);
+            if allow {
+                required.insert(name.clone());
+            }
+        }
+    }
+    required
+}
+
 // ── Handlers ──
 
 async fn handle_register(
@@ -584,6 +671,27 @@ async fn handle_register(
         return respond_err(StatusCode::CONFLICT, body);
     }
 
+    // Sprint `W3-A` — validate and normalize advertised capability
+    // names at the parse boundary (project §1: reject unknown
+    // capability names with the stable taxonomy entry
+    // `coord.unknown_capability`).
+    let advertised_capabilities =
+        match validate_advertised_capabilities(req.advertised_capabilities.as_deref()) {
+            Ok(set) => set,
+            Err(unknown) => {
+                return respond_err(
+                    StatusCode::BAD_REQUEST,
+                    ErrorBody::new(
+                        "coord.unknown_capability",
+                        format!(
+                            "advertised capability {unknown:?} is not a known capability name; \
+                         expected names from boruna_bytecode::Capability::ALL"
+                        ),
+                    ),
+                );
+            }
+        };
+
     let worker_id = req
         .worker_id
         .unwrap_or_else(|| format!("wkr-{}", uuid::Uuid::new_v4().simple()));
@@ -600,6 +708,7 @@ async fn handle_register(
                 session_token: session_token.clone(),
                 last_heartbeat_ms: now_unix_ms(),
                 capability_set_hash: req.capability_set_hash,
+                advertised_capabilities,
             },
         );
     }
@@ -643,14 +752,17 @@ async fn handle_claim(
     State(state): State<CoordinatorState>,
     Query(q): Query<ClaimQuery>,
 ) -> Response {
-    // Validate worker session.
-    {
+    // Validate worker session and capture its advertised
+    // capability set (sprint `W3-A`).
+    let advertised = {
         let workers = match state.workers.lock() {
             Ok(g) => g,
             Err(_) => return internal_error("workers lock poisoned"),
         };
         match workers.get(&q.worker_id) {
-            Some(sess) if sess.session_token == q.session_token => {}
+            Some(sess) if sess.session_token == q.session_token => {
+                sess.advertised_capabilities.clone()
+            }
             _ => {
                 return respond_err(
                     StatusCode::NOT_FOUND,
@@ -661,7 +773,7 @@ async fn handle_claim(
                 );
             }
         }
-    }
+    };
 
     // Cap lease TTL at coordinator config.
     let lease_ttl_ms = q.lease_ttl_ms.min(state.config.max_lease_ttl_ms);
@@ -670,7 +782,7 @@ async fn handle_claim(
     let deadline = std::time::Instant::now() + poll_timeout;
 
     loop {
-        match try_claim_one(&state, &q.worker_id, lease_ttl_ms) {
+        match try_claim_one(&state, &q.worker_id, lease_ttl_ms, advertised.as_ref()) {
             Ok(Some(item)) => return Json(item).into_response(),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
@@ -694,6 +806,7 @@ fn try_claim_one(
     state: &CoordinatorState,
     worker_id: &str,
     lease_ttl_ms: u64,
+    advertised: Option<&BTreeSet<String>>,
 ) -> Result<Option<WorkItem>, Response> {
     let now_ms = now_unix_ms();
     let lease_expires_at_ms = now_ms + lease_ttl_ms as i64;
@@ -706,7 +819,8 @@ fn try_claim_one(
             .store
             .lock()
             .map_err(|_| internal_error("store lock poisoned"))?;
-        find_one_pending_step(&store).map_err(|e| internal_error(&format!("scan pending: {e}")))?
+        find_one_pending_step(&store, advertised)
+            .map_err(|e| internal_error(&format!("scan pending: {e}")))?
     };
 
     let Some((run_id, step_id, source, policy_json)) = candidate else {
@@ -758,12 +872,25 @@ type PendingStepDescriptor = (String, String, String, String);
 
 fn find_one_pending_step(
     store: &RunCheckpointStore,
+    advertised: Option<&BTreeSet<String>>,
 ) -> Result<Option<PendingStepDescriptor>, Box<dyn std::error::Error>> {
     let runs = store.list_runs_by_status(RunStatus::Running)?;
     for run in runs {
         let steps = store.list_step_checkpoints(&run.run_id)?;
         for step in steps {
             if step.status == StepStatus::Pending {
+                // Sprint `W3-A` — placement filter. A worker that
+                // declared an advertised capability set sees only
+                // steps whose policy-required cap-set is a subset
+                // of its advertised set. Workers that did NOT
+                // advertise (i.e. `None`) match every step (the
+                // pre-W3-A behavior).
+                if let Some(adv) = advertised {
+                    let required = required_capabilities_from_policy(&run.policy_json);
+                    if !required.is_subset(adv) {
+                        continue;
+                    }
+                }
                 let source = extract_step_source(&run.metadata_json, &step.step_id)
                     .ok_or_else(|| format!(
                         "step {} in run {} has no inline source; metadata_json.step_sources missing",
@@ -1940,6 +2067,7 @@ mod tests {
         RegisterRequest {
             worker_id: None,
             capability_set_hash: hash,
+            advertised_capabilities: None,
         }
     }
 
@@ -1966,6 +2094,7 @@ mod tests {
         let req = RegisterRequest {
             worker_id: Some("custom-host-7".into()),
             capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: None,
         };
         let (status, v) = post_json(&app, "/api/workers/register", &req).await;
         assert_eq!(status, StatusCode::OK);
@@ -1986,6 +2115,257 @@ mod tests {
         assert_eq!(v["error_kind"], "coord.binary_mismatch");
         assert!(v["expected_hash"].is_string());
         assert_eq!(v["protocol_version"], 1);
+    }
+
+    /// Sprint `W3-A` — insert a Pending step with a specific
+    /// policy_json. Used by capability-tagging tests that need
+    /// to control the policy's rules block precisely.
+    fn pending_step_with_policy(
+        state: &CoordinatorState,
+        run_id: &str,
+        step_id: &str,
+        source: &str,
+        policy_json: &str,
+    ) {
+        let metadata_json = serde_json::json!({
+            "step_sources": { step_id: source }
+        })
+        .to_string();
+        let store = state.store.lock().unwrap();
+        let _ = store.insert_run(&RunRow {
+            run_id: run_id.into(),
+            workflow_name: "wf".into(),
+            workflow_hash: "h".into(),
+            status: RunStatus::Running,
+            started_at_ms: 0,
+            updated_at_ms: 0,
+            policy_json: policy_json.into(),
+            metadata_json,
+        });
+        store
+            .upsert_step_checkpoint(&StepCheckpoint {
+                run_id: run_id.into(),
+                step_id: step_id.into(),
+                status: StepStatus::Pending,
+                output_json: None,
+                output_hash: None,
+                started_at_ms: None,
+                ended_at_ms: None,
+                error_msg: None,
+                attempt_count: 1,
+                worker_id: None,
+                lease_expires_at_ms: None,
+                claim_id: 0,
+                output_blob_ref: None,
+            })
+            .unwrap();
+    }
+
+    /// Build a JSON policy whose `rules` block lists the given
+    /// capability names with `allow: true`. `default_allow` is
+    /// `false` so the placement filter sees ONLY the listed caps.
+    fn policy_allowing(caps: &[&str]) -> String {
+        let rules: serde_json::Map<String, serde_json::Value> = caps
+            .iter()
+            .map(|c| {
+                (
+                    c.to_string(),
+                    serde_json::json!({ "allow": true, "budget": 0 }),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "schema_version": 1,
+            "default_allow": false,
+            "rules": serde_json::Value::Object(rules),
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn register_with_subset_advertised_caps_succeeds() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec!["net.fetch".into(), "db.query".into()]),
+        };
+        let (status, v) = post_json(&app, "/api/workers/register", &req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(v["worker_id"].as_str().unwrap().starts_with("wkr-"));
+    }
+
+    #[tokio::test]
+    async fn register_rejects_unknown_capability_name() {
+        let state = fresh_state();
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec!["net.fetch".into(), "bogus.cap".into()]),
+        };
+        let (status, v) = post_json(&app, "/api/workers/register", &req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.unknown_capability");
+        assert_eq!(v["protocol_version"], 1);
+    }
+
+    #[tokio::test]
+    async fn claim_returns_only_steps_within_advertised_caps() {
+        let state = fresh_state();
+        // Step requires only net.fetch; worker advertises net.fetch.
+        pending_step_with_policy(
+            &state,
+            "run-net",
+            "fetch-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["net.fetch"]),
+        );
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec!["net.fetch".into()]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let item: WorkItem = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(item.step_id, "fetch-step");
+    }
+
+    #[tokio::test]
+    async fn claim_skips_step_requiring_unadvertised_capability() {
+        let state = fresh_state();
+        // Step requires db.query; worker advertises only net.fetch.
+        pending_step_with_policy(
+            &state,
+            "run-db",
+            "db-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["db.query"]),
+        );
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            advertised_capabilities: Some(vec!["net.fetch".into()]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        // Worker can't claim — long-poll times out → 204.
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn worker_without_advertised_caps_sees_all_steps() {
+        let state = fresh_state();
+        // Step requires db.query; worker did NOT advertise (None) →
+        // backwards-compat full-fleet behavior: still claimable.
+        pending_step_with_policy(
+            &state,
+            "run-bc",
+            "db-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["db.query"]),
+        );
+        let app = build_router(state.clone());
+        let (_, reg) = post_json(
+            &app,
+            "/api/workers/register",
+            &register_payload(state.capability_set_hash.clone()),
+        )
+        .await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let item: WorkItem = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(item.step_id, "db-step");
+    }
+
+    /// Sprint `W3-A` adversarial test (project §29): two pending
+    /// steps in the same fleet — one needing a cap the worker
+    /// DOESN'T advertise, one whose required caps are a subset of
+    /// what the worker advertises. The unadvertised step must be
+    /// skipped; the compatible sibling must still be claimable.
+    #[tokio::test]
+    async fn claim_skips_incompatible_step_but_claims_compatible_sibling() {
+        let state = fresh_state();
+        // run-mix has TWO steps, one needing fs.write, one needing
+        // net.fetch. Same policy applies run-wide; we model the
+        // mix at the fleet level by inserting two runs.
+        pending_step_with_policy(
+            &state,
+            "run-fs",
+            "fs-step",
+            "fn main() -> Int { 1 }\n",
+            &policy_allowing(&["fs.write"]),
+        );
+        pending_step_with_policy(
+            &state,
+            "run-net",
+            "net-step",
+            "fn main() -> Int { 2 }\n",
+            &policy_allowing(&["net.fetch"]),
+        );
+        let app = build_router(state.clone());
+        let req = RegisterRequest {
+            worker_id: None,
+            capability_set_hash: state.capability_set_hash.clone(),
+            // Worker advertises net.fetch only.
+            advertised_capabilities: Some(vec!["net.fetch".into()]),
+        };
+        let (_, reg) = post_json(&app, "/api/workers/register", &req).await;
+        let worker_id = reg["worker_id"].as_str().unwrap();
+        let token = reg["session_token"].as_str().unwrap();
+        let claim_req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/work/claim?worker_id={worker_id}&session_token={token}&lease_ttl_ms=10000"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(claim_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let item: WorkItem = serde_json::from_slice(&bytes).unwrap();
+        // The fs-step must NEVER be claimed by this worker.
+        assert_eq!(item.step_id, "net-step");
     }
 
     #[tokio::test]

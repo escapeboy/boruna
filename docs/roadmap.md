@@ -103,7 +103,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
 - [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
 - [ ] **Coordinator HA / failover** — eliminates the single-coord SPOF; worker leases survive coord failover
-- [ ] **Worker capability tagging / placement** — workers advertise capabilities; coord routes work to compatible workers (gates `coord.binary_mismatch` relaxation)
+- [x] **Worker capability tagging / placement** — workers advertise capabilities; coord routes work to compatible workers (gates `coord.binary_mismatch` relaxation) (sprint `W3-A`)
 - [ ] **Rolling upgrades** — heterogeneous worker versions via per-capability version negotiation
 
 ### (b) Spec freeze

@@ -30,6 +30,28 @@ fn add_bearer(req: reqwest::RequestBuilder, secret: &Option<String>) -> reqwest:
     }
 }
 
+/// Sprint `W3-A` — parse a comma-separated `--advertise-caps`
+/// value into the wire-shape `Vec<String>`. Empty or whitespace-only
+/// input maps to `None` (full-fleet behavior, matches the absent
+/// flag). Trims whitespace around each element and drops empty
+/// fragments produced by trailing commas.
+pub fn parse_advertise_caps(raw: Option<&str>) -> Option<Vec<String>> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = s
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
+}
+
 #[derive(Clone)]
 struct WorkerHandle {
     coord_url: String,
@@ -58,6 +80,7 @@ pub async fn run_worker(
     lease_ttl_ms: u64,
     poll_timeout_ms: u64,
     shared_secret: Option<String>,
+    advertised_capabilities: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         // Long-poll buffer: client timeout MUST be greater than
@@ -81,6 +104,7 @@ pub async fn run_worker(
         client.post(&register_url).json(&RegisterRequest {
             worker_id: worker_id.clone(),
             capability_set_hash,
+            advertised_capabilities,
         }),
         &shared_secret,
     )
@@ -413,5 +437,25 @@ mod tests {
     fn urlencoding_passes_through_safe_chars() {
         assert_eq!(urlencoding_simple("wkr-abc123"), "wkr-abc123");
         assert_eq!(urlencoding_simple("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn parse_advertise_caps_absent_or_empty_returns_none() {
+        assert_eq!(parse_advertise_caps(None), None);
+        assert_eq!(parse_advertise_caps(Some("")), None);
+        assert_eq!(parse_advertise_caps(Some("   ")), None);
+        assert_eq!(parse_advertise_caps(Some(",,, ,")), None);
+    }
+
+    #[test]
+    fn parse_advertise_caps_splits_and_trims() {
+        assert_eq!(
+            parse_advertise_caps(Some("net.fetch, db.query ,fs.read")),
+            Some(vec![
+                "net.fetch".into(),
+                "db.query".into(),
+                "fs.read".into()
+            ])
+        );
     }
 }
