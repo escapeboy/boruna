@@ -284,7 +284,7 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
 name = "boruna-benches"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-bytecode"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-cli"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "axum",
  "boruna-bytecode",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-compiler"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-vm",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-effect"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "serde",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-framework"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-mcp"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-orchestrator"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-pkg"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-tooling"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-vm"
-version = "1.0.0"
+version = "0.7.0-dev"
 dependencies = [
  "boruna-bytecode",
  "opentelemetry",
