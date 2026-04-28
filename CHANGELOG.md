@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0-rc2] - 2026-04-28
+
+**Theme: GA polish.** rc1 shipped the post-v0.5 sprint cycle
+(W1-W6: versioned spec freezes, coord HA, mTLS, capability
+tagging, blob GC, scaffold, perf baselines, LTS commitment,
+migration tooling, bundle encryption). rc2 closes the security
+review remainder before the v1.0 GA tag: explicit GA decision on
+TLS 1.2 (kept, with rationale); spec amendment documenting the
+optional `encryption` block in evidence bundles; canonical
+`error_kind` taxonomy reference; mTLS guide updated with
+revocation + non-ASCII CN limitations; `evidence inspect`
+plaintext-leak gate test; algorithm-gate enforcement in
+`Envelope::unwrap` matching the spec's reader contract;
+stdlib version policy clarified.
+
 ### Added
 
 - **Canonical `error_kind` taxonomy reference** at
