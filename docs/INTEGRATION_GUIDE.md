@@ -653,5 +653,5 @@ let repaired_source = repair::apply(source, &diags, repair::Strategy::Best)?;
 - **No FFI** — Boruna cannot call C libraries, system calls, or arbitrary Rust functions. All interaction with the outside world goes through the capability gateway.
 - **No general-purpose systems programming** — It is designed for deterministic application logic, not low-level code.
 - **No implicit side effects** — Every IO operation must be declared. There is no escape hatch.
-- **No remote package registry yet** — Packages are local-only in v0.1.0.
-- **No production runtime yet** — Boruna is functional but still v0.1.0. The APIs will evolve.
+- **No remote package registry yet** — Packages are local-only as of v1.0. A federated/remote registry is post-1.0 work; track in [`roadmap.md`](./roadmap.md).
+- **Production-ready under the LTS contract** — As of v1.0 GA, the surfaces enumerated in [`lts.md`](./lts.md) §B are LTS-protected for the full 1.x line. Surfaces classified as *Experimental* in [`stability.md`](./stability.md) (the framework crate, the package system, stdlib library APIs) MAY change between 1.x minor releases — pin to a specific Boruna release tag if your integration depends on those.
