@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`boruna new` interactive scaffold** (sprint `W3-C`).
+  Wraps the existing template engine with stdin-driven
+  prompting. Walks the user through template selection,
+  target dir, and per-template variables; confirms before
+  writing. `--no-input` mode is CI-safe (errors on missing
+  defaults rather than silently filling). Refuses to
+  overwrite non-empty target dirs without `--force`.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of

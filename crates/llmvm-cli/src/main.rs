@@ -20,6 +20,7 @@ mod coordinator;
 #[cfg(feature = "serve")]
 mod dashboard;
 mod format;
+mod scaffold;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(feature = "serve")]
@@ -131,6 +132,33 @@ enum Command {
     /// Template tools (list, apply, validate).
     #[command(subcommand)]
     Template(TemplateCommand),
+    /// Scaffold a new project from a template (interactive).
+    ///
+    /// Walks the user through template selection, target dir, and
+    /// per-template variables; confirms before writing. With
+    /// `--no-input` the command is CI-safe — it errors on any
+    /// missing variable that has no default rather than silently
+    /// auto-picking. Refuses to overwrite a non-empty target dir
+    /// unless `--force`. See `docs/design-boruna-new-scaffold.md`.
+    New {
+        /// Optional template name (skips the picker).
+        template: Option<String>,
+        /// Templates directory (defaults to ./templates).
+        #[arg(long, default_value = "templates")]
+        dir: PathBuf,
+        /// Target directory for generated files.
+        #[arg(long)]
+        target: Option<PathBuf>,
+        /// Pre-supply a template variable. Repeat for each: `--var key=value`.
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        vars: Vec<String>,
+        /// Non-interactive mode (CI-safe). Errors on missing values.
+        #[arg(long)]
+        no_input: bool,
+        /// Allow writing into a non-empty target directory.
+        #[arg(long)]
+        force: bool,
+    },
     /// Workflow execution and validation.
     #[command(subcommand)]
     Workflow(WorkflowCommand),
@@ -1074,6 +1102,29 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Lang(lang) => run_lang(lang)?,
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
+        Command::New {
+            template,
+            dir,
+            target,
+            vars,
+            no_input,
+            force,
+        } => {
+            let args = scaffold::NewArgs {
+                template,
+                templates_dir: dir,
+                target,
+                vars,
+                no_input,
+                force,
+            };
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            let reader = stdin.lock();
+            let writer = stdout.lock();
+            scaffold::run_new(reader, writer, args)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        }
         Command::Workflow(wf) => run_workflow(wf, env_arg)?,
         Command::Evidence(ev) => run_evidence(ev, env_arg)?,
         Command::Capability(cap) => run_capability(cap)?,

@@ -48,7 +48,7 @@ Target: rolling, May–July 2026
 
 The DX work originally scoped for 0.2.0 ships incrementally as point releases. Each is small, additive, and non-breaking.
 
-- [ ] `boruna new` — scaffold a new workflow from a template interactively
+- [x] `boruna new` — scaffold a new workflow from a template interactively (sprint `W3-C`)
 - [ ] `boruna fmt` — auto-formatter for `.ax` files
 - [ ] `boruna run --watch` — re-run on file change
 - [ ] Improved error messages — actionable diagnostics with suggested fixes for common mistakes
