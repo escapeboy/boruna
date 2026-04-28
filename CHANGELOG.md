@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`boruna migrate` subcommand (beta)** (sprint `W5-C`).
+  Migrators for evidence bundles (synthesize missing
+  `bundle.json` for legacy v0.5.0-and-earlier bundles) and
+  workflow.json (add `schema_version: 1` when missing).
+  `--dry-run` previews; `--in-place` modifies the input
+  directly; default writes a `.migrated` sibling. Beta status:
+  the migrator coverage will expand in 1.x as breaking
+  changes accumulate. Operator guide:
+  [`docs/guides/migration.md`](./docs/guides/migration.md).
 - **Performance benchmarks baseline** (sprint `W5-A`). New
   `benches/` workspace member with `criterion`-based benchmarks
   for compile time, VM throughput, and evidence bundle

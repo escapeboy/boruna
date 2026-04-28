@@ -201,6 +201,31 @@ enum Command {
     #[cfg(feature = "serve")]
     #[command(subcommand)]
     Worker(WorkerCommand),
+    /// Migration tooling beta (sprint `W5-C`). Upgrades pre-1.0
+    /// Boruna artifacts to the current on-disk format. See
+    /// `docs/guides/migration.md` for the coverage matrix and
+    /// recommended workflow.
+    Migrate {
+        /// Migration kind: `evidence-bundle` or `workflow-json`.
+        kind: String,
+        /// Path to the artifact (a directory for `evidence-bundle`,
+        /// a file for `workflow-json`).
+        path: PathBuf,
+        /// Source version of the input. When absent the migrator
+        /// infers from the file's contents.
+        #[arg(long)]
+        from: Option<String>,
+        /// Target version. Defaults to "current" (latest stable).
+        #[arg(long, default_value = "current")]
+        to: String,
+        /// Report the planned change without writing to disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Modify the input artifact in place. Default: write a
+        /// `<path>.migrated` sibling.
+        #[arg(long)]
+        in_place: bool,
+    },
 }
 
 #[cfg(feature = "serve")]
@@ -1182,7 +1207,49 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Coordinator(c) => run_coordinator(c, env_arg)?,
         #[cfg(feature = "serve")]
         Command::Worker(w) => run_worker_cmd(w)?,
+        Command::Migrate {
+            kind,
+            path,
+            from,
+            to,
+            dry_run,
+            in_place,
+        } => run_migrate(kind, path, from, to, dry_run, in_place)?,
     }
+    Ok(())
+}
+
+fn run_migrate(
+    kind: String,
+    path: PathBuf,
+    _from: Option<String>,
+    to: String,
+    dry_run: bool,
+    in_place: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if to != "current" && to != "1" && to != "0.6.0" && to != "1.0.0" {
+        return Err(format!(
+            "unsupported --to target {to:?} (beta supports: current, 1, 0.6.0, 1.0.0)"
+        )
+        .into());
+    }
+
+    let report = match kind.as_str() {
+        "evidence-bundle" => boruna_tooling::migrations::evidence_bundle::migrate_bundle_dir(
+            &path, dry_run, in_place,
+        )?,
+        "workflow-json" => boruna_tooling::migrations::workflow_json::migrate_workflow_json(
+            &path, dry_run, in_place,
+        )?,
+        other => {
+            return Err(format!(
+                "unknown migration kind {other:?} (expected: evidence-bundle | workflow-json)"
+            )
+            .into());
+        }
+    };
+
+    println!("{report}");
     Ok(())
 }
 
