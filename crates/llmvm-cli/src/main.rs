@@ -289,6 +289,21 @@ enum WorkerCommand {
         /// sent — only works when the coord also has no secret.
         #[arg(long, env = "BORUNA_COORD_SECRET")]
         shared_secret: Option<String>,
+        /// Sprint `W3-A` — comma-separated capability names this
+        /// worker advertises (e.g. `--advertise-caps net.fetch,db.query`).
+        /// When set, the coordinator only routes steps whose
+        /// policy-required capabilities are a subset of this list.
+        /// When omitted (or empty), the worker behaves as a
+        /// full-fleet worker (the pre-W3-A default). Capability
+        /// names must match `boruna_bytecode::Capability::ALL`
+        /// exactly; unknown names cause registration to fail
+        /// with `coord.unknown_capability`.
+        ///
+        /// **Operational metadata only** — placement filter, not
+        /// a security gate. The VM's capability gateway remains
+        /// the security boundary.
+        #[arg(long)]
+        advertise_caps: Option<String>,
     },
 }
 
@@ -1180,13 +1195,16 @@ fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> 
             lease_ttl_ms,
             poll_timeout_ms,
             shared_secret,
+            advertise_caps,
         } => {
+            let advertised = worker::parse_advertise_caps(advertise_caps.as_deref());
             worker::run_worker(
                 coordinator,
                 worker_id,
                 lease_ttl_ms,
                 poll_timeout_ms,
                 shared_secret,
+                advertised,
             )?;
         }
     }

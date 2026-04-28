@@ -30,6 +30,28 @@ fn add_bearer(req: reqwest::RequestBuilder, secret: &Option<String>) -> reqwest:
     }
 }
 
+/// Sprint `W3-A` — parse a comma-separated `--advertise-caps`
+/// value into the wire-shape `Vec<String>`. Empty or whitespace-only
+/// input maps to `None` (full-fleet behavior, matches the absent
+/// flag). Trims whitespace around each element and drops empty
+/// fragments produced by trailing commas.
+pub fn parse_advertise_caps(raw: Option<&str>) -> Option<Vec<String>> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = s
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
+}
+
 #[derive(Clone)]
 struct WorkerHandle {
     coord_url: String,
@@ -80,6 +102,7 @@ pub async fn run_worker(
     lease_ttl_ms: u64,
     poll_timeout_ms: u64,
     shared_secret: Option<String>,
+    advertised_capabilities: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let coord_urls = parse_coordinator_urls(&coordinator)?;
     let client = reqwest::Client::builder()
@@ -106,6 +129,10 @@ pub async fn run_worker(
     // coord. Operators recover from a sticky-coord crash by
     // restarting the worker; on next start it picks the next
     // healthy URL. This is the standard k8s liveness-probe model.
+    //
+    // Sprint W3-A: every register attempt carries the same
+    // `advertised_capabilities` payload so any winning coord
+    // applies the same placement filter.
     let mut last_err: Option<String> = None;
     let (winning_url, reg) = {
         let mut found: Option<(String, RegisterResponse)> = None;
@@ -114,6 +141,7 @@ pub async fn run_worker(
             let req = client.post(&register_url).json(&RegisterRequest {
                 worker_id: worker_id.clone(),
                 capability_set_hash: capability_set_hash.clone(),
+                advertised_capabilities: advertised_capabilities.clone(),
             });
             match add_bearer(req, &shared_secret).send().await {
                 Ok(reg_resp) => {
@@ -539,5 +567,27 @@ mod tests {
         assert!(parse_coordinator_urls("").is_err());
         assert!(parse_coordinator_urls(" , ").is_err());
         assert!(parse_coordinator_urls(",,,").is_err());
+    }
+
+    // Sprint W3-A — advertised capabilities parsing.
+
+    #[test]
+    fn parse_advertise_caps_absent_or_empty_returns_none() {
+        assert_eq!(parse_advertise_caps(None), None);
+        assert_eq!(parse_advertise_caps(Some("")), None);
+        assert_eq!(parse_advertise_caps(Some("   ")), None);
+        assert_eq!(parse_advertise_caps(Some(",,, ,")), None);
+    }
+
+    #[test]
+    fn parse_advertise_caps_splits_and_trims() {
+        assert_eq!(
+            parse_advertise_caps(Some("net.fetch, db.query ,fs.read")),
+            Some(vec![
+                "net.fetch".into(),
+                "db.query".into(),
+                "fs.read".into()
+            ])
+        );
     }
 }

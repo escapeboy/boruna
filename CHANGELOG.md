@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Worker capability tagging** (sprint `W3-A`). Workers may
+  advertise a SUBSET of the coord's capability set via
+  `--advertise-caps net.fetch,db.query`; coord routes only
+  steps whose policy-required capabilities are a subset of
+  the worker's advertised set. Backwards-compatible:
+  workers omitting the flag behave as before (full fleet).
+  New `error_kind: "coord.unknown_capability"` rejects
+  registration with unknown capability names. Operational
+  metadata only — placement filter, not a security gate;
+  the VM's capability gateway remains the authority.
 - **Coordinator HA / failover** (sprint `W2`). Multiple
   `boruna coordinator serve` processes can run against the
   same SQLite data-dir for active-active HA. Workers accept
