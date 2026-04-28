@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.5.0-orange.svg)](CHANGELOG.md)
-[![Status: Pre-production](https://img.shields.io/badge/status-pre--production-yellow.svg)](docs/stability.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--rc1-orange.svg)](CHANGELOG.md)
+[![Status: Release Candidate](https://img.shields.io/badge/status-1.0--rc-yellow.svg)](docs/stability.md)
 
 > **LTS:** 1.x will be the long-term-support line. See [`docs/lts.md`](./docs/lts.md) for the support-window, deprecation, and security-backport policy that takes effect at 1.0 GA.
 

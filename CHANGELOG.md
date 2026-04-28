@@ -6,7 +6,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0-rc1] - 2026-04-28
+
+**Theme: 1.0 release candidate.** This is the first 1.0
+release candidate. Surfaces listed in
+[`docs/lts.md`](./docs/lts.md) section B are now LTS-protected
+under the long-term-support contract that takes effect at 1.0
+GA. Three formal versioned specifications are published and
+frozen at 1.0: the `.ax` language, the workflow DAG schema,
+and the evidence bundle format. The distributed-execution
+stack from v0.5.0 ships HA-ready (multi-coord active-active
+behind a load balancer or via worker URL failover). Workers
+can advertise capability subsets so heterogeneous fleets are
+supported. Operators get the `boruna new` interactive
+scaffold, `boruna migrate` for upgrading legacy artifacts,
+and `boruna evidence gc-blobs` for blob storage cleanup.
+Performance baselines are published with 1.x budget
+commitments.
+
 ### Added
+
+- **`boruna migrate` subcommand (beta)** (sprint `W5-C`).
+  Migrators for evidence bundles (synthesize missing
+  `bundle.json` for legacy v0.5.0-and-earlier bundles) and
+  workflow.json (add `schema_version: 1` when missing).
+  `--dry-run` previews; `--in-place` modifies the input
 
 - **`boruna migrate` subcommand (beta)** (sprint `W5-C`).
   Migrators for evidence bundles (synthesize missing
