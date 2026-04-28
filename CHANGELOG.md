@@ -20,6 +20,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   deltas, and fails on ≥10% mean regression. Non-blocking by
   default (not in the required-status-checks set). See
   `CONTRIBUTING.md` § "Reading the bench-compare PR comment".
+- `boruna run --watch` — re-execute a `.ax` file on every change.
+  Debounces filesystem events to 200ms, prints a
+  `── reloading <path> at HH:MM:SS ──` separator before each rerun,
+  and tolerates per-run errors so the watcher keeps running across
+  fix-and-save cycles. See `docs/reference/cli.md` § Watch mode.
+
 ## [1.0.0] - 2026-04-28
 
 **First stable release.** The 1.x LTS contract takes effect from

@@ -62,6 +62,7 @@ Options:
   --live             Enable real capability handlers (requires http feature)
   --trace            Emit a full execution trace to stdout
   --step-limit <n>   Abort if execution exceeds n steps
+  --watch            Re-run on every change to the file (post-1.0)
 ```
 
 Examples:
@@ -75,7 +76,31 @@ boruna run app.ax --policy allow-all
 
 # Run with real HTTP (requires --features boruna-cli/http)
 cargo run --features boruna-cli/http --bin boruna -- run app.ax --policy allow-all --live
+
+# Watch mode — re-run on every save until Ctrl-C
+boruna run app.ax --watch
 ```
+
+### Watch mode
+
+`--watch` re-executes the file on every change. Filesystem events
+are debounced to 200ms, so a single editor save triggers exactly
+one rerun even on platforms that emit a flurry of events per save.
+
+A separator line marks each rerun:
+
+```
+── reloading app.ax at 14:03:11 ──
+3
+steps: 4
+```
+
+A failed run (compile error or runtime panic) does **not** exit
+watch mode — the error is printed and the watcher waits for the
+next save. Press `Ctrl-C` to exit.
+
+Watch combines with the standard run flags:
+`boruna run app.ax --watch --policy ./policy.json --record events.json`.
 
 ---
 
