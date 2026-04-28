@@ -1,0 +1,41 @@
+[package]
+name = "boruna-benches"
+description = "Performance benchmarks for the Boruna toolchain (compile time, VM throughput, evidence bundle write/verify)"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# This crate exists purely to host criterion benchmark binaries against
+# the Boruna libraries. It exposes a tiny library surface (setup helpers
+# reused by the smoke test) so `cargo build --workspace` compiles the
+# bench harness via the workspace, while `cargo bench -p boruna-benches`
+# actually runs the benchmarks. There are no production consumers.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+boruna-bytecode = { path = "../crates/llmbc" }
+boruna-compiler = { path = "../crates/llmc" }
+boruna-vm = { path = "../crates/llmvm" }
+boruna-orchestrator = { path = "../orchestrator" }
+boruna-tooling = { path = "../tooling" }
+
+[dev-dependencies]
+# Criterion's `default-features = false` skips `rayon`/`html_reports` per
+# project ADR 001 (deps default to no features). We don't need HTML
+# reports in CI and rayon-based parallel benchmarking would obscure the
+# single-threaded numbers we want.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+tempfile = "3"
+
+[[bench]]
+name = "compile"
+harness = false
+
+[[bench]]
+name = "vm_throughput"
+harness = false
+
+[[bench]]
+name = "evidence"
+harness = false

@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Performance benchmarks baseline** (sprint `W5-A`). New
+  `benches/` workspace member with `criterion`-based benchmarks
+  for compile time, VM throughput, and evidence bundle
+  write/verify. Documented baseline + 1.x performance budget
+  commitments at [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md).
+  Benches are not gated in CI; run locally via
+  `cargo bench -p boruna-benches`.
+
 ## [0.5.0] - 2026-04-28
 
 **Theme: distributed execution.** Boruna can now run a fleet of
