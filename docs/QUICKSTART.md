@@ -15,7 +15,7 @@ cd boruna
 cargo build --workspace
 ```
 
-This builds all 9 crates. Expect 1-2 minutes on first build.
+This builds all 11 workspace members (10 production crates + `benches/`). Expect 1-2 minutes on first build.
 
 ## 2. Run hello world
 
@@ -141,10 +141,10 @@ cargo run --bin boruna -- workflow run examples/workflows/customer_support_triag
 ## Run the tests
 
 ```bash
-cargo test --workspace
+cargo test --workspace --features boruna-cli/serve
 ```
 
-557+ tests across all crates. All should pass.
+1175+ tests across all workspace members. All should pass.
 
 ## Next steps
 

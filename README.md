@@ -32,7 +32,7 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - **Diagnostics, auto-repair, and migration** — `boruna lang check`, `boruna lang repair`, `boruna migrate` for `.ax` files and bundle/workflow upgrades
 - **`boruna new`** — interactive scaffold for new workflows from templates
 - **Three formal versioned specifications** — `.ax` language 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
-- **MCP server** — exposes 10 tools for AI coding agent integration (Claude Code, Cursor, Codex)
+- **MCP server** — exposes 12 tools for AI coding agent integration (Claude Code, Cursor, Codex)
 
 ## What Boruna is not
 
@@ -113,7 +113,7 @@ Every `CapCall` (including LLM calls) is logged with its full response. The log 
 
 ## Architecture
 
-Boruna is a Rust workspace with 9 crates:
+Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 | Crate | Purpose |
 |-------|---------|

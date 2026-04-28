@@ -440,7 +440,7 @@ The `validation` object is present only when `validate: true`. If validation fai
 
 ## Stability
 
-- **`protocol_version: 1`** is the wire-format version of the response envelope, present on every tool response (success and failure). Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`; a regression test (`protocol_version_tests` — 16 cases covering both success and failure paths of all 10 tools) asserts coverage. Bumped only on a breaking shape change anywhere in the envelope; additive changes keep the version.
+- **`protocol_version: 1`** is the wire-format version of the response envelope, present on every tool response (success and failure). Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`; a regression test (`protocol_version_tests`) asserts coverage across both success and failure paths of every tool. Bumped only on a breaking shape change anywhere in the envelope; additive changes keep the version.
 - **Tool names** (`boruna_compile`, `boruna_run`, ...) are stable. Renames require a major version bump.
 - **`error_kind` values** are stable strings. New ones may be added; existing ones are not renamed.
 - **Top-level response fields** (`success`, `protocol_version`, named result fields) are stable. New fields are additive.

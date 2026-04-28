@@ -2,20 +2,23 @@
 
 A capability is an explicit permission for a workflow step to perform a side effect. No capability, no side effect — the VM enforces this unconditionally.
 
-## The ten capabilities
+## The eleven capabilities
+
+The 1.0 capability set is frozen in `crates/llmbc/src/capability.rs::Capability::ALL`. Workers and the coordinator carry a `capability_set_hash` derived from the (name, version) tuples of this set; mismatched workers are rejected at registration with `error_kind: "coord.binary_mismatch"` (see [`docs/guides/worker-capability-tagging.md`](../guides/worker-capability-tagging.md) for subset advertising).
 
 | Capability | Effect | Example use |
 |------------|--------|-------------|
 | `net.fetch` | HTTP requests | Calling external APIs, webhooks |
-| `llm.call` | LLM inference | GPT-4, Claude, local models |
+| `llm.call` | LLM inference | GPT-4, Claude, local models (BYOH — see [`guides/llm-integration.md`](../guides/llm-integration.md)) |
 | `time.now` | Current timestamp | Timestamping records |
-| `rand.next` | Random numbers | Sampling, tie-breaking |
+| `random.next` | Random numbers | Sampling, tie-breaking |
 | `fs.read` | File system reads | Loading documents, configs |
 | `fs.write` | File system writes | Writing reports, outputs |
 | `db.query` | Database access | Reading/writing records |
-| `db.mutate` | Database mutations | Write operations specifically |
+| `ui.render` | UI surface rendering | Framework `view` output (Elm-architecture apps) |
 | `actor.spawn` | Actor creation | Spawning parallel agents |
 | `actor.send` | Inter-actor messaging | Coordinating actor state |
+| `step.input` | Read a workflow step's resolved inputs | Per-step `step_input("upstream_step")` builtin |
 
 ## Declaring capabilities
 
@@ -41,7 +44,7 @@ Built-in policies:
 
 | Policy | Allowed capabilities |
 |--------|---------------------|
-| `allow-all` | All 10 capabilities |
+| `allow-all` | All 11 capabilities |
 | `deny-all` | None |
 | `default` | None (same as deny-all) |
 
