@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Capability call markers in MCP progress notifications** (post1-T-2.2).
+  `boruna_run` streaming progress events now carry a `message` field when
+  a capability call fires during an execution slice: `"cap: llm.call"` for
+  a single call or `"caps: llm.call, net.fetch"` for multiple. Slices with
+  no capability calls continue to omit `message` (no noise for pure compute).
+  MCP clients that display live execution status can now surface `"calling
+  llm.call…"` feedback without polling. Backward-compatible: existing clients
+  that ignore `message` see no change.
+
 - **BYOH reference handler library** (post1-T-1.2). Four new
   reference `CapabilityHandler` implementations under
   `examples/llm_handlers/` joining the existing OpenAI example:
