@@ -289,6 +289,19 @@ enum CoordinatorCommand {
         /// body — mismatch returns `coord.identity_mismatch`.
         #[arg(long)]
         tls_client_ca: Option<PathBuf>,
+        /// post1-T-4.2 (0.7.x): PEM-encoded X509 CRL file used
+        /// to revoke previously-trusted client certificates
+        /// without redistributing the CA bundle. Pass repeatedly
+        /// for multiple CRLs (one per intermediate CA).
+        ///
+        /// CRL parse failure on startup is a fatal error.
+        /// Reload-on-SIGHUP semantics are documented in
+        /// `docs/guides/mtls-crl.md`.
+        ///
+        /// Requires the full `--tls-cert/--tls-key/--tls-client-ca`
+        /// trio — passing CRLs without mTLS is a startup error.
+        #[arg(long, value_name = "FILE")]
+        tls_client_crl: Vec<PathBuf>,
     },
     /// Drive a submit-only workflow run to terminal status by
     /// computing downstream-ready successors as workers complete
@@ -1340,6 +1353,7 @@ fn run_coordinator(
             tls_cert,
             tls_key,
             tls_client_ca,
+            tls_client_crl,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
@@ -1347,8 +1361,12 @@ fn run_coordinator(
                 let bind_addr: std::net::IpAddr = bind
                     .parse()
                     .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
-                let tls_config =
-                    coordinator::ServerTlsPaths::from_optional(tls_cert, tls_key, tls_client_ca)?;
+                let tls_config = coordinator::ServerTlsPaths::from_optional(
+                    tls_cert,
+                    tls_key,
+                    tls_client_ca,
+                    tls_client_crl,
+                )?;
                 coordinator::run_serve(
                     resolved,
                     port,
@@ -1373,6 +1391,7 @@ fn run_coordinator(
                     tls_cert,
                     tls_key,
                     tls_client_ca,
+                    tls_client_crl,
                 );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
             }

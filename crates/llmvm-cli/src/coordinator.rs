@@ -140,6 +140,17 @@ pub struct ServerTlsPaths {
     pub cert: PathBuf,
     pub key: PathBuf,
     pub client_ca: PathBuf,
+    /// post1-T-4.2 (0.7.x): optional list of CRL files to revoke
+    /// previously-trusted client certificates without redistributing
+    /// the CA bundle. Each CRL is loaded as a PEM-encoded
+    /// `X509 CRL` blob and passed to
+    /// `WebPkiClientVerifier::with_crls` at server-config build
+    /// time. Multiple CRLs (one per intermediate CA) are supported
+    /// by passing the flag repeatedly. CRL parse failure on
+    /// startup is a typed startup error; reload behavior on
+    /// SIGHUP is documented in
+    /// `docs/guides/mtls-crl.md`.
+    pub crls: Vec<PathBuf>,
 }
 
 impl ServerTlsPaths {
@@ -147,17 +158,32 @@ impl ServerTlsPaths {
     /// `None` (no TLS — pre-W6 behavior) or a fully-populated
     /// triple. Mixing-and-matching (e.g. `--tls-cert` without
     /// `--tls-key`) is a startup error per project §1.
+    ///
+    /// `crls` is independent — passing CRLs without the cert/key
+    /// trio is a startup error so misconfigured CRL paths don't
+    /// silently disappear into a plaintext-only server.
     pub fn from_optional(
         cert: Option<PathBuf>,
         key: Option<PathBuf>,
         client_ca: Option<PathBuf>,
+        crls: Vec<PathBuf>,
     ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
         match (cert, key, client_ca) {
-            (None, None, None) => Ok(None),
+            (None, None, None) => {
+                if !crls.is_empty() {
+                    return Err(
+                        "--tls-client-crl requires --tls-cert/--tls-key/--tls-client-ca \
+                         to be configured (CRLs apply to mTLS only)"
+                            .into(),
+                    );
+                }
+                Ok(None)
+            }
             (Some(cert), Some(key), Some(client_ca)) => Ok(Some(Self {
                 cert,
                 key,
                 client_ca,
+                crls,
             })),
             _ => Err("--tls-cert, --tls-key, --tls-client-ca must all be provided together".into()),
         }
@@ -353,7 +379,15 @@ fn build_server_tls(
             .map_err(|e| format!("invalid client CA cert: {e}"))?;
     }
 
-    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+    // post1-T-4.2: load CRLs and pass to the builder. CRL parse
+    // failure at startup is a fatal startup error — we refuse to
+    // come up with a half-configured revocation surface.
+    let crls = load_crls(&paths.crls)?;
+    let mut builder = WebPkiClientVerifier::builder(Arc::new(roots));
+    if !crls.is_empty() {
+        builder = builder.with_crls(crls);
+    }
+    let verifier = builder
         .build()
         .map_err(|e| format!("build client cert verifier: {e}"))?;
 
@@ -401,6 +435,39 @@ fn load_private_key(
         .map_err(|e| format!("parse key {}: {e}", path.display()))?
         .ok_or_else(|| format!("no private key found in {}", path.display()))?;
     Ok(key)
+}
+
+/// post1-T-4.2: load CRL files. Each file may contain one or more
+/// PEM-encoded `X509 CRL` blocks (most CAs emit one per file, but
+/// concatenations are accepted). Empty files and files with no
+/// CRL blocks are a typed startup error so misconfigured paths
+/// don't silently produce a CRL-less verifier.
+fn load_crls(
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<rustls::pki_types::CertificateRevocationListDer<'static>>, Box<dyn std::error::Error>>
+{
+    let mut out = Vec::new();
+    for path in paths {
+        let pem = std::fs::read(path).map_err(|e| format!("read CRL {}: {e}", path.display()))?;
+        let mut reader = std::io::Cursor::new(pem);
+        let mut count_in_file = 0usize;
+        for entry in rustls_pemfile::crls(&mut reader) {
+            let crl = entry.map_err(|e| format!("parse CRL block in {}: {e}", path.display()))?;
+            out.push(crl);
+            count_in_file += 1;
+        }
+        if count_in_file == 0 {
+            return Err(format!(
+                "no `X509 CRL` PEM blocks found in {} — \
+                 expected at least one. (Hint: \
+                 `openssl crl -inform DER -in <file>.crl -out <file>.pem` \
+                 converts a DER CRL to PEM.)",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(out)
 }
 
 /// Per-connection TLS accept loop. Wraps each accepted TCP stream
@@ -3651,14 +3718,18 @@ mod tests {
     #[test]
     fn parse_tls_flags_requires_all_three_or_none() {
         // None of the three flags = no TLS, ok.
-        assert!(ServerTlsPaths::from_optional(None, None, None)
+        assert!(ServerTlsPaths::from_optional(None, None, None, vec![])
             .unwrap()
             .is_none());
         // All three present = ok.
         let p = std::path::PathBuf::from("/tmp/x");
-        let triple =
-            ServerTlsPaths::from_optional(Some(p.clone()), Some(p.clone()), Some(p.clone()))
-                .unwrap();
+        let triple = ServerTlsPaths::from_optional(
+            Some(p.clone()),
+            Some(p.clone()),
+            Some(p.clone()),
+            vec![],
+        )
+        .unwrap();
         assert!(triple.is_some());
         // Any partial combination is rejected.
         for (a, b, c) in [
@@ -3669,12 +3740,23 @@ mod tests {
             (Some(p.clone()), None, Some(p.clone())),
             (None, Some(p.clone()), Some(p.clone())),
         ] {
-            let err = ServerTlsPaths::from_optional(a, b, c).unwrap_err();
+            let err = ServerTlsPaths::from_optional(a, b, c, vec![]).unwrap_err();
             assert!(
                 err.to_string().contains("must all be provided together"),
                 "unexpected err: {err}"
             );
         }
+    }
+
+    #[test]
+    fn parse_tls_flags_crls_without_mtls_rejected() {
+        // post1-T-4.2: passing --tls-client-crl without the mTLS
+        // trio is a startup error. The CRL cannot apply to a
+        // plaintext server, so silently dropping it would be a
+        // dangerous footgun.
+        let crl = std::path::PathBuf::from("/tmp/some.crl");
+        let err = ServerTlsPaths::from_optional(None, None, None, vec![crl]).unwrap_err();
+        assert!(err.to_string().contains("CRL"), "unexpected err: {err}");
     }
 
     #[tokio::test]
