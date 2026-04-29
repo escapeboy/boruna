@@ -1,0 +1,36 @@
+// std.llm — Typed LLM effect wrappers for prompting and structured generation
+// Produces Effects only. No direct execution. Requires llm.call capability.
+// temperature is stored as Int * 100 (e.g. 72 = 0.72) to avoid Float precision issues.
+
+type Effect { kind: String, payload: String, callback_tag: String }
+
+type LlmRequest { system_prompt: String, user_prompt: String, max_tokens: Int, temperature: Int }
+
+type LlmResponse { content: String, tokens_used: Int, finish_reason: String }
+
+fn llm_call(req: LlmRequest, callback_tag: String) -> Effect {
+    let payload: String = req.system_prompt ++ "|" ++ req.user_prompt
+    Effect { kind: "llm_call", payload: payload, callback_tag: callback_tag }
+}
+
+fn llm_prompt(system: String, user: String, callback_tag: String) -> Effect {
+    let req: LlmRequest = LlmRequest { system_prompt: system, user_prompt: user, max_tokens: 1024, temperature: 72 }
+    llm_call(req, callback_tag)
+}
+
+fn llm_json_call(req: LlmRequest, callback_tag: String) -> Effect {
+    let payload: String = req.system_prompt ++ "|" ++ req.user_prompt
+    Effect { kind: "llm_json_call", payload: payload, callback_tag: callback_tag }
+}
+
+fn default_llm_request(system: String, user: String) -> LlmRequest {
+    LlmRequest { system_prompt: system, user_prompt: user, max_tokens: 1024, temperature: 72 }
+}
+
+fn main() -> Int {
+    let req: LlmRequest = default_llm_request("You are a helpful assistant.", "Summarize this document.")
+    let eff: Effect = llm_call(req, "summary_done")
+    let prompt_eff: Effect = llm_prompt("You are a coder.", "Write a hello world.", "code_done")
+    let json_eff: Effect = llm_json_call(req, "json_done")
+    0
+}

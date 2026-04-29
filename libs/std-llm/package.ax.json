@@ -1,0 +1,8 @@
+{
+  "name": "std.llm",
+  "version": "0.1.0",
+  "description": "Typed LLM effect wrappers for prompting and structured generation",
+  "dependencies": {},
+  "required_capabilities": ["llm.call"],
+  "exposed_modules": ["core"]
+}

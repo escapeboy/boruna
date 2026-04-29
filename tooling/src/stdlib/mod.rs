@@ -212,6 +212,32 @@ mod tests {
         assert_eq!(result, 3); // 3 passed
     }
 
+    #[test]
+    fn test_std_llm_compiles() {
+        let src = load_library_source(&libs_dir(), "std-llm").unwrap();
+        assert!(verify_compiles(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_json_compiles() {
+        let src = load_library_source(&libs_dir(), "std-json").unwrap();
+        assert!(verify_compiles(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_llm_runs() {
+        let src = load_library_source(&libs_dir(), "std-llm").unwrap();
+        let result = run_library(&src).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_std_json_runs() {
+        let src = load_library_source(&libs_dir(), "std-json").unwrap();
+        let result = run_library(&src).unwrap();
+        assert_eq!(result, 0);
+    }
+
     // ── Determinism Tests ──
 
     #[test]
@@ -259,6 +285,18 @@ mod tests {
     #[test]
     fn test_std_testing_determinism() {
         let src = load_library_source(&libs_dir(), "std-testing").unwrap();
+        assert!(verify_determinism(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_llm_determinism() {
+        let src = load_library_source(&libs_dir(), "std-llm").unwrap();
+        assert!(verify_determinism(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_json_determinism() {
+        let src = load_library_source(&libs_dir(), "std-json").unwrap();
         assert!(verify_determinism(&src).is_ok());
     }
 }

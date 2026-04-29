@@ -36,6 +36,9 @@ closed: all 11 per-package pages exist under
 no `examples/workflows/*` workflow references any `std-*` package
 by name. Filed as Wave-3 follow-up work.
 
+Two new 0.x packages were added this cycle: `std-llm` and `std-json`.
+These close the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
+
 | Package | (1) ex wf | (2) tests | (3) API stable | (4) docs | Decision |
 |---------|:---------:|:---------:|:--------------:|:--------:|----------|
 | `std-ui` | ✗ | ✓ (`std_ui_runs`) | ✓ | ✓ | Held — needs example workflow |
@@ -49,6 +52,8 @@ by name. Filed as Wave-3 follow-up work.
 | `std-storage` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
 | `std-notifications` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
 | `std-testing` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-llm` | ✗ | ✓ | ✓ | ✗ | New 0.x — needs example workflow + docs page |
+| `std-json` | ✗ | ✓ | ✓ | ✗ | New 0.x — needs example workflow + docs page |
 
 ### Per-criterion notes
 
