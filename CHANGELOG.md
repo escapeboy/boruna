@@ -15,6 +15,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   Reports differences in step outputs, audit event counts, workflow metadata,
   and verification status. `--json` flag for machine-readable output.
 
+### Changed
+
+- **Improved error messages**: `boruna lang check` now suggests the nearest variable name for E003 errors and the nearest function name for E004 errors using edit-distance-1 matching; type-conversion hints for common E009 mismatches (Int↔String, Bool↔Int); E001 lexer errors now include a source pointer line; E002 parse errors append a common-cause hint; E007 capability violation message now names the offending capability and action.
+- **Better `lang repair`**: repair now handles E003 near-miss rename patches via the tooling suggestion pipeline; new `RepairStrategy::Conservative` applies only `High`-confidence patches, skipping `Medium`/`Low` (safe for CI auto-repair); bottom-up patch ordering was already in place and verified correct.
+
 ## [1.1.0] — 2026-04-29
 
 ### Added
