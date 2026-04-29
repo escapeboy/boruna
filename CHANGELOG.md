@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (0.7.x speculative)
+
+- `boruna coordinator serve --tls-client-crl <FILE>` (post1-T-4.2)
+  loads PEM-encoded X509 CRLs at startup and feeds them to
+  rustls's `WebPkiClientVerifier::with_crls`. Connections from
+  revoked client certs are rejected at handshake. Multiple CRLs
+  supported via repeated flag (one per intermediate CA). CRL
+  parse failure on startup is a fatal startup error; CRLs without
+  the mTLS trio are a fatal startup error. Reload-on-SIGHUP is
+  the documented intent but not in this PR — see
+  `docs/guides/mtls-crl.md`. **0.7.x-only** feature: not part of
+  the 1.x LTS surface.
+
 ## [1.0.0] - 2026-04-28
 
 **First stable release.** The 1.x LTS contract takes effect from
