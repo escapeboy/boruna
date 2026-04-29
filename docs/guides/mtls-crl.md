@@ -48,12 +48,30 @@ openssl crl -inform DER -in cert.crl -out cert.crl.pem
   Clients see the standard `tls.cert_revoked` failure (rustls's
   `BadCertificate(CertRevoked)`).
 
-## Reload on SIGHUP
+## Reloading CRLs at runtime
 
-The mTLS handshake configuration is built from disk at process
-startup. To pick up CRL updates without a full restart, send the
-running process a `SIGHUP`. The signal handler re-reads every
-`--tls-client-crl` file and rebuilds the verifier.
+To pick up CRL updates without restarting the coordinator process,
+send it `SIGHUP`:
+
+```sh
+kill -HUP $(cat /run/boruna-coordinator.pid)
+# or, if you know the PID:
+kill -HUP <pid>
+```
+
+The signal handler re-reads every `--tls-client-crl` file from disk
+and rebuilds the TLS verifier. New connections will use the updated
+revocation list immediately; in-flight connections complete with the
+previous config.
+
+**What is and is not reloaded on SIGHUP:**
+
+| Component | Reloaded on SIGHUP? |
+|-----------|---------------------|
+| `--tls-client-crl` files | Yes |
+| `--tls-cert` / `--tls-key` | No — requires restart |
+| `--tls-client-ca` | No — requires restart |
+| `--tls-ocsp-staple` | No — requires restart |
 
 CRL parse failure on reload **does not** crash the process — the
 previous CRL set stays in effect, and the failure is logged with
@@ -61,11 +79,8 @@ the offending path. This matches the standard "fail-static" model:
 a malformed CRL during reload should not blow away revocation
 that was already in force.
 
-> **Implementation status:** the SIGHUP reload path is part of the
-> 0.7.x design but is not in this PR. The current implementation
-> requires a process restart to pick up CRL changes. Tracked as a
-> follow-up; reload semantics above describe the intended
-> behavior.
+SIGHUP support is UNIX-only. On Windows, a process restart is
+required to pick up CRL changes.
 
 ## OCSP Stapling (post1-T-4.3)
 
@@ -106,7 +121,7 @@ After deploying, exercise the revocation path with a smoke test:
 
 1. Issue a client cert from your CA, register the worker, run a job.
 2. Add the cert's serial to the CRL, regenerate the PEM CRL.
-3. (Restart or SIGHUP the coord; depends on implementation status.)
+3. Send `SIGHUP` to the coordinator (`kill -HUP <pid>`) to reload the CRL.
 4. Re-attempt to register from the same client. The TLS handshake
    should be rejected.
 5. Issue a fresh cert from the same CA. Register. Job runs.

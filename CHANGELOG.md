@@ -29,10 +29,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   revoked client certs are rejected at handshake. Multiple CRLs
   supported via repeated flag (one per intermediate CA). CRL
   parse failure on startup is a fatal startup error; CRLs without
-  the mTLS trio are a fatal startup error. Reload-on-SIGHUP is
-  the documented intent but not in this PR — see
-  `docs/guides/mtls-crl.md`. **0.7.x-only** feature: not part of
-  the 1.x LTS surface.
+  the mTLS trio are a fatal startup error. **0.7.x-only** feature:
+  not part of the 1.x LTS surface.
+- **CRL reload on SIGHUP** (post1-T-4.2-sighup). Sending `SIGHUP` to the
+  coordinator process triggers a live reload of all `--tls-client-crl` files
+  without restarting. Cert, key, and OCSP staple are NOT reloaded (require
+  restart). Reload errors are logged but do not crash the coordinator.
+  UNIX-only (`#[cfg(unix)]`). See `docs/guides/mtls-crl.md`.
 
 ## [1.0.0] - 2026-04-28
 

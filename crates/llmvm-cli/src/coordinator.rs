@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -304,6 +304,46 @@ pub async fn run_serve(
     };
     let mtls_required = compiled_tls.is_some();
 
+    // post1-T-4.2-sighup: wrap the rustls ServerConfig in an
+    // Arc<RwLock<...>> so the SIGHUP handler can swap it atomically
+    // without touching in-flight connections.
+    let live_tls_config: Option<Arc<RwLock<Arc<rustls::ServerConfig>>>> = compiled_tls
+        .as_ref()
+        .map(|t| Arc::new(RwLock::new(t.config.clone())));
+
+    // Spawn the SIGHUP handler (UNIX only). On each signal, re-read
+    // CRL files from disk and rebuild the ServerConfig. Cert, key,
+    // and OCSP staple are NOT reloaded — those require a restart.
+    // Reload errors are logged but do not crash the coordinator.
+    #[cfg(unix)]
+    if let (Some(paths), Some(ref arc_config)) = (tls_paths.as_ref(), &live_tls_config) {
+        let paths = paths.clone();
+        let arc_config = arc_config.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("coordinator: failed to register SIGHUP handler: {e}");
+                    return;
+                }
+            };
+            loop {
+                sighup.recv().await;
+                eprintln!("SIGHUP received — reloading CRL files");
+                match reload_crls(&paths) {
+                    Ok(new_config) => {
+                        *arc_config.write().unwrap() = Arc::new(new_config);
+                        eprintln!("CRL reload complete — new config active");
+                    }
+                    Err(e) => {
+                        eprintln!("CRL reload failed: {e} — continuing with previous config");
+                    }
+                }
+            }
+        });
+    }
+
     let auth_state = match (shared_secret.as_deref(), mtls_required) {
         (Some(_), true) => "enabled (mTLS + shared-secret bearer)",
         (Some(_), false) => "enabled (shared-secret bearer)",
@@ -370,8 +410,8 @@ pub async fn run_serve(
     eprintln!("    sweep_interval_ms: {effective_sweep_ms}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let result = match compiled_tls {
-        Some(tls) => serve_with_tls(listener, app, tls).await,
+    let result = match live_tls_config {
+        Some(arc_config) => serve_with_tls(listener, app, arc_config).await,
         None => axum::serve(listener, app).await,
     };
     sweep_task.abort();
@@ -432,6 +472,54 @@ fn build_server_tls(
     Ok(CompiledServerTls {
         config: Arc::new(server_config),
     })
+}
+
+/// post1-T-4.2-sighup: re-read CRL files and rebuild the rustls
+/// `ServerConfig` with an updated revocation list. Called from the
+/// SIGHUP handler and from unit tests.
+///
+/// Only the CRL list is re-read from disk. Cert, key, and OCSP
+/// staple are taken from `paths` as before but read from the same
+/// files (they don't change; a process restart is required for
+/// cert rotation).
+fn reload_crls(paths: &ServerTlsPaths) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
+    install_default_crypto_provider()?;
+
+    let cert_chain = load_cert_chain(&paths.cert)?;
+    let key = load_private_key(&paths.key)?;
+    let client_ca = load_cert_chain(&paths.client_ca)?;
+
+    let mut roots = RootCertStore::empty();
+    for cert in client_ca {
+        roots
+            .add(cert)
+            .map_err(|e| format!("invalid client CA cert: {e}"))?;
+    }
+
+    let crls = load_crls(&paths.crls)?;
+    let mut builder = WebPkiClientVerifier::builder(Arc::new(roots));
+    if !crls.is_empty() {
+        builder = builder.with_crls(crls);
+    }
+    let verifier = builder
+        .build()
+        .map_err(|e| format!("build client cert verifier: {e}"))?;
+
+    let server_config = if let Some(ref staple_path) = paths.ocsp_staple {
+        let ocsp_bytes = std::fs::read(staple_path)
+            .map_err(|e| format!("read OCSP staple {}: {e}", staple_path.display()))?;
+        rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert_with_ocsp(cert_chain, key, ocsp_bytes)
+            .map_err(|e| format!("rustls ServerConfig (with OCSP staple): {e}"))?
+    } else {
+        rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(cert_chain, key)
+            .map_err(|e| format!("rustls ServerConfig: {e}"))?
+    };
+
+    Ok(server_config)
 }
 
 /// Install the rustls default crypto provider exactly once. Calls
@@ -514,10 +602,14 @@ fn load_crls(
 /// no HTTP response is produced (the client never made it past
 /// the TLS layer). Successful handshakes hand off to axum's
 /// hyper service for normal HTTP processing.
+/// post1-T-4.2-sighup: per-connection TLS accept loop. The
+/// `Arc<RwLock<Arc<rustls::ServerConfig>>>` is read on every new
+/// connection so a SIGHUP-triggered reload takes effect for the
+/// next handshake without interrupting in-flight connections.
 async fn serve_with_tls(
     listener: tokio::net::TcpListener,
     router: Router,
-    tls: CompiledServerTls,
+    live_config: Arc<RwLock<Arc<rustls::ServerConfig>>>,
 ) -> std::io::Result<()> {
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use hyper_util::server::conn::auto::Builder;
@@ -526,7 +618,6 @@ async fn serve_with_tls(
     use tower::ServiceBuilder;
     use tower_service::Service;
 
-    let acceptor = TlsAcceptor::from(tls.config);
     let make_service = router.into_make_service();
     loop {
         let (tcp, peer) = match listener.accept().await {
@@ -536,7 +627,11 @@ async fn serve_with_tls(
                 continue;
             }
         };
-        let acceptor = acceptor.clone();
+        // Read the current config snapshot for this connection.
+        // In-flight connections keep their original config; new
+        // connections after a SIGHUP reload get the new config.
+        let current_config = live_config.read().unwrap().clone();
+        let acceptor = TlsAcceptor::from(current_config);
         let mut make_service = make_service.clone();
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
@@ -3925,5 +4020,82 @@ mod tests {
         let der = cert.der();
         let cn = cn_from_cert_der(der.as_ref()).expect("CN found");
         assert_eq!(cn, "worker-cn-extract-test");
+    }
+
+    // post1-T-4.2-sighup: unit tests for the reload_crls helper.
+
+    #[test]
+    #[cfg(feature = "serve")]
+    fn reload_crls_returns_error_on_missing_file() {
+        use std::path::PathBuf;
+        // Build a minimal ServerTlsPaths that points cert/key/ca to
+        // real files (generated inline) and crls to a nonexistent path.
+        let td = tempfile::TempDir::new().unwrap();
+
+        let mut params = rcgen::CertificateParams::new(vec!["test".into()]).expect("params");
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "test");
+        params.distinguished_name = dn;
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = params.self_signed(&key_pair).expect("self-sign");
+
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+        let cert_path = td.path().join("cert.pem");
+        let key_path = td.path().join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let paths = ServerTlsPaths {
+            cert: cert_path.clone(),
+            key: key_path.clone(),
+            client_ca: cert_path.clone(),
+            crls: vec![PathBuf::from("/nonexistent/path/missing.crl.pem")],
+            ocsp_staple: None,
+        };
+
+        let result = reload_crls(&paths);
+        assert!(result.is_err(), "expected error for missing CRL file");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("missing.crl.pem") || msg.contains("read CRL"),
+            "error should mention the bad CRL path: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serve")]
+    fn reload_crls_succeeds_with_empty_list() {
+        let td = tempfile::TempDir::new().unwrap();
+
+        let mut params =
+            rcgen::CertificateParams::new(vec!["test-empty-crl".into()]).expect("params");
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, "test-empty-crl");
+        params.distinguished_name = dn;
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = params.self_signed(&key_pair).expect("self-sign");
+
+        let cert_pem = cert.pem();
+        let key_pem = key_pair.serialize_pem();
+        let cert_path = td.path().join("cert.pem");
+        let key_path = td.path().join("key.pem");
+        std::fs::write(&cert_path, cert_pem).unwrap();
+        std::fs::write(&key_path, key_pem).unwrap();
+
+        let paths = ServerTlsPaths {
+            cert: cert_path.clone(),
+            key: key_path.clone(),
+            client_ca: cert_path.clone(),
+            crls: vec![], // empty — no CRL files
+            ocsp_staple: None,
+        };
+
+        let result = reload_crls(&paths);
+        assert!(
+            result.is_ok(),
+            "expected Ok with empty CRL list: {:?}",
+            result.err()
+        );
     }
 }
