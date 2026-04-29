@@ -101,6 +101,27 @@ pub fn parse_advertise_caps(raw: Option<&str>) -> Option<Vec<String>> {
     }
 }
 
+/// Parse `--advertise-cap-versions` value of the form
+/// `"llm.call=2.0,net.fetch=1.5"` into a `BTreeMap<String, String>`.
+/// Unknown or malformed pairs are silently dropped.
+pub fn parse_cap_versions(raw: Option<&str>) -> std::collections::BTreeMap<String, String> {
+    let Some(s) = raw else {
+        return std::collections::BTreeMap::new();
+    };
+    s.split(',')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            let k = k.trim().to_string();
+            let v = v.trim().to_string();
+            if k.is_empty() || v.is_empty() {
+                None
+            } else {
+                Some((k, v))
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 struct WorkerHandle {
     coord_url: String,
@@ -152,6 +173,7 @@ pub async fn run_worker(
     poll_timeout_ms: u64,
     shared_secret: Option<String>,
     advertised_capabilities: Option<Vec<String>>,
+    cap_versions: std::collections::BTreeMap<String, String>,
     tls_paths: Option<ClientTlsPaths>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let coord_urls = parse_coordinator_urls(&coordinator)?;
@@ -211,13 +233,18 @@ pub async fn run_worker(
                 worker_id: worker_id.clone(),
                 capability_set_hash: capability_set_hash.clone(),
                 advertised_capabilities: advertised_capabilities.as_ref().map(|names| {
-                    // Worker CLI advertises bare names (legacy form);
-                    // the coord normalizes to versioned on receipt
-                    // (post1-T-1.3). Versioned advertisement from the
-                    // CLI is a future feature.
                     names
                         .iter()
-                        .map(|n| CapabilityAdvertisement::Legacy(n.clone()))
+                        .map(|n| {
+                            if let Some(ver) = cap_versions.get(n) {
+                                CapabilityAdvertisement::Versioned {
+                                    name: n.clone(),
+                                    version: ver.clone(),
+                                }
+                            } else {
+                                CapabilityAdvertisement::Legacy(n.clone())
+                            }
+                        })
                         .collect()
                 }),
             });
@@ -667,5 +694,28 @@ mod tests {
                 "fs.read".into()
             ])
         );
+    }
+
+    // post1/scheduler-registry-rolling — cap version parsing.
+
+    #[test]
+    fn parse_cap_versions_empty_returns_empty_map() {
+        assert!(parse_cap_versions(None).is_empty());
+        assert!(parse_cap_versions(Some("")).is_empty());
+    }
+
+    #[test]
+    fn parse_cap_versions_single() {
+        let m = parse_cap_versions(Some("llm.call=2.0"));
+        assert_eq!(m.get("llm.call").map(|s| s.as_str()), Some("2.0"));
+        assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn parse_cap_versions_multiple() {
+        let m = parse_cap_versions(Some("llm.call=2.0,net.fetch=1.5"));
+        assert_eq!(m.get("llm.call").map(|s| s.as_str()), Some("2.0"));
+        assert_eq!(m.get("net.fetch").map(|s| s.as_str()), Some("1.5"));
+        assert_eq!(m.len(), 2);
     }
 }
