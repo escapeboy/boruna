@@ -185,12 +185,17 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Parse a `--bundle-storage <uri>` value into a constructed
-/// [`BundleStorage`] adapter. Only the `local:` scheme is
-/// supported in this PR; remote schemes return
-/// `StorageError::InvalidUri` until the relevant Wave 3 adapter
-/// lands.
+/// [`BundleStorage`] adapter.
 ///
-/// `local:<root>` constructs a `LocalFs` rooted at `<root>`.
+/// Recognized schemes:
+/// - `local:<root>` — always available; constructs a [`LocalFs`].
+/// - `s3://<bucket>[/<prefix>]` — requires the `s3` feature
+///   (post1-T-3.1). Constructs an
+///   [`crate::audit::storage_s3::S3Bucket`] backed by `object_store`.
+/// - `gs://<bucket>[/<prefix>]` and `azblob://<container>[/<prefix>]`
+///   — reserved for T-3.2 / T-3.3; rejected with
+///   [`StorageError::InvalidUri`] until those adapters ship.
+///
 /// Empty / `None` URI returns `None` so callers can fall back to
 /// their existing local-only path.
 #[doc(hidden)]
@@ -208,13 +213,32 @@ pub fn from_uri(uri: Option<&str>) -> Result<Option<Box<dyn BundleStorage>>, Sto
         }
         return Ok(Some(Box::new(LocalFs::new(rest))));
     }
-    // Reserve the remote schemes so the error message is helpful
-    // when an operator points a 1.x cluster at a not-yet-shipped
-    // adapter.
-    if uri.starts_with("s3://") || uri.starts_with("gs://") || uri.starts_with("azblob://") {
+    #[cfg(feature = "s3")]
+    if uri.starts_with("s3://") {
+        let bucket = crate::audit::storage_s3::S3Bucket::from_uri(uri)?;
+        return Ok(Some(Box::new(bucket)));
+    }
+    // Reserve schemes for adapters not (yet) available in this build.
+    // When the `s3` feature is OFF, `s3://` falls through here too —
+    // the error message tells operators to enable the feature.
+    #[cfg(not(feature = "s3"))]
+    if uri.starts_with("s3://") {
+        return Err(StorageError::InvalidUri(format!(
+            "{uri} requires the `s3` feature; rebuild with \
+             `--features boruna-orchestrator/s3` (or \
+             `--features boruna-cli/s3` for the CLI binary)"
+        )));
+    }
+    if uri.starts_with("gs://") || uri.starts_with("azblob://") {
         return Err(StorageError::InvalidUri(format!(
             "{uri} is reserved for a future remote-storage adapter; \
-             this Boruna build only supports local:<path>"
+             this Boruna build only supports local:<path>\
+             {extra}",
+            extra = if cfg!(feature = "s3") {
+                " and s3://"
+            } else {
+                ""
+            }
         )));
     }
     Err(StorageError::InvalidUri(uri.to_string()))
@@ -329,8 +353,30 @@ mod tests {
 
     #[test]
     fn from_uri_remote_schemes_reserve_clear_error() {
-        for uri in ["s3://b/p", "gs://b/p", "azblob://c/p"] {
+        // gs:// / azblob:// are still unimplemented in this build
+        // regardless of features.
+        for uri in ["gs://b/p", "azblob://c/p"] {
             assert_invalid_uri(from_uri(Some(uri)));
+        }
+    }
+
+    /// When the `s3` feature is OFF, `s3://` URIs must reject with
+    /// `InvalidUri` whose message tells the operator how to enable
+    /// the feature. This is a critical UX guarantee — silently
+    /// shipping a binary that ignores `--bundle-storage s3://...`
+    /// would produce an audit gap.
+    #[cfg(not(feature = "s3"))]
+    #[test]
+    fn from_uri_s3_without_feature_rejects_with_actionable_message() {
+        match from_uri(Some("s3://bucket/prefix")) {
+            Err(StorageError::InvalidUri(msg)) => {
+                assert!(
+                    msg.contains("requires the `s3` feature"),
+                    "expected actionable message, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidUri, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
         }
     }
 

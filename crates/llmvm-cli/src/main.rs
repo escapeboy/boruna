@@ -721,17 +721,20 @@ enum WorkflowCommand {
         /// full-source coverage.
         #[arg(long, value_name = "HEX")]
         expect_workflow_hash: Option<String>,
-        /// post1-T-2.3: copy the finalized evidence bundle to a
-        /// pluggable storage backend after the local write
+        /// post1-T-2.3 / T-3.1: copy the finalized evidence bundle
+        /// to a pluggable storage backend after the local write
         /// succeeds. URI scheme dispatches to the adapter:
         ///   `local:<root>` — copy the bundle into `<root>/<run-id>/`.
-        /// Remote schemes (`s3://`, `gs://`, `azblob://`) are
-        /// reserved for future Wave 3 adapters and currently reject
-        /// at parse time. Falls back to `BORUNA_BUNDLE_STORAGE`
-        /// env var. When neither is set, no copy is made (the
-        /// pre-T-2.3 behavior). A copy failure is logged but does
-        /// not fail the workflow — the local bundle is the
-        /// authoritative record.
+        ///   `s3://<bucket>[/<prefix>]` — upload to S3 / S3-compatible
+        ///   storage (MinIO, R2, etc.). Requires the `s3` build
+        ///   feature; auth via standard `AWS_*` env vars. See
+        ///   `docs/guides/bundle-storage-s3.md`.
+        /// `gs://` / `azblob://` schemes are reserved for T-3.2 /
+        /// T-3.3 and currently reject at parse time. Falls back to
+        /// `BORUNA_BUNDLE_STORAGE` env var. When neither is set, no
+        /// copy is made (the pre-T-2.3 behavior). A copy failure is
+        /// logged but does not fail the workflow — the local bundle
+        /// is the authoritative record.
         #[arg(long, value_name = "URI", env = "BORUNA_BUNDLE_STORAGE")]
         bundle_storage: Option<String>,
     },

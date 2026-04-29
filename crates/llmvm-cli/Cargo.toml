@@ -30,6 +30,11 @@ telemetry = ["boruna-vm/telemetry", "dep:tokio"]
 # store. On by default (matching boruna-orchestrator). Build with
 # `--no-default-features` to drop SQLite from the binary.
 persist-sqlite = ["boruna-orchestrator/persist-sqlite"]
+# post1-T-3.1: forwards to boruna-orchestrator's `s3` feature so
+# `--bundle-storage s3://...` constructs a real adapter instead of
+# rejecting at parse time. Off by default — pulls in object_store +
+# tokio + reqwest. See docs/guides/bundle-storage-s3.md.
+s3 = ["boruna-orchestrator/s3"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }
