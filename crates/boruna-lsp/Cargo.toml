@@ -1,0 +1,16 @@
+[package]
+name = "boruna-lsp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "boruna-lsp"
+path = "src/main.rs"
+
+[dependencies]
+boruna-compiler = { path = "../llmc" }
+boruna-tooling = { path = "../../tooling" }
+tower-lsp = "0.20"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
