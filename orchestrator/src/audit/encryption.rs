@@ -227,6 +227,49 @@ impl Envelope {
             .expect("AES-GCM encrypt should not fail on bounded input")
     }
 
+    /// Re-wrap the DEK held by this envelope under a new KEK + new
+    /// `kek_id` (post1-T-2.4 KEK rotation).
+    ///
+    /// The DEK itself is unchanged, so per-file AES-GCM tags inside
+    /// the bundle remain valid — only the manifest's `wrapped_dek`,
+    /// `wrapped_dek_nonce`, and `kek_id` fields change. A fresh
+    /// random `wrap_nonce` is used for the new wrap.
+    ///
+    /// Returns a new envelope with the same DEK and a new
+    /// `EncryptionInfo`. The `files` list is preserved verbatim.
+    pub fn rewrap(
+        &self,
+        new_kek: &[u8; KEY_LEN],
+        new_kek_id: &str,
+    ) -> Result<Envelope, EncryptionError> {
+        let mut wrap_nonce = [0u8; NONCE_LEN];
+        OsRng.fill_bytes(&mut wrap_nonce);
+
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(new_kek));
+        let wrapped = cipher
+            .encrypt(
+                Nonce::from_slice(&wrap_nonce),
+                Payload {
+                    msg: &self.dek,
+                    aad: new_kek_id.as_bytes(),
+                },
+            )
+            .map_err(|_| EncryptionError::CipherTagInvalid {
+                file: "<dek-rewrap>".to_string(),
+            })?;
+
+        Ok(Envelope {
+            dek: self.dek,
+            info: EncryptionInfo {
+                algorithm: ALGORITHM.to_string(),
+                kek_id: new_kek_id.to_string(),
+                wrapped_dek: B64.encode(&wrapped),
+                wrapped_dek_nonce: B64.encode(wrap_nonce),
+                files: self.info.files.clone(),
+            },
+        })
+    }
+
     /// Decrypt `ciphertext` for the given filename. Tag failures →
     /// `CipherTagInvalid`.
     pub fn decrypt_file(

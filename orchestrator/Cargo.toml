@@ -42,6 +42,11 @@ boruna-bytecode = { path = "../crates/llmbc" }
 # orchestrator binary stays statically linked (per ADR 001's musl
 # requirement). Confirmed by the probe in the ADR sprint.
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+# post1-T-2.4: parallel KEK rotation across many bundles. Defaults
+# to a work-stealing thread pool sized to num_cpus; the rotation
+# CLI bounds it via `--parallelism N`. Default features pulled in
+# (the crate has no system deps).
+rayon = "1"
 
 # macOS-only: libc for fcntl(F_FULLFSYNC). Plain `fsync(2)` on Darwin
 # does NOT flush the drive's write cache to media — only F_FULLFSYNC

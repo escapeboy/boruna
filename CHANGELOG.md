@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `boruna evidence rotate-kek` (post1-T-2.4) re-wraps the DEK of one
+  or more encrypted evidence bundles under a new KEK. Operations are
+  manifest-only — per-file ciphertext stays valid because the DEK
+  itself is unchanged. Supports single-bundle and batch (directory)
+  modes; batch mode runs in parallel via rayon, bounded by
+  `--parallelism N` (default `min(8, num_cpus)`). `--dry-run`
+  validates without writing. `--kek-id-from <id>` defends against
+  accidental double-rotation in mixed-state batches. New
+  `Envelope::rewrap` API on the encryption module exposes the same
+  primitive to library consumers. See
+  `docs/guides/kek-rotation.md`.
 - Pluggable evidence-bundle storage trait `BundleStorage` and a
   `LocalFs` adapter (post1-T-2.3). `boruna workflow run --record`
   now accepts `--bundle-storage <uri>` (or `BORUNA_BUNDLE_STORAGE`
