@@ -6,6 +6,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-04-29
+
 ### Stable
 
 - `std-ui` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-ui.md`; bumps require a 1.x deprecation notice per LTS contract.
@@ -2408,7 +2410,8 @@ Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna
   `std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`, `std-notifications`, `std-testing`
 - 557+ tests across 9 crates
 
-[Unreleased]: https://github.com/escapeboy/boruna/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/escapeboy/boruna/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/escapeboy/boruna/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/escapeboy/boruna/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/escapeboy/boruna/releases/tag/v1.0.0
 [0.5.0]: https://github.com/escapeboy/boruna/releases/tag/v0.5.0

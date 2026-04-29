@@ -4,9 +4,9 @@ This roadmap describes what Boruna is working toward. It is realistic, not aspir
 
 Last refreshed: 2026-04-29 (after the v1.1.0 release).
 
-## Current: 1.1.0 — SHIPPED (2026-04-29)
+## Current: 1.2.0 — SHIPPED (2026-04-29)
 
-Workspace version is `1.1.0`. First feature minor on the 1.x LTS line. See the [1.1.0 section](#110--shipped-2026-04-29) for details.
+Workspace version is `1.2.0`. Second feature minor on the 1.x LTS line. All 11 original `std-*` packages graduated to 1.0-stable; improved error messages and lang repair; compliance templates, model eval, and LSP MVP landed as future-track work. See the [CHANGELOG](../CHANGELOG.md#120--2026-04-29) for the full list.
 
 ## Previous: 0.3.0
 
@@ -123,7 +123,7 @@ Milestone: the stable API surface is locked. 0.5+ programs compile and run uncha
 - [x] All schemas (language, DAG, evidence, bytecode) finalized and documented
 - [x] **Evidence bundle encryption** — at-rest encryption for bundles containing sensitive data (sprint `W6-B`, AES-256-GCM envelope encryption; see `docs/design-bundle-encryption.md`)
 
-## 1.1.0 — SHIPPED (2026-04-29)
+## Previous: 1.1.0 — SHIPPED (2026-04-29)
 
 First minor release on the 1.x LTS line. All changes are additive — no breaking changes.
 
