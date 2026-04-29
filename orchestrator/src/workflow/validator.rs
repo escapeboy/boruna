@@ -310,6 +310,7 @@ mod tests {
             timeout_ms: None,
             retry: None,
             budget: None,
+            required_capability_versions: Default::default(),
         }
     }
 
@@ -591,6 +592,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 ),
                 ("store".into(), simple_source_step("store.ax")),

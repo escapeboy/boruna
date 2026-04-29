@@ -4885,6 +4885,7 @@ mod tests {
                     timeout_ms: None,
                     retry: None,
                     budget: None,
+                    required_capability_versions: Default::default(),
                 },
             );
 
@@ -5008,6 +5009,7 @@ mod tests {
                     timeout_ms: None,
                     retry: None,
                     budget: None,
+                    required_capability_versions: Default::default(),
                 },
             );
         }
@@ -5102,6 +5104,7 @@ mod tests {
                     timeout_ms: None,
                     retry: None,
                     budget: None,
+                    required_capability_versions: Default::default(),
                 },
             );
         }
@@ -5464,6 +5467,7 @@ mod tests {
                 timeout_ms: None,
                 retry,
                 budget: None,
+                required_capability_versions: Default::default(),
             },
         );
         let def = WorkflowDef {
@@ -5787,6 +5791,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             },
         );
         let def = WorkflowDef {
@@ -6089,6 +6094,7 @@ mod tests {
                     timeout_ms: None,
                     retry: None,
                     budget: None,
+                    required_capability_versions: Default::default(),
                 },
             )]),
             edges: vec![],
@@ -6134,6 +6140,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 ),
                 (
@@ -6150,6 +6157,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 ),
                 (
@@ -6165,6 +6173,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 ),
             ]),
@@ -6672,6 +6681,7 @@ mod tests {
                     retry_on: vec![],
                 }),
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             bad.inputs.clear();
             let def = WorkflowDef {
@@ -7216,6 +7226,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 )]),
                 edges: vec![],
@@ -7365,6 +7376,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let def = WorkflowDef {
                 schema_version: 1,
@@ -7473,6 +7485,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let def = WorkflowDef {
                 schema_version: 1,
@@ -7575,6 +7588,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             bad.inputs.insert("missing".into(), "ghost.result".into());
             // We need to bypass workflow validation (which would reject
@@ -7607,6 +7621,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             // Add a third step at level 1, sibling of bad_input, that
             // shares the same input-failure pattern OR depends on
@@ -7624,6 +7639,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             sibling.inputs.clear();
 
@@ -7709,6 +7725,7 @@ mod tests {
                     retry_on: vec![],
                 }),
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let def = WorkflowDef {
                 schema_version: 1,
@@ -7780,6 +7797,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -7796,6 +7814,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -7811,6 +7830,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                 ]),
@@ -8730,6 +8750,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let mut downstream = StepDef {
                 kind: StepKind::Source {
@@ -8742,6 +8763,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             downstream
                 .inputs
@@ -8839,6 +8861,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let mut downstream = StepDef {
                 kind: StepKind::Source {
@@ -8851,6 +8874,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             // Declare "msg" but the .ax step asks for "missing" —
             // pre-validation passes, gateway catches the mismatch.
@@ -8924,6 +8948,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             let mut downstream = StepDef {
                 kind: StepKind::Source {
@@ -8936,6 +8961,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             downstream
                 .inputs
@@ -9042,6 +9068,7 @@ mod tests {
                 timeout_ms: None,
                 retry: None,
                 budget: None,
+                required_capability_versions: Default::default(),
             };
             after.inputs.insert("event".into(), "webhook.result".into());
             let def = WorkflowDef {
@@ -9063,6 +9090,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9078,6 +9106,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     ("after".into(), after),
@@ -9607,6 +9636,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9622,6 +9652,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9637,6 +9668,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9655,6 +9687,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                 ]),
@@ -9961,6 +9994,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9977,6 +10011,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -9990,6 +10025,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                 ]),
@@ -10200,6 +10236,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -10216,6 +10253,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -10232,6 +10270,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                 ]),
@@ -10813,6 +10852,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                     (
@@ -10828,6 +10868,7 @@ mod tests {
                             timeout_ms: None,
                             retry: None,
                             budget: None,
+                            required_capability_versions: Default::default(),
                         },
                     ),
                 ]),
@@ -10907,6 +10948,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 )]),
                 edges: vec![],
@@ -10977,6 +11019,7 @@ mod tests {
                         timeout_ms: None,
                         retry: None,
                         budget: None,
+                        required_capability_versions: Default::default(),
                     },
                 )]),
                 edges: vec![],

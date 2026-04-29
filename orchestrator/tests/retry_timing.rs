@@ -46,6 +46,7 @@ fn retry_actually_sleeps_between_attempts() {
             retry_on: vec![],
         }),
         budget: None,
+        required_capability_versions: Default::default(),
     };
     let def = WorkflowDef {
         schema_version: 1,
