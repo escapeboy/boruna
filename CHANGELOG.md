@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Web evidence bundle inspector** (post1-T-4.4). New `boruna evidence serve
+  <bundle-dir> [--port <port>]` subcommand (requires `serve` feature) starts a
+  local axum HTTP server on port 4444 and opens the browser automatically.
+  Pages: `/bundle` (overview + verification status + file checksums),
+  `/audit` (hash-chained event timeline), `/outputs` (per-step result JSON
+  accordion), `/api/bundle` (raw JSON dump). Bundle data is loaded once at
+  startup; verification runs via the existing `verify_bundle()` path and
+  surfaces PASS/FAIL inline. Works offline — no external CDN dependencies.
+
 - **BYOH reference handler library** (post1-T-1.2). Four new
   reference `CapabilityHandler` implementations under
   `examples/llm_handlers/` joining the existing OpenAI example:
