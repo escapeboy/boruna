@@ -2023,10 +2023,7 @@ mod tests {
 
     #[test]
     fn test_take_last_cap_events_clears_on_drain() {
-        let module = simple_module(
-            vec![Op::CapCall(5, 0), Op::Ret],
-            vec![],
-        );
+        let module = simple_module(vec![Op::CapCall(5, 0), Op::Ret], vec![]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
         vm.run().expect("should succeed");
@@ -2039,10 +2036,7 @@ mod tests {
 
     #[test]
     fn test_take_last_cap_events_empty_for_pure_program() {
-        let module = simple_module(
-            vec![Op::PushConst(0), Op::Ret],
-            vec![Value::Int(42)],
-        );
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(42)]);
         let gateway = CapabilityGateway::new(Policy::allow_all());
         let mut vm = Vm::new(module, gateway);
         vm.run().expect("should succeed");

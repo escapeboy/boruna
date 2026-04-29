@@ -1142,7 +1142,11 @@ fn main() -> Int {
             }),
         );
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["success"], json!(true), "program must succeed: {out}");
+        assert_eq!(
+            parsed["success"],
+            json!(true),
+            "program must succeed: {out}"
+        );
 
         let msgs = messages.lock().unwrap();
         // Some notifications may fire; all must have message = None (no caps called).
