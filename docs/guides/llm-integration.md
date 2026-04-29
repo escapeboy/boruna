@@ -103,18 +103,25 @@ impl OpenAiHandler {
 }
 ```
 
-A complete runnable example lives in `examples/llm_handlers/openai/`. The example is built with `cargo build --example openai-handler --features http` and shows how to wire the handler into a `WorkflowRunner` invocation.
+A complete reference handler lives in `examples/llm_handlers/openai/`. The directory contains `handler.rs` (a self-contained module you can copy into your integrator crate) and a README documenting the per-provider gotchas.
 
 ## Provider variants
 
-The same pattern works for any HTTP-API LLM provider:
+Reference handlers ship for the most common providers (post1-T-1.2). Each is a copy-and-tweak template, **not** a compiled crate Boruna pulls in:
 
-- **Anthropic**: change the URL to `https://api.anthropic.com/v1/messages`, the header to `x-api-key`, and the response path to `content[0].text`.
-- **vLLM / OpenAI-compatible self-hosted**: change just the URL.
-- **Ollama (local)**: URL `http://localhost:11434/api/generate`, no auth, response path `response`.
-- **Custom router**: whatever your routing layer expects.
+| Provider | Use when | Path |
+|---|---|---|
+| OpenAI | api.openai.com | [`examples/llm_handlers/openai/`](../../examples/llm_handlers/openai/) |
+| Anthropic | api.anthropic.com | [`examples/llm_handlers/anthropic/`](../../examples/llm_handlers/anthropic/) |
+| Ollama | local development, air-gapped CI | [`examples/llm_handlers/ollama/`](../../examples/llm_handlers/ollama/) |
+| vLLM (and OpenAI-compatible proxies) | self-hosted vLLM, OpenRouter, Together, Groq, LiteLLM | [`examples/llm_handlers/vllm/`](../../examples/llm_handlers/vllm/) |
+| AWS Bedrock | Bedrock-hosted Claude / Llama / Titan / Mistral / Cohere | [`examples/llm_handlers/bedrock/`](../../examples/llm_handlers/bedrock/) |
 
-For multi-provider routing, your handler can switch on a `model` argument (passed as `args[1]`) or on a thread-local context.
+The umbrella [`examples/llm_handlers/README.md`](../../examples/llm_handlers/README.md) gives the cross-provider overview and links each handler's gotchas (auth header, response path, determinism options).
+
+A documented `providers.toml.example` schema and a [`router_setup.rs`](../../examples/llm_handlers/router_setup.rs) reference parser show one convention for declaring your provider lineup in config rather than code. The format is a starting point — Boruna does not parse it.
+
+For multi-provider routing, use the built-in `LlmRouterHandler` (covered next), or have your handler switch on a `model` argument (passed as `args[1]`) or on a thread-local context.
 
 ### `LlmRouterHandler` — built-in multi-provider dispatch (sprint `0.4-S13`)
 

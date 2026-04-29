@@ -6,6 +6,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **BYOH reference handler library** (post1-T-1.2). Four new
+  reference `CapabilityHandler` implementations under
+  `examples/llm_handlers/` joining the existing OpenAI example:
+  Anthropic (Messages API), Ollama (local-LLM, deterministic-with-seed),
+  vLLM-and-OpenAI-compatible (one handler covers vLLM/OpenRouter/
+  Together/Groq/LiteLLM), and AWS Bedrock (skeleton using the AWS
+  SDK because hand-rolling SigV4 adds nothing illustrative). Each
+  is a self-contained ~80–120-LOC copy-and-tweak template with a
+  README documenting auth, response shape, determinism options,
+  and what the reference deliberately omits (multi-provider
+  routing, streaming, cost accounting, etc.). New umbrella
+  `examples/llm_handlers/README.md` indexes the library and
+  cross-references the built-in `LlmRouterHandler` (sprint
+  0.4-S13). New `providers.toml.example` documents a config-schema
+  *convention* integrators can adopt for declarative router setup
+  (Boruna does not parse this file); new `router_setup.rs`
+  shows a reference parser that turns the toml into an
+  `LlmRouterHandler`.
+
+  This expansion is faithful to the BYOH design contract shipped
+  in 0.3-S8: Boruna does not ship default handlers in core. Each
+  reference is integrator-copyable code, not a Cargo dep.
+  Auditing the original T-1.2 plan ("ship a `boruna-effect-providers`
+  adapter crate") against the shipped BYOH guide flagged the
+  premise conflict before any code was written; the reframed
+  scope delivers the spirit of "more provider on-ramps" without
+  violating the contract.
+
 ### Changed
 
 - **`BundleStorage` trait promoted to public 1.x API surface.**
