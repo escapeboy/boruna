@@ -7,11 +7,11 @@
 //! (`azure.*` instead of `s3.*` / `gcs.*`).
 //!
 //! With T-3.3 landing, all three remote schemes (`s3://`, `gs://`,
-//! `azblob://`) ship — the `BundleStorage` trait can graduate from
-//! `#[doc(hidden)]` to `pub` in a follow-up doc PR. The three
-//! adapter files remain separate intentionally; YAGNI says wait
-//! until a fourth provider (or an actual abstraction need)
-//! before extracting a generic `storage_object_store.rs` module.
+//! `azblob://`) ship and the [`BundleStorage`] trait was promoted
+//! out of `#[doc(hidden)]` to public 1.x API. The three adapter
+//! files remain separate intentionally; YAGNI says wait until a
+//! fourth provider (or an actual abstraction need) before
+//! extracting a generic `storage_object_store.rs` module.
 //!
 //! ## URI shape
 //!
