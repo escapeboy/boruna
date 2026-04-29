@@ -55,6 +55,51 @@ mod tests {
         assert_eq!(ints.len(), 2);
     }
 
+    // --- Trivia Tests ---
+
+    #[test]
+    fn test_lex_collects_line_comment_as_trivia() {
+        let tokens = lexer::lex("// comment\nlet x = 1").unwrap();
+        let let_tok = tokens
+            .iter()
+            .find(|t| t.kind == lexer::TokenKind::Let)
+            .expect("no let token");
+        assert_eq!(
+            let_tok.leading_trivia,
+            vec![lexer::Trivia::LineComment("// comment".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_lex_comment_at_end_of_file_is_not_lost() {
+        let output = lexer::lex_full("fn main() -> Int { 42 }\n// trailing").unwrap();
+        assert!(
+            output
+                .trailing_trivia
+                .contains(&lexer::Trivia::LineComment("// trailing".to_string())),
+            "trailing comment was lost; got: {:?}",
+            output.trailing_trivia
+        );
+    }
+
+    #[test]
+    fn test_lex_no_comment_no_trivia() {
+        let tokens = lexer::lex("fn main() -> Int { 0 }").unwrap();
+        for tok in &tokens {
+            assert!(
+                tok.leading_trivia.is_empty(),
+                "unexpected trivia on {:?}",
+                tok.kind
+            );
+        }
+    }
+
+    #[test]
+    fn test_compiler_still_compiles_source_with_comments() {
+        let value = run_source("// hello\nfn main() -> Int { 42 }");
+        assert_eq!(value, boruna_bytecode::Value::Int(42));
+    }
+
     // --- Parser Tests ---
 
     #[test]
