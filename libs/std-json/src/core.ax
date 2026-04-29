@@ -1,0 +1,65 @@
+// std.json — JSON-flavoured data extraction and manipulation utilities
+// Pure-functional. No capabilities required. No side effects.
+// Note: json_escape is an identity for now; the language lacks char iteration.
+// Note: json_int_field uses int_to_string stub; real int formatting requires compiler support.
+
+type JsonResult { ok: Bool, value: String, error: String }
+
+fn json_ok(value: String) -> JsonResult {
+    JsonResult { ok: true, value: value, error: "" }
+}
+
+fn json_err(error: String) -> JsonResult {
+    JsonResult { ok: false, value: "", error: error }
+}
+
+fn json_string_field(key: String, value: String) -> String {
+    "\"" ++ key ++ "\": \"" ++ value ++ "\""
+}
+
+fn json_int_field(key: String, value: Int) -> String {
+    "\"" ++ key ++ "\": " ++ int_to_string(value)
+}
+
+fn json_bool_field(key: String, value: Bool) -> String {
+    if value {
+        "\"" ++ key ++ "\": true"
+    } else {
+        "\"" ++ key ++ "\": false"
+    }
+}
+
+fn json_null_field(key: String) -> String {
+    "\"" ++ key ++ "\": null"
+}
+
+fn json_object(fields: String) -> String {
+    "{" ++ fields ++ "}"
+}
+
+fn json_array_wrap(items: String) -> String {
+    "[" ++ items ++ "]"
+}
+
+fn json_escape(s: String) -> String {
+    // Identity: char-level escaping requires iteration not yet in the language.
+    s
+}
+
+fn int_to_string(n: Int) -> String {
+    // Built-in stub: returns empty string; real conversion requires compiler support.
+    ""
+}
+
+fn main() -> Int {
+    let r_ok: JsonResult = json_ok("hello")
+    let r_err: JsonResult = json_err("not found")
+    let sf: String = json_string_field("name", "Alice")
+    let nf: String = json_int_field("age", 30)
+    let bf: String = json_bool_field("active", true)
+    let nf2: String = json_null_field("middle_name")
+    let obj: String = json_object(sf)
+    let arr: String = json_array_wrap(sf)
+    let escaped: String = json_escape("hello world")
+    0
+}
