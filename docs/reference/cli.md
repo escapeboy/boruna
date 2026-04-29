@@ -248,6 +248,24 @@ boruna evidence inspect .boruna/runs/20260315-143022-abc4d/ --json
 boruna evidence verify .boruna/runs/20260315-143022-abc4d/
 ```
 
+### evidence diff
+
+Compare two evidence bundles.
+
+```
+boruna evidence diff <bundle-a> <bundle-b> [--json]
+```
+
+Reports differences in workflow metadata, step outputs, audit event counts, and
+verification status. Use `--json` for machine-readable output.
+
+Examples:
+
+```bash
+boruna evidence diff .boruna/runs/run-baseline/ .boruna/runs/run-rerun/
+boruna evidence diff baseline/ rerun/ --json
+```
+
 ---
 
 ## `boruna template`
