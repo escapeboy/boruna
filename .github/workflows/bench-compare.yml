@@ -106,26 +106,75 @@ jobs:
 
       - name: Post sticky comment
         env:
+          # All untrusted PR-context values are funneled through env
+          # vars (per GitHub workflow-injection guidance). The
+          # existing PR number + repo slug are GitHub-controlled
+          # numerics/identifiers, not attacker-controllable strings.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Body lives on disk; never interpolated through shell.
+          # Use curl + jq instead of `gh` — the self-hosted runner
+          # does not have the `gh` CLI installed (operator follow-up
+          # tracked in post-1.0-execution-status memory). curl + jq
+          # are standard on any Linux runner. The body lives on
+          # disk and is JSON-encoded by jq -Rs; never interpolated
+          # through shell.
           MARKER='<!-- bench-compare:sticky -->'
           {
             printf '%s\n' "$MARKER"
             cat comment.md
           } > body.md
-          existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
+
+          api() {
+            # Wrapper: standard GitHub REST headers + bearer auth +
+            # fail-on-error. $1 = method, $2 = path-after-/repos.
+            # Optional stdin = JSON body (for non-GET).
+            local method="$1"
+            local path="$2"
+            local url="https://api.github.com/${path}"
+            if [ "$method" = GET ]; then
+              curl -fsSL \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$url"
+            else
+              curl -fsSL -X "$method" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                --data-binary @- \
+                "$url"
+            fi
+          }
+
+          # Find the existing sticky comment (if any) by marker
+          # prefix. --arg passes MARKER as a jq variable; never
+          # shell-interpolated into the jq script.
+          existing=$(api GET "repos/$REPO/issues/$PR_NUMBER/comments" \
+            | jq -r --arg marker "$MARKER" \
+                '.[] | select(.body | startswith($marker)) | .id' \
             | head -1)
+
+          # Build a {"body": "..."} JSON payload from body.md.
+          # jq -Rs reads the file as one raw string and properly
+          # escapes newlines, quotes, and any other JSON-significant
+          # chars — safer than shell-quoting comment.md.
+          payload=$(jq -Rs '{body: .}' < body.md)
+
           if [ -n "$existing" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$existing" \
-              -F body=@body.md > /dev/null
+            # `existing` is a numeric comment ID returned by GitHub —
+            # not an attacker-controllable string. Safe to interp.
+            printf '%s' "$payload" \
+              | api PATCH "repos/$REPO/issues/comments/$existing" \
+              > /dev/null
           else
-            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" \
-              -F body=@body.md > /dev/null
+            printf '%s' "$payload" \
+              | api POST "repos/$REPO/issues/$PR_NUMBER/comments" \
+              > /dev/null
           fi
 
       - name: Fail on regression
