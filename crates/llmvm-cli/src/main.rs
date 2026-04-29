@@ -946,6 +946,38 @@ enum EvidenceCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Rotate the KEK on one or more encrypted evidence bundles
+    /// (post1-T-2.4). Unwraps the DEK with the old KEK, re-wraps it
+    /// under the new KEK, and atomically rewrites each bundle's
+    /// `manifest.json`. Per-file ciphertext is unchanged because
+    /// the DEK itself does not change.
+    RotateKek {
+        /// Bundle directory (single bundle) OR a directory whose
+        /// immediate subdirectories are bundles (batch mode).
+        target: PathBuf,
+        /// Old KEK as 64 hex chars. Required.
+        #[arg(long, value_name = "HEX")]
+        old_kek: String,
+        /// New KEK as 64 hex chars. Required.
+        #[arg(long, value_name = "HEX")]
+        new_kek: String,
+        /// Refuse to rotate any bundle whose current `kek_id` does
+        /// not equal this value. Use to defend against accidental
+        /// double-rotation in mixed-state batches.
+        #[arg(long, value_name = "ID")]
+        kek_id_from: Option<String>,
+        /// `kek_id` to write into the rotated manifest. Defaults
+        /// to `"default"` matching `--encrypt-bundle`.
+        #[arg(long, value_name = "ID", default_value = "default")]
+        kek_id_to: String,
+        /// Print planned actions but do not modify any bundle.
+        #[arg(long)]
+        dry_run: bool,
+        /// Maximum bundles processed in parallel in batch mode.
+        /// Default `min(8, num_cpus)`.
+        #[arg(long, value_name = "N")]
+        parallelism: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3661,8 +3693,128 @@ fn run_evidence(
                 return Err("`evidence gc-blobs` requires the `persist-sqlite` feature".into());
             }
         }
+        EvidenceCommand::RotateKek {
+            target,
+            old_kek,
+            new_kek,
+            kek_id_from,
+            kek_id_to,
+            dry_run,
+            parallelism,
+        } => {
+            run_evidence_rotate_kek(
+                target,
+                &old_kek,
+                &new_kek,
+                kek_id_from,
+                kek_id_to,
+                dry_run,
+                parallelism,
+            )?;
+        }
     }
     Ok(())
+}
+
+/// `boruna evidence rotate-kek` (post1-T-2.4). Dispatches to
+/// single-bundle or batch (directory of bundles) rotation based on
+/// what `target` points at.
+fn run_evidence_rotate_kek(
+    target: PathBuf,
+    old_kek_hex: &str,
+    new_kek_hex: &str,
+    kek_id_from: Option<String>,
+    kek_id_to: String,
+    dry_run: bool,
+    parallelism: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::audit::encryption::parse_kek_hex;
+    use boruna_orchestrator::audit::rotate::{
+        rotate_bundle, rotate_dir, RotateOptions, RotationOutcome,
+    };
+
+    let old_kek = parse_kek_hex(old_kek_hex).map_err(|e| format!("--old-kek: {e}"))?;
+    let new_kek = parse_kek_hex(new_kek_hex).map_err(|e| format!("--new-kek: {e}"))?;
+
+    let opts = RotateOptions {
+        old_kek,
+        new_kek,
+        kek_id_from,
+        kek_id_to,
+        dry_run,
+    };
+
+    let manifest_at_target = target.join("manifest.json");
+    let single_bundle = manifest_at_target.is_file();
+
+    if single_bundle {
+        let outcome = rotate_bundle(&target, &opts)
+            .map_err(|e| format!("rotate {}: {e}", target.display()))?;
+        report_outcome(&target, &outcome);
+        return Ok(());
+    }
+
+    // Batch mode: target is a parent of bundle directories.
+    let p = parallelism.unwrap_or_else(|| std::cmp::min(8, num_threads_default()));
+    let results = rotate_dir(&target, &opts, p)
+        .map_err(|e| format!("scan bundles in {}: {e}", target.display()))?;
+
+    let mut rotated = 0u64;
+    let mut planned = 0u64;
+    let mut skipped = 0u64;
+    let mut failed = 0u64;
+    for (path, res) in &results {
+        match res {
+            Ok(outcome) => {
+                report_outcome(path, outcome);
+                match outcome {
+                    RotationOutcome::Rotated { .. } => rotated += 1,
+                    RotationOutcome::PlannedDryRun { .. } => planned += 1,
+                    RotationOutcome::NotEncrypted => skipped += 1,
+                }
+            }
+            Err(e) => {
+                eprintln!("rotate {}: {e}", path.display());
+                failed += 1;
+            }
+        }
+    }
+    println!("summary: rotated={rotated} planned={planned} skipped={skipped} failed={failed}");
+    if failed > 0 {
+        return Err(format!("{failed} bundle(s) failed to rotate; see stderr").into());
+    }
+    Ok(())
+}
+
+fn report_outcome(
+    path: &std::path::Path,
+    outcome: &boruna_orchestrator::audit::rotate::RotationOutcome,
+) {
+    use boruna_orchestrator::audit::rotate::RotationOutcome;
+    match outcome {
+        RotationOutcome::Rotated { new_kek_id } => {
+            println!("rotated {} (kek_id -> {new_kek_id})", path.display());
+        }
+        RotationOutcome::PlannedDryRun { new_kek_id } => {
+            println!(
+                "would rotate {} (kek_id -> {new_kek_id}) [dry-run]",
+                path.display()
+            );
+        }
+        RotationOutcome::NotEncrypted => {
+            println!("skip {} (plaintext bundle)", path.display());
+        }
+    }
+}
+
+/// Default thread-count for rotate-kek's parallelism. Matches the
+/// `min(8, num_cpus)` default the plan specifies. We use
+/// `std::thread::available_parallelism` so we don't pull in
+/// `num_cpus` just for this.
+fn num_threads_default() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 /// Sprint `W3-B`. Sweep orphan content-addressed blobs from the
