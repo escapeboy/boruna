@@ -15,6 +15,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **`boruna evidence diff`** — compare two evidence bundles side-by-side.
   Reports differences in step outputs, audit event counts, workflow metadata,
   and verification status. `--json` flag for machine-readable output.
+- **`boruna workflow eval`** — run the same workflow against two LLM provider configs and compare evidence bundles; reports per-step output agreement and timing
 
 ### Changed
 

@@ -29,6 +29,7 @@ mod scaffold;
 mod serve;
 #[cfg(feature = "serve")]
 mod worker;
+mod workflow_eval;
 
 #[derive(Parser)]
 #[command(
@@ -935,6 +936,26 @@ enum WorkflowCommand {
         /// Use real HTTP handler for net.fetch (requires `http` feature).
         #[arg(long)]
         live: bool,
+    },
+    /// Run the same workflow against two LLM provider configs and compare outputs.
+    Eval {
+        /// Workflow directory containing workflow.json.
+        workflow_dir: std::path::PathBuf,
+        /// First provider config JSON file.
+        #[arg(long)]
+        providers_a: std::path::PathBuf,
+        /// Second provider config JSON file.
+        #[arg(long)]
+        providers_b: std::path::PathBuf,
+        /// Number of runs per provider (default: 1).
+        #[arg(long, default_value = "1")]
+        runs: u32,
+        /// Data directory for evidence bundles.
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+        /// JSON output.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -3547,6 +3568,23 @@ fn run_workflow(
             live,
         } => {
             run_workflow_schedule(dir, cron, policy, data_dir, live, env_arg)?;
+        }
+        WorkflowCommand::Eval {
+            workflow_dir,
+            providers_a,
+            providers_b,
+            runs,
+            data_dir,
+            json,
+        } => {
+            workflow_eval::run_workflow_eval(
+                &workflow_dir,
+                &providers_a,
+                &providers_b,
+                runs,
+                data_dir.as_deref(),
+                json,
+            )?;
         }
     }
     Ok(())
