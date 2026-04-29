@@ -60,10 +60,24 @@ impl<'a> DiagnosticCollector<'a> {
     fn compile_error_to_diagnostic(&self, err: &CompileError) -> Diagnostic {
         match err {
             CompileError::Lexer { line, col, msg } => {
-                Diagnostic::error(E001_LEXER, msg.clone()).at(self.file, *line, Some(*col))
+                // Include a pointer hint in the note
+                let enhanced_msg =
+                    if let Some(source_line) = self.source.lines().nth(line.saturating_sub(1)) {
+                        let pointer = " ".repeat(col.saturating_sub(1)) + "^";
+                        format!("{msg}\n  {source_line}\n  {pointer}")
+                    } else {
+                        msg.clone()
+                    };
+                Diagnostic::error(E001_LEXER, enhanced_msg).at(self.file, *line, Some(*col))
             }
             CompileError::Parse { line, msg } => {
-                Diagnostic::error(E002_PARSE, msg.clone()).at(self.file, *line, None)
+                // Add a hint about common causes when message is terse
+                let enhanced_msg = if !msg.contains("check") && !msg.contains("hint") {
+                    format!("{msg} — check for mismatched braces or a missing expression")
+                } else {
+                    msg.clone()
+                };
+                Diagnostic::error(E002_PARSE, enhanced_msg).at(self.file, *line, None)
             }
             CompileError::Type(msg) => {
                 let (code, line) = classify_type_error(msg, self.source);

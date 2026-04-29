@@ -12,6 +12,9 @@ pub enum RepairStrategy {
     ById,
     /// Apply all suggestions (in order of confidence).
     All,
+    /// Apply only High-confidence patches; skip Medium and Low.
+    /// Use when you want safe, certain fixes only (e.g. CI auto-repair).
+    Conservative,
 }
 
 /// Result of a repair operation.
@@ -81,6 +84,7 @@ impl RepairTool {
                 }
             }
             RepairStrategy::All => select_all(diagnostics),
+            RepairStrategy::Conservative => select_conservative(diagnostics),
         };
 
         if selected.is_empty() {
@@ -186,6 +190,26 @@ fn select_all(diagnostics: &DiagnosticSet) -> Vec<(String, SuggestedPatch)> {
         });
         if let Some(best) = patches.into_iter().next() {
             selected.push((d.id.clone(), best));
+        }
+    }
+    selected
+}
+
+/// Select only High-confidence patches (one per diagnostic).
+fn select_conservative(diagnostics: &DiagnosticSet) -> Vec<(String, SuggestedPatch)> {
+    let mut selected = Vec::new();
+    for d in &diagnostics.diagnostics {
+        if let Some(best) = d
+            .suggested_patches
+            .iter()
+            .filter(|p| p.confidence == Confidence::High)
+            .max_by_key(|p| match p.confidence {
+                Confidence::High => 3,
+                Confidence::Medium => 2,
+                Confidence::Low => 1,
+            })
+        {
+            selected.push((d.id.clone(), best.clone()));
         }
     }
     selected
@@ -321,5 +345,186 @@ fn main() -> Int {
         );
         assert_eq!(result.applied.len(), 1);
         assert!(repaired.contains("count: 0"));
+    }
+
+    #[test]
+    fn repair_e003_near_miss_variable() {
+        let source = "\
+fn main() -> Int {
+    let count = 10
+    countt
+}
+";
+        let ds = DiagnosticCollector::new("test.ax", source).collect();
+        let e003 = ds.diagnostics.iter().find(|d| d.id == "E003");
+        assert!(e003.is_some(), "expected E003 diagnostic");
+        let has_patch = e003
+            .unwrap()
+            .suggested_patches
+            .iter()
+            .any(|p| !p.edits.is_empty());
+        assert!(
+            has_patch,
+            "E003 should have a TextEdit patch for near-miss rename"
+        );
+
+        let (repaired, result) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
+        assert!(!result.applied.is_empty(), "repair should apply E003 patch");
+        assert!(
+            repaired.contains("count"),
+            "repaired source should contain 'count'"
+        );
+        assert!(
+            !repaired.contains("countt"),
+            "repaired source should not contain 'countt'"
+        );
+    }
+
+    #[test]
+    fn repair_e004_near_miss_function() {
+        // E004 is emitted when a diagnostic is manually tagged as such (e.g. by a
+        // future compiler that distinguishes fn-call errors from var errors).
+        // We test the repair path by constructing the diagnostic directly.
+        let source = "fn helper() -> Int { 42 }\n\nfn main() -> Int {\n    helperr()\n}\n";
+        let mut ds = DiagnosticSet::new("test.ax");
+        ds.push(crate::diagnostics::Diagnostic {
+            id: "E004".into(),
+            severity: Severity::Error,
+            message: "undefined function: helperr".into(),
+            location: Some(crate::diagnostics::SourceLocation {
+                file: "test.ax".into(),
+                line: 4,
+                col: None,
+                end_line: None,
+                end_col: None,
+            }),
+            suggested_patches: vec![SuggestedPatch {
+                id: "E004-rename-helperr".into(),
+                description: "rename 'helperr' to 'helper'".into(),
+                confidence: Confidence::Medium,
+                rationale: "closest match".into(),
+                edits: vec![TextEdit {
+                    file: "test.ax".into(),
+                    start_line: 4,
+                    old_text: "    helperr()".into(),
+                    new_text: "    helper()".into(),
+                }],
+            }],
+            related: Vec::new(),
+        });
+
+        let (repaired, result) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
+        assert!(!result.applied.is_empty(), "repair should apply E004 patch");
+        assert!(
+            repaired.contains("helper()"),
+            "repaired source should contain correct function name"
+        );
+        assert!(
+            !repaired.contains("helperr"),
+            "repaired source should not contain typo"
+        );
+    }
+
+    #[test]
+    fn repair_bottom_up_ordering() {
+        // Two patches at different positions — both must apply correctly
+        let source = "fn main() -> Int {\n    let aaa = 1\n    let bbb = 2\n    aaax + bbbx\n}\n";
+        let mut ds = DiagnosticSet::new("test.ax");
+        ds.push(crate::diagnostics::Diagnostic {
+            id: "E003".into(),
+            severity: Severity::Error,
+            message: "undefined variable: aaax".into(),
+            location: None,
+            suggested_patches: vec![SuggestedPatch {
+                id: "E003-rename-aaax".into(),
+                description: "rename 'aaax' to 'aaa'".into(),
+                confidence: Confidence::Medium,
+                rationale: "closest match".into(),
+                edits: vec![TextEdit {
+                    file: "test.ax".into(),
+                    start_line: 4,
+                    old_text: "    aaax + bbbx".into(),
+                    new_text: "    aaa + bbbx".into(),
+                }],
+            }],
+            related: Vec::new(),
+        });
+        ds.push(crate::diagnostics::Diagnostic {
+            id: "E003".into(),
+            severity: Severity::Error,
+            message: "undefined variable: bbbx".into(),
+            location: None,
+            suggested_patches: vec![SuggestedPatch {
+                id: "E003-rename-bbbx".into(),
+                description: "rename 'bbbx' to 'bbb'".into(),
+                confidence: Confidence::Medium,
+                rationale: "closest match".into(),
+                edits: vec![TextEdit {
+                    file: "test.ax".into(),
+                    start_line: 4,
+                    old_text: "    aaa + bbbx".into(),
+                    new_text: "    aaa + bbb".into(),
+                }],
+            }],
+            related: Vec::new(),
+        });
+        let (repaired, result) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::All, None);
+        assert!(
+            !result.applied.is_empty(),
+            "should apply at least one patch"
+        );
+        assert!(
+            repaired.contains("aaa"),
+            "repaired source should use corrected names"
+        );
+    }
+
+    #[test]
+    fn repair_conservative_skips_low_confidence() {
+        let mut ds = DiagnosticSet::new("test.ax");
+        ds.push(crate::diagnostics::Diagnostic {
+            id: "E003".into(),
+            severity: Severity::Error,
+            message: "undefined variable: countt".into(),
+            location: None,
+            suggested_patches: vec![SuggestedPatch {
+                id: "E003-rename-countt".into(),
+                description: "rename 'countt' to 'count'".into(),
+                confidence: Confidence::Medium,
+                rationale: "closest match".into(),
+                edits: vec![TextEdit {
+                    file: "test.ax".into(),
+                    start_line: 2,
+                    old_text: "    countt".into(),
+                    new_text: "    count".into(),
+                }],
+            }],
+            related: Vec::new(),
+        });
+
+        let source = "fn main() -> Int {\n    countt\n}\n";
+
+        // Conservative should skip Medium confidence
+        let (_, result_conservative) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::Conservative, None);
+        assert!(
+            result_conservative.applied.is_empty(),
+            "Conservative should skip Medium-confidence E003 patches"
+        );
+
+        // Best should apply it
+        let (repaired_best, result_best) =
+            RepairTool::repair("test.ax", source, &ds, RepairStrategy::Best, None);
+        assert!(
+            !result_best.applied.is_empty(),
+            "Best should apply Medium-confidence patch"
+        );
+        assert!(
+            repaired_best.contains("count"),
+            "Best should rename countt to count"
+        );
     }
 }
