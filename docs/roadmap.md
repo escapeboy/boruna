@@ -95,7 +95,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **0.5-S4 — `workflow run --coordinator <url>`** — combines submit + wait in one command for CI workflows
 - [x] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
 - [x] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
-- [ ] **0.5-S7 — Output blob references** — large step outputs (LLM responses) via content-addressed blob store; metadata carries refs only
+- [x] **0.5-S7 — Output blob references** — large step outputs (>64 KiB) stored in content-addressed blob store; inline/blob routing in runner; BlobStore read-side restore (post1/output-blob-refs)
 - [x] **Coordinator HA / failover** (sprint `W2`) — multi-coord active-active against shared SQLite, worker URL failover at registration, `/api/health` for LB probes; deployment guide at [`guides/coord-ha.md`](./guides/coord-ha.md). The ADR 002 "coord restart = all leases void" assumption was audited and confirmed already-safe (threshold-based sweep preserves healthy leases under concurrent coords).
 - [x] **Worker capability tagging / placement** (sprint `W3-A`) — workers advertise a SUBSET of the coord's capability set via `--advertise-caps`; coord filters claims to caps the worker covers. Backwards-compatible (omitted flag = full fleet). New `coord.unknown_capability` error_kind.
 - [x] **Blob GC sweep** (sprint `W3-B`) — `boruna evidence gc-blobs` reclaims orphan blobs in `<data-dir>/blobs/`. Closes the 0.5-S7 accepted limitation around manual cleanup.
