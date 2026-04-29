@@ -1,0 +1,66 @@
+# providers.toml — declarative LLM provider routing for Boruna
+#
+# This is a CONVENTION, not a Boruna-shipped format. The orchestrator
+# does not parse this file. The schema below is what `router_setup.rs`
+# in this directory expects, and what most BYOH integrators converge
+# on. Copy, adapt, ignore — your call.
+#
+# Goal: declare the providers your integrator supports + their
+# settings in one place, then build an `LlmRouterHandler` from it
+# at startup.
+
+# Each [providers.<name>] block registers one entry in the router.
+# The `<name>` is the dispatch key — `.ax` code calls
+# `llm_call(prompt, "<name>/<model>")` and the router dispatches on
+# the `<name>/` prefix.
+#
+# `kind` selects which handler implementation to instantiate. Add a
+# new `kind` value here when you ship a new handler in your fork.
+
+[providers.openai]
+kind = "openai"
+# `api_key_env` says which env var holds the secret. Don't put the
+# key itself in the toml — that defeats the secret-management
+# isolation BYOH gives you.
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o-mini-2024-07-18"
+timeout_secs = 60
+
+[providers.anthropic]
+kind = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+# Anthropic's max_tokens is mandatory — pick the upper bound that
+# fits your longest expected response.
+model = "claude-sonnet-4-6"
+max_tokens = 4096
+timeout_secs = 60
+
+[providers.ollama-local]
+kind = "ollama"
+host = "http://localhost:11434"
+model = "llama3.2:3b"
+timeout_secs = 300
+
+[providers.openrouter]
+kind = "vllm" # OpenAI-compatible — reuse the vLLM handler
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-sonnet-4"
+timeout_secs = 120
+
+[providers.bedrock-claude-us]
+kind = "bedrock"
+# Bedrock uses the AWS credential chain — no api_key_env here.
+# AWS_REGION must be set in the env.
+model = "us.anthropic.claude-sonnet-4-5-20241022-v2:0"
+
+# Optional: declare per-provider rate limits the integrator's router
+# wrapper enforces (Boruna doesn't enforce these — it's a hook for
+# your own backoff layer).
+#
+# Format suggestion (the parser in `router_setup.rs` ignores
+# unknown keys so you can extend freely):
+#
+# [providers.openai.rate_limit]
+# requests_per_minute = 500
+# tokens_per_minute = 30_000
