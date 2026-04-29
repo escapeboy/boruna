@@ -414,7 +414,7 @@ impl<'a> Analyzer<'a> {
                     let mut diag = Diagnostic::error(
                         E007_CAPABILITY_VIOLATION,
                         format!(
-                            "function '{}' must be pure but declares capabilities: {}",
+                            "capability violation: function '{}' must be pure but is annotated with !{{{}}} — remove the capability annotation",
                             name,
                             f.capabilities.join(", "),
                         ),

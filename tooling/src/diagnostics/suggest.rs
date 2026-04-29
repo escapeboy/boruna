@@ -9,8 +9,11 @@ pub fn enhance_compiler_diagnostic(
     source: &str,
     program: &Program,
 ) {
-    if diag.id.as_str() == E003_UNDEFINED_VAR {
-        enhance_undefined_var(diag, file, source, program);
+    match diag.id.as_str() {
+        id if id == E003_UNDEFINED_VAR => enhance_undefined_var(diag, file, source, program),
+        id if id == E004_UNDEFINED_FN => enhance_undefined_fn(diag, file, source, program),
+        id if id == E009_TYPE_ERROR => enhance_type_error(diag),
+        _ => {}
     }
 }
 
@@ -68,6 +71,82 @@ fn enhance_undefined_var(diag: &mut Diagnostic, file: &str, source: &str, progra
         if let Some(patch) = suggest_rename_identifier(file, source, &name, suggestion, line) {
             diag.suggested_patches.push(patch);
         }
+    }
+}
+
+/// For "undefined function: X", suggest the closest defined function name.
+fn enhance_undefined_fn(diag: &mut Diagnostic, file: &str, source: &str, program: &Program) {
+    let first_line = diag.message.lines().next().unwrap_or(&diag.message);
+    let name = first_line
+        .strip_prefix("undefined function: ")
+        .unwrap_or("")
+        .to_string();
+    if name.is_empty() {
+        return;
+    }
+
+    // Collect all defined function names
+    let mut fn_names_owned: Vec<String> = Vec::new();
+    for item in &program.items {
+        if let Item::Function(f) = item {
+            fn_names_owned.push(f.name.clone());
+        }
+    }
+
+    // Also add builtins
+    for b in &[
+        "list_len",
+        "list_get",
+        "list_push",
+        "parse_int",
+        "try_parse_int",
+        "str_contains",
+        "str_starts_with",
+    ] {
+        fn_names_owned.push(b.to_string());
+    }
+
+    let fn_names: Vec<&str> = fn_names_owned.iter().map(|s| s.as_str()).collect();
+
+    if let Some(suggestion) = find_closest_name(&name, &fn_names) {
+        let line = diag.location.as_ref().map(|l| l.line);
+        if let Some(patch) = suggest_rename_identifier(file, source, &name, suggestion, line) {
+            // Override the patch id to use E004 prefix
+            let mut patch = patch;
+            patch.id = format!("{}-rename-{}", E004_UNDEFINED_FN, name);
+            diag.suggested_patches.push(patch);
+        }
+    }
+}
+
+/// For E009 type errors, add a textual hint for common type conversion cases.
+fn enhance_type_error(diag: &mut Diagnostic) {
+    let msg = &diag.message;
+    // Look for "expected X, found Y" pattern
+    let hint = if (msg.contains("expected Int") || msg.contains("expected `Int`"))
+        && (msg.contains("found String") || msg.contains("found `String`"))
+    {
+        Some("hint: use `parse_int(value)` to convert a String to Int")
+    } else if (msg.contains("expected String") || msg.contains("expected `String`"))
+        && (msg.contains("found Int") || msg.contains("found `Int`"))
+    {
+        Some("hint: use `to_string(value)` to convert an Int to String")
+    } else if (msg.contains("expected Bool") || msg.contains("expected `Bool`"))
+        && (msg.contains("found Int") || msg.contains("found `Int`"))
+    {
+        Some("hint: use `value != 0` to convert an Int to Bool")
+    } else {
+        None
+    };
+
+    if let Some(h) = hint {
+        diag.suggested_patches.push(SuggestedPatch {
+            id: format!("{}-conversion-hint", E009_TYPE_ERROR),
+            description: h.to_string(),
+            confidence: Confidence::Low,
+            rationale: "type conversion hint (no automatic edit available)".to_string(),
+            edits: Vec::new(),
+        });
     }
 }
 
