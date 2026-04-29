@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added (0.7.x speculative)
 
+- **MCP protocol_version 2** (post1-T-4.1, 0.7.x only).
+  `boruna_run` result values now use natural JSON encoding: `Option::None` → `null`,
+  `Option::Some(v)` → `v` (unwrapped), `Result::Ok(v)` → `{"ok": v}`,
+  `Result::Err(v)` → `{"err": v}`. Records serialize as named-field objects
+  (`{"field": value}`) rather than positional arrays. Enum variants use
+  `{"VariantName": payload}` or just `"VariantName"` for unit variants.
+  **Breaking**: integrators built against `protocol_version: 1` must update
+  their parsers. All responses now carry `"protocol_version": 2`.
+
 - `boruna coordinator serve --tls-client-crl <FILE>` (post1-T-4.2)
   loads PEM-encoded X509 CRLs at startup and feeds them to
   rustls's `WebPkiClientVerifier::with_crls`. Connections from

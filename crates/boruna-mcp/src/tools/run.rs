@@ -1,3 +1,4 @@
+use boruna_bytecode::module::{Module, TypeKind};
 use boruna_bytecode::Value;
 use boruna_vm::capability_gateway::{CapabilityGateway, Policy};
 use boruna_vm::error::VmError;
@@ -175,7 +176,7 @@ where
         Ok(value) => {
             // Serialize result and ui_output under the optional output-size cap.
             let max_output_bytes = limits.and_then(|l| l.max_output_bytes);
-            let result_json = match format_value_capped(&value, max_output_bytes) {
+            let result_json = match format_value_capped(&value, max_output_bytes, vm.module()) {
                 Ok(j) => j,
                 Err(over) => return over.to_response(vm.step_count()),
             };
@@ -184,7 +185,7 @@ where
                 .map(|cap| cap.saturating_sub(serialized_size(&result_json) as u64));
             let mut ui_output_json: Vec<serde_json::Value> = Vec::new();
             for tree in &vm.ui_output {
-                let tree_json = match format_value_capped(tree, remaining) {
+                let tree_json = match format_value_capped(tree, remaining, vm.module()) {
                     Ok(j) => j,
                     Err(_) => {
                         // Use the original cap (not the dynamic remaining) as
@@ -388,6 +389,7 @@ impl OutputBudgetExceeded {
 fn format_value_capped(
     value: &Value,
     budget: Option<u64>,
+    module: &Module,
 ) -> Result<serde_json::Value, OutputBudgetExceeded> {
     if let Some(cap) = budget {
         // Cheap pre-check: a single very-large String is the canonical
@@ -399,7 +401,7 @@ fn format_value_capped(
             }
         }
     }
-    let json = format_value(value);
+    let json = format_value_v2(value, module);
     if let Some(cap) = budget {
         if serialized_size(&json) as u64 > cap {
             return Err(OutputBudgetExceeded { cap });
@@ -590,43 +592,64 @@ pub(crate) fn parse_policy(value: Option<&JsonValue>) -> Result<Policy, ParsePol
     }
 }
 
-fn format_value(value: &Value) -> serde_json::Value {
+/// Protocol v2 value serializer. Uses natural JSON shapes for Option, Result,
+/// Record, and Enum instead of the v1 wrapper objects.
+fn format_value_v2(value: &Value, module: &Module) -> serde_json::Value {
     match value {
         Value::Int(n) => serde_json::json!(n),
         Value::Float(f) => serde_json::json!(f),
         Value::String(s) => serde_json::json!(s),
         Value::Bool(b) => serde_json::json!(b),
-        Value::Unit => serde_json::json!(null),
-        Value::None => serde_json::json!({"option": "None"}),
-        Value::Some(v) => serde_json::json!({"option": "Some", "value": format_value(v)}),
-        Value::Ok(v) => serde_json::json!({"result": "Ok", "value": format_value(v)}),
-        Value::Err(v) => serde_json::json!({"result": "Err", "value": format_value(v)}),
+        Value::Unit => serde_json::Value::Null,
+        Value::None => serde_json::Value::Null,
+        Value::Some(v) => format_value_v2(v, module),
+        Value::Ok(v) => serde_json::json!({"ok": format_value_v2(v, module)}),
+        Value::Err(v) => serde_json::json!({"err": format_value_v2(v, module)}),
         Value::List(items) => {
-            serde_json::json!(items.iter().map(format_value).collect::<Vec<_>>())
+            serde_json::json!(items.iter().map(|v| format_value_v2(v, module)).collect::<Vec<_>>())
         }
         Value::Record { type_id, fields } => {
-            serde_json::json!({
-                "type": "record",
-                "type_id": type_id,
-                "fields": fields.iter().map(format_value).collect::<Vec<serde_json::Value>>(),
-            })
+            let idx = *type_id as usize;
+            if let Some(typedef) = module.types.get(idx) {
+                if let TypeKind::Record { fields: field_defs } = &typedef.kind {
+                    let mut obj = serde_json::Map::new();
+                    for (i, field_val) in fields.iter().enumerate() {
+                        let name = field_defs
+                            .get(i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("_unknown");
+                        obj.insert(name.to_string(), format_value_v2(field_val, module));
+                    }
+                    return serde_json::Value::Object(obj);
+                }
+            }
+            // Fallback: positional array when type table is unavailable.
+            serde_json::json!(fields.iter().map(|v| format_value_v2(v, module)).collect::<Vec<_>>())
         }
         Value::Enum {
             type_id,
             variant,
             payload,
         } => {
-            serde_json::json!({
-                "type": "enum",
-                "type_id": type_id,
-                "variant": variant,
-                "payload": format_value(payload),
-            })
+            let idx = *type_id as usize;
+            if let Some(typedef) = module.types.get(idx) {
+                if let TypeKind::Enum { variants } = &typedef.kind {
+                    if let Some((variant_name, payload_type)) = variants.get(*variant as usize) {
+                        if payload_type.is_none() {
+                            return serde_json::json!(variant_name);
+                        } else {
+                            return serde_json::json!({variant_name: format_value_v2(payload, module)});
+                        }
+                    }
+                }
+            }
+            // Fallback when type table lookup fails.
+            serde_json::json!({"variant": variant, "payload": format_value_v2(payload, module)})
         }
         Value::Map(entries) => {
             let obj: serde_json::Map<String, serde_json::Value> = entries
                 .iter()
-                .map(|(k, v)| (k.clone(), format_value(v)))
+                .map(|(k, v)| (k.clone(), format_value_v2(v, module)))
                 .collect();
             serde_json::Value::Object(obj)
         }

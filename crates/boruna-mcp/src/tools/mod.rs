@@ -18,7 +18,7 @@ pub mod workflow;
 /// `docs/reference/mcp-server.md` under "Stability".
 ///
 /// FleetQ ask [#6](https://github.com/escapeboy/boruna/issues/6).
-pub(crate) const TOOL_RESPONSE_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const TOOL_RESPONSE_PROTOCOL_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod protocol_version_tests {
@@ -202,9 +202,9 @@ mod protocol_version_tests {
     // ── meta ──
 
     #[test]
-    fn protocol_version_constant_is_one() {
-        // Locks the wire-format version. Bump only on a breaking shape change
-        // anywhere in the tool envelope. See docs/reference/mcp-server.md.
-        assert_eq!(TOOL_RESPONSE_PROTOCOL_VERSION, 1);
+    fn protocol_version_constant_is_two() {
+        // Locks the wire-format version. Bumped to 2 (post1-T-4.1) for the
+        // natural JSON value encoding change in boruna_run responses.
+        assert_eq!(TOOL_RESPONSE_PROTOCOL_VERSION, 2);
     }
 }
