@@ -30,25 +30,25 @@ A graduated package gets:
 ## Current cycle (2026-04-29)
 
 The 11 v0.x packages were assessed against the 4 criteria. **Zero
-packages graduate this cycle.** The same two criteria fail across
-the entire stdlib: no `examples/workflows/*` references the
-packages by name, and no per-package reference doc exists. Closing
-either alone is not sufficient; both are blockers. Filed as Wave-3
-follow-up work.
+packages graduate this cycle.** Criterion (4) reference docs is now
+closed: all 11 per-package pages exist under
+`docs/reference/stdlib/`. The remaining blocker is criterion (1):
+no `examples/workflows/*` workflow references any `std-*` package
+by name. Filed as Wave-3 follow-up work.
 
 | Package | (1) ex wf | (2) tests | (3) API stable | (4) docs | Decision |
 |---------|:---------:|:---------:|:--------------:|:--------:|----------|
-| `std-ui` | ✗ | ✓ (`std_ui_runs`) | ✓ | ✗ | Held — needs example workflow + `docs/reference/stdlib/std-ui.md` |
-| `std-validation` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-forms` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-authz` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-http` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-db` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-sync` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-routing` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-storage` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-notifications` | ✗ | ✓ | ✓ | ✗ | Held — same |
-| `std-testing` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-ui` | ✗ | ✓ (`std_ui_runs`) | ✓ | ✓ | Held — needs example workflow |
+| `std-validation` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-forms` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-authz` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-http` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-db` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-sync` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-routing` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-storage` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-notifications` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
+| `std-testing` | ✗ | ✓ | ✓ | ✓ | Held — needs example workflow |
 
 ### Per-criterion notes
 

@@ -25,6 +25,24 @@ Task-oriented walkthroughs:
 - [Worker Capability Tagging](./guides/worker-capability-tagging.md) — heterogeneous fleet placement
 - [Migration](./guides/migration.md) — `boruna migrate` for upgrading legacy bundles and workflow files
 
+## Standard Libraries
+
+Reference pages for all 11 built-in `std-*` packages:
+
+- [std-ui](./reference/stdlib/std-ui.md) — declarative UI primitives
+- [std-forms](./reference/stdlib/std-forms.md) — model-driven form engine
+- [std-authz](./reference/stdlib/std-authz.md) — role and permission enforcement
+- [std-http](./reference/stdlib/std-http.md) — typed HTTP effect wrappers
+- [std-db](./reference/stdlib/std-db.md) — typed database query helpers
+- [std-sync](./reference/stdlib/std-sync.md) — offline queue and conflict resolution
+- [std-validation](./reference/stdlib/std-validation.md) — composable validation rules
+- [std-routing](./reference/stdlib/std-routing.md) — declarative routing model
+- [std-storage](./reference/stdlib/std-storage.md) — typed local persistence abstraction
+- [std-notifications](./reference/stdlib/std-notifications.md) — notification queue and toast helpers
+- [std-testing](./reference/stdlib/std-testing.md) — test helpers for framework apps
+
+See [Stdlib Libraries](./STD_LIBRARIES_SPEC.md) for the full spec and [stdlib-graduation-tracker.md](./stdlib-graduation-tracker.md) for graduation status.
+
 ## Reference
 
 Complete API and format documentation:
