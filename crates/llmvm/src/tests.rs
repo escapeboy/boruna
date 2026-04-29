@@ -2002,4 +2002,47 @@ mod tests {
         let err = VmError::MaxRoundsExceeded(100);
         assert_eq!(format!("{err}"), "max scheduler rounds exceeded (100)");
     }
+
+    // ── T-2.2: last_cap_events tracking ──
+
+    #[test]
+    fn test_take_last_cap_events_records_cap_name() {
+        // A one-shot CapCall (time.now, id=5) followed by Ret.
+        // After vm.run(), last_cap_events should have been populated
+        // and be drainable via take_last_cap_events.
+        let module = simple_module(
+            vec![Op::CapCall(5, 0), Op::Ret], // time.now, no args
+            vec![],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.run().expect("should succeed");
+        let events = vm.take_last_cap_events();
+        assert_eq!(events, vec!["time.now"], "cap name must be recorded");
+    }
+
+    #[test]
+    fn test_take_last_cap_events_clears_on_drain() {
+        let module = simple_module(vec![Op::CapCall(5, 0), Op::Ret], vec![]);
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.run().expect("should succeed");
+        let _ = vm.take_last_cap_events();
+        assert!(
+            vm.take_last_cap_events().is_empty(),
+            "second drain must return empty"
+        );
+    }
+
+    #[test]
+    fn test_take_last_cap_events_empty_for_pure_program() {
+        let module = simple_module(vec![Op::PushConst(0), Op::Ret], vec![Value::Int(42)]);
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        vm.run().expect("should succeed");
+        assert!(
+            vm.take_last_cap_events().is_empty(),
+            "pure program must leave cap events empty"
+        );
+    }
 }

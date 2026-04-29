@@ -65,6 +65,9 @@ pub struct Vm {
     /// Trace log for debugging.
     pub trace: Vec<String>,
     pub trace_enabled: bool,
+    /// Capability calls made during the current execute_bounded slice.
+    /// Drained by `take_last_cap_events` between slices (T-2.2).
+    last_cap_events: Vec<&'static str>,
     // --- Actor fields ---
     /// Which actor this VM belongs to (0 = root/default).
     actor_id: u64,
@@ -115,6 +118,7 @@ impl Vm {
             ui_output: Vec::new(),
             trace: Vec::new(),
             trace_enabled: false,
+            last_cap_events: Vec::new(),
             actor_id: 0,
             mailbox: VecDeque::new(),
             outgoing_messages: Vec::new(),
@@ -148,6 +152,13 @@ impl Vm {
         if self.start_time.is_none() {
             self.start_time = Some(Instant::now());
         }
+    }
+
+    /// Drain capability call names accumulated since the last call (T-2.2).
+    /// Called between execute_bounded slices to surface cap events in
+    /// MCP progress notifications.
+    pub fn take_last_cap_events(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.last_cap_events)
     }
 
     pub fn set_max_steps(&mut self, max: u64) {
@@ -584,6 +595,7 @@ impl Vm {
                     args.reverse();
 
                     let result = self.gateway.call(&cap, &args, &mut self.event_log)?;
+                    self.last_cap_events.push(cap.name());
                     self.push(result)?;
                 }
                 Op::Add => self.binary_op(|a, b| match (a, b) {
