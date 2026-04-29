@@ -224,9 +224,7 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
             .manifest
             .file_checksums
             .iter()
-            .map(|(f, h)| format!(
-                r#"<tr><td class="mono">{f}</td><td class="mono">{h}</td></tr>"#
-            ))
+            .map(|(f, h)| format!(r#"<tr><td class="mono">{f}</td><td class="mono">{h}</td></tr>"#))
             .collect::<String>(),
     );
     page("Bundle", &body)
@@ -273,7 +271,10 @@ fn describe_event(event: &AuditEvent) -> (String, &'static str, String) {
             "WorkflowStarted",
             format!("workflow={workflow_hash} policy={policy_hash}"),
         ),
-        AuditEvent::StepStarted { step_id, input_hash } => (
+        AuditEvent::StepStarted {
+            step_id,
+            input_hash,
+        } => (
             step_id.clone(),
             "StepStarted",
             format!("input={input_hash}"),
@@ -287,9 +288,7 @@ fn describe_event(event: &AuditEvent) -> (String, &'static str, String) {
             "StepCompleted",
             format!("output={output_hash} dur={duration_ms}ms"),
         ),
-        AuditEvent::StepFailed { step_id, error } => {
-            (step_id.clone(), "StepFailed", error.clone())
-        }
+        AuditEvent::StepFailed { step_id, error } => (step_id.clone(), "StepFailed", error.clone()),
         AuditEvent::CapabilityInvoked {
             step_id,
             capability,
