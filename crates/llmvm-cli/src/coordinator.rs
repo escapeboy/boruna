@@ -3751,9 +3751,11 @@ mod tests {
     #[test]
     fn parse_tls_flags_requires_all_three_or_none() {
         // None of the three flags = no TLS, ok.
-        assert!(ServerTlsPaths::from_optional(None, None, None, vec![], None)
-            .unwrap()
-            .is_none());
+        assert!(
+            ServerTlsPaths::from_optional(None, None, None, vec![], None)
+                .unwrap()
+                .is_none()
+        );
         // All three present = ok.
         let p = std::path::PathBuf::from("/tmp/x");
         let triple = ServerTlsPaths::from_optional(
@@ -3789,8 +3791,7 @@ mod tests {
         // plaintext server, so silently dropping it would be a
         // dangerous footgun.
         let crl = std::path::PathBuf::from("/tmp/some.crl");
-        let err =
-            ServerTlsPaths::from_optional(None, None, None, vec![crl], None).unwrap_err();
+        let err = ServerTlsPaths::from_optional(None, None, None, vec![crl], None).unwrap_err();
         assert!(err.to_string().contains("CRL"), "unexpected err: {err}");
     }
 
@@ -3800,12 +3801,9 @@ mod tests {
         // trio is a startup error. OCSP stapling requires a TLS
         // server cert to staple against.
         let staple = std::path::PathBuf::from("/tmp/server.ocsp");
-        let err = ServerTlsPaths::from_optional(None, None, None, vec![], Some(staple))
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("OCSP"),
-            "unexpected err: {err}"
-        );
+        let err =
+            ServerTlsPaths::from_optional(None, None, None, vec![], Some(staple)).unwrap_err();
+        assert!(err.to_string().contains("OCSP"), "unexpected err: {err}");
     }
 
     #[test]
