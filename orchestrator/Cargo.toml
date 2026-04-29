@@ -57,6 +57,19 @@ azure = ["dep:object_store", "object_store/azure", "dep:tokio", "dep:futures"]
 # Azure is the operator follow-up. If we later decide to add an
 # `azure-it` feature, follow the s3-it / gcs-it shape; the
 # missing piece is just the bucket-create primitive.
+# Docker-compose based integration tests for all three remote adapters
+# (S3 via MinIO, GCS via fake-gcs-server, Azure via Azurite).
+# Tests are #[ignore] and require pre-started Docker services from
+# docker-compose.blob-tests.yml. Azurite is started with --loose so
+# container creation does not require implementing SharedKey signing.
+# Run: cargo test -p boruna-orchestrator --features blob-integration -- --ignored blob_
+blob-integration = [
+    "s3",
+    "gcs",
+    "azure",
+    "dep:tokio",
+    "dep:reqwest",
+]
 
 [[bin]]
 name = "boruna-orch"
