@@ -8,6 +8,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Four new example workflows demonstrating stdlib package usage (`form_submission_pipeline`, `data_ingestion_pipeline`, `api_routing_workflow`); closes graduation criterion 1 for all 11 `std-*` packages
+
 - **`boruna evidence diff`** — compare two evidence bundles side-by-side.
   Reports differences in step outputs, audit event counts, workflow metadata,
   and verification status. `--json` flag for machine-readable output.

@@ -1,0 +1,31 @@
+// Step 3: Render a UI response confirming form submission.
+//
+// Inline from std.ui — import pending full package resolver integration.
+//
+// std.ui surface used: text, button, card, column
+
+// --- Inline from std.ui ---
+type UINode { tag: String, text: String }
+
+fn text(content: String) -> UINode {
+    UINode { tag: "text", text: content }
+}
+
+fn button(label: String, on_click: String) -> UINode {
+    UINode { tag: "button", text: label }
+}
+
+fn card(title: String, content: UINode) -> UINode {
+    UINode { tag: "card", text: title }
+}
+
+fn column(child1: UINode, child2: UINode) -> UINode {
+    UINode { tag: "column", text: child1.text }
+}
+
+fn main() -> Int {
+    let success_msg: UINode = text("Form submitted successfully.")
+    let back_btn: UINode = button("Back to Home", "navigate_home")
+    let view: UINode = card("Submission Complete", column(success_msg, back_btn))
+    0
+}

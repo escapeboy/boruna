@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "api-routing-workflow",
+  "version": "1.0.0",
+  "description": "Route an API request, synchronize state across concurrent writers, then assert state invariants.",
+  "steps": {
+    "route_request": {
+      "kind": "source",
+      "source": "steps/route_request.ax",
+      "capabilities": [],
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "sync_state": {
+      "kind": "source",
+      "source": "steps/sync_state.ax",
+      "capabilities": [],
+      "inputs": {
+        "route": "route_request.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "assert_state": {
+      "kind": "source",
+      "source": "steps/assert_state.ax",
+      "capabilities": [],
+      "inputs": {
+        "sync_result": "sync_state.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    }
+  },
+  "edges": [
+    ["route_request", "sync_state"],
+    ["sync_state", "assert_state"]
+  ]
+}

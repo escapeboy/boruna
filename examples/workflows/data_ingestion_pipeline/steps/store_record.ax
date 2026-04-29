@@ -1,0 +1,53 @@
+// Step 2: Store fetched data as a DB record.
+//
+// Inline from std.db — import pending full package resolver integration.
+//
+// std.db surface used: db_insert, db_select, db_where, db_limit
+
+// --- Inline from std.db ---
+type Effect { kind: String, payload: String, callback_tag: String }
+type Query { operation: String, table: String, columns: String, conditions: String, order_by: String, limit_val: Int, offset_val: Int }
+
+fn db_select(table: String, columns: String) -> Query {
+    Query {
+        operation: "SELECT",
+        table: table,
+        columns: columns,
+        conditions: "",
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_insert(table: String, columns: String, values: String) -> Query {
+    Query {
+        operation: "INSERT",
+        table: table,
+        columns: columns,
+        conditions: values,
+        order_by: "",
+        limit_val: 0,
+        offset_val: 0
+    }
+}
+
+fn db_where(query: Query, conditions: String) -> Query {
+    Query { ..query, conditions: conditions }
+}
+
+fn db_limit(query: Query, n: Int) -> Query {
+    Query { ..query, limit_val: n }
+}
+
+fn db_to_effect(query: Query, callback_tag: String) -> Effect {
+    Effect { kind: "db_query", payload: query.operation, callback_tag: callback_tag }
+}
+
+fn main() -> Int {
+    let insert_q: Query = db_insert("ingested_data", "payload,source", "demo_payload,api.example.com")
+    let select_q: Query = db_select("ingested_data", "*")
+    let filtered: Query = db_where(db_limit(select_q, 10), "source = 'api.example.com'")
+    let effect: Effect = db_to_effect(insert_q, "on_record_stored")
+    0
+}

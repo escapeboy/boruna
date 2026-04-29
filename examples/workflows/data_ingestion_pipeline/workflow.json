@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "data-ingestion-pipeline",
+  "version": "1.0.0",
+  "description": "Fetch external data over HTTP, store in DB, archive to blob storage, notify on completion.",
+  "steps": {
+    "fetch_data": {
+      "kind": "source",
+      "source": "steps/fetch_data.ax",
+      "capabilities": ["net.fetch"],
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "store_record": {
+      "kind": "source",
+      "source": "steps/store_record.ax",
+      "capabilities": ["db.query"],
+      "inputs": {
+        "raw_data": "fetch_data.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "archive_blob": {
+      "kind": "source",
+      "source": "steps/archive_blob.ax",
+      "capabilities": ["fs.write"],
+      "inputs": {
+        "record": "store_record.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "notify_complete": {
+      "kind": "source",
+      "source": "steps/notify_complete.ax",
+      "capabilities": [],
+      "inputs": {
+        "archive_ref": "archive_blob.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    }
+  },
+  "edges": [
+    ["fetch_data", "store_record"],
+    ["store_record", "archive_blob"],
+    ["archive_blob", "notify_complete"]
+  ]
+}

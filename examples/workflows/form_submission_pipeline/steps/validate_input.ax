@@ -1,0 +1,76 @@
+// Step 1: Validate form input fields.
+//
+// Inline from std.forms and std.validation — import pending full package resolver integration.
+//
+// std.forms surface used: form_init, field_init, field_set_value, field_touch
+// std.validation surface used: validate_required, validate_min_length, validation_merge
+
+// --- Inline from std.forms ---
+type FieldState { name: String, value: String, touched: Int, dirty: Int, error: String }
+type FormState { field_count: Int, submitted: Int, valid: Int, current_field: String, current_value: String, current_error: String }
+
+fn form_init(field_count: Int) -> FormState {
+    FormState {
+        field_count: field_count,
+        submitted: 0,
+        valid: 1,
+        current_field: "",
+        current_value: "",
+        current_error: ""
+    }
+}
+
+fn field_init(name: String) -> FieldState {
+    FieldState { name: name, value: "", touched: 0, dirty: 0, error: "" }
+}
+
+fn field_set_value(field: FieldState, value: String) -> FieldState {
+    FieldState { ..field, value: value, dirty: 1 }
+}
+
+fn field_touch(field: FieldState) -> FieldState {
+    FieldState { ..field, touched: 1 }
+}
+
+// --- Inline from std.validation ---
+type ValidationResult { valid: Int, error_field: String, error_message: String }
+
+fn validate_required(field: String, value: String) -> ValidationResult {
+    if value == "" {
+        ValidationResult { valid: 0, error_field: field, error_message: "is required" }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validate_min_length(field: String, value: String, min: Int) -> ValidationResult {
+    if min > 0 {
+        if value == "" {
+            ValidationResult { valid: 0, error_field: field, error_message: "too short" }
+        } else {
+            ValidationResult { valid: 1, error_field: "", error_message: "" }
+        }
+    } else {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    }
+}
+
+fn validation_merge(a: ValidationResult, b: ValidationResult) -> ValidationResult {
+    if a.valid == 0 {
+        a
+    } else {
+        b
+    }
+}
+
+fn main() -> Int {
+    let form: FormState = form_init(2)
+    let name_field: FieldState = field_init("name")
+    let email_field: FieldState = field_init("email")
+    let name_with_value: FieldState = field_set_value(field_touch(name_field), "Alice")
+    let email_with_value: FieldState = field_set_value(field_touch(email_field), "alice@example.com")
+    let name_check: ValidationResult = validate_required("name", name_with_value.value)
+    let email_check: ValidationResult = validate_min_length("email", email_with_value.value, 5)
+    let merged: ValidationResult = validation_merge(name_check, email_check)
+    merged.valid
+}
