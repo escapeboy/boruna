@@ -26,7 +26,7 @@ Both `--templates-dir` and `--libs-dir` are optional. Defaults are `templates` a
 The tools below share several conventions:
 
 - **All tools return JSON inside an MCP `Content::text` payload.** Responses are pretty-printed.
-- **Every response — success and failure — carries `protocol_version: 1`.** This is the wire-format version of the response envelope. It bumps **only** on a breaking shape change (field rename, removal, type change, or `error_kind` semantics change). Additive changes keep the version. Integrators should reject any response whose `protocol_version` exceeds the version they were built against, and may safely upgrade their parsers when the field stays the same. See the [Stability section](#stability) for the full versioning policy.
+- **Every response — success and failure — carries `protocol_version: 2`.** This is the wire-format version of the response envelope. It bumps **only** on a breaking shape change (field rename, removal, type change, or `error_kind` semantics change). Additive changes keep the version. Integrators should reject any response whose `protocol_version` exceeds the version they were built against, and may safely upgrade their parsers when the field stays the same. See the [Stability section](#stability) for the full versioning policy.
 - **Domain errors are returned as `success: false` JSON, not as MCP errors.** This includes compile failures, runtime errors, validation errors, parse errors, etc. MCP-protocol errors (returned as `McpError`) are reserved for transport-level problems — most commonly when a `source` argument exceeds the **1 MB limit** enforced by every source-accepting tool.
 - **Source code is passed as a string**, not a file path. Tool callers are responsible for reading files themselves.
 - **Synchronous Boruna APIs run inside `tokio::task::spawn_blocking`.** That means tool calls don't starve the MCP event loop, but each call is single-threaded.
@@ -35,7 +35,7 @@ The tools below share several conventions:
 
 ## Tools
 
-> **Note on the JSON examples below:** for brevity, the per-tool examples show only the body fields. Every actual response — success and failure — also includes `"protocol_version": 1` immediately after `"success"`. See the [Conventions](#conventions) and [Stability](#stability) sections for the full contract.
+> **Note on the JSON examples below:** for brevity, the per-tool examples show only the body fields. Every actual response — success and failure — also includes `"protocol_version": 2` immediately after `"success"`. See the [Conventions](#conventions) and [Stability](#stability) sections for the full contract.
 
 ### `boruna_compile`
 
@@ -170,20 +170,23 @@ Plus the `errors` shape from `boruna_compile` if compilation fails before the ru
 
 `error_kind` values: `runtime_error`, `invalid_policy`. Compile failures are returned without an `error_kind` (they use the `errors` array). Exceeding `max_steps` is reported as `runtime_error` with a step-limit message — there is no distinct kind for it.
 
-**Value encoding** — primitives are passed through directly (`Int` → number, `String` → string, `Bool` → bool, `Unit` → `null`). Tagged values use the shapes:
+**Value encoding (protocol_version 2)** — primitives are passed through directly (`Int` → number, `String` → string, `Bool` → bool, `Unit` → `null`). Tagged values use natural JSON shapes:
 
 ```json
-{"option": "None"}                         // Value::None
-{"option": "Some", "value": <inner>}       // Value::Some
-{"result": "Ok",   "value": <inner>}       // Value::Ok
-{"result": "Err",  "value": <inner>}       // Value::Err
-{"type": "record", "type_id": 4, "fields": [...]}
-{"type": "enum",   "type_id": 6, "variant": "Tag", "payload": <inner>}
+null                                       // Value::None (unwrapped)
+<inner>                                    // Value::Some (unwrapped)
+{"ok":  <inner>}                           // Value::Ok
+{"err": <inner>}                           // Value::Err
+{"field1": v1, "field2": v2}              // Value::Record (named fields from type table)
+{"VariantName": <payload>}                 // Value::Enum with payload
+"VariantName"                              // Value::Enum unit variant
 {"actor_id": 1}                            // Value::ActorId
 {"fn_ref": 12}                             // Value::FnRef
 ```
 
-`Value::List` becomes a JSON array; `Value::Map` becomes a JSON object.
+`Value::List` becomes a JSON array; `Value::Map` becomes a JSON object. When the module type table does not contain the referenced type (e.g. in a stripped module), records fall back to positional arrays and enums fall back to `{"variant": N, "payload": <inner>}`.
+
+> **Breaking change from protocol_version 1:** integrators built against v1 must update their parsers. The v1 shapes (`{"option": "None"}`, `{"option": "Some", "value": ...}`, `{"result": "Ok", "value": ...}`, `{"type": "record", ...}`, `{"type": "enum", ...}`) are no longer emitted.
 
 ---
 
@@ -440,7 +443,7 @@ The `validation` object is present only when `validate: true`. If validation fai
 
 ## Stability
 
-- **`protocol_version: 1`** is the wire-format version of the response envelope, present on every tool response (success and failure). Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`; a regression test (`protocol_version_tests`) asserts coverage across both success and failure paths of every tool. Bumped only on a breaking shape change anywhere in the envelope; additive changes keep the version.
+- **`protocol_version: 2`** is the wire-format version of the response envelope, present on every tool response (success and failure). Locked by `crates/boruna-mcp/src/tools/mod.rs::TOOL_RESPONSE_PROTOCOL_VERSION`; a regression test (`protocol_version_tests`) asserts coverage across both success and failure paths of every tool. Bumped only on a breaking shape change anywhere in the envelope; additive changes keep the version. Bumped from 1 to 2 in post1-T-4.1 (0.7.x) for the natural JSON value encoding change in `boruna_run` responses.
 - **Tool names** (`boruna_compile`, `boruna_run`, ...) are stable. Renames require a major version bump.
 - **`error_kind` values** are stable strings. New ones may be added; existing ones are not renamed.
 - **Top-level response fields** (`success`, `protocol_version`, named result fields) are stable. New fields are additive.
