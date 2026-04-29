@@ -19,6 +19,8 @@ use boruna_vm::vm::Vm;
 mod coordinator;
 #[cfg(feature = "serve")]
 mod dashboard;
+#[cfg(feature = "serve")]
+mod evidence_serve;
 mod format;
 mod scaffold;
 #[cfg(feature = "serve")]
@@ -986,6 +988,15 @@ enum EvidenceCommand {
         /// Default `min(8, num_cpus)`.
         #[arg(long, value_name = "N")]
         parallelism: Option<usize>,
+    },
+    /// Start a local web UI to browse an evidence bundle (post1-T-4.4).
+    /// Requires the `serve` feature.
+    Serve {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Port to listen on (default: 4444).
+        #[arg(long, default_value = "4444")]
+        port: u16,
     },
 }
 
@@ -3720,6 +3731,20 @@ fn run_evidence(
                 dry_run,
                 parallelism,
             )?;
+        }
+        EvidenceCommand::Serve { dir, port } => {
+            #[cfg(feature = "serve")]
+            {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(evidence_serve::serve(&dir, port))?;
+            }
+            #[cfg(not(feature = "serve"))]
+            {
+                let _ = (dir, port);
+                return Err("`evidence serve` requires the `serve` feature — \
+                            build with: cargo build --features boruna-cli/serve"
+                    .into());
+            }
         }
     }
     Ok(())
