@@ -42,12 +42,12 @@ Target: rolling, May–July 2026
 The DX work originally scoped for 0.2.0 ships incrementally as point releases. Each is small, additive, and non-breaking.
 
 - [x] `boruna new` — scaffold a new workflow from a template interactively (sprint `W3-C`)
-- [ ] `boruna fmt` — auto-formatter for `.ax` files
+- [x] `boruna fmt` — auto-formatter for `.ax` files (v1: post1-T-1.3; v2 comment-preserving: post1/fmt-v2 PR #45)
 - [x] `boruna run --watch` — re-run on file change (post1-T-1.4)
 - [ ] Improved error messages — actionable diagnostics with suggested fixes for common mistakes
 - [ ] Better `lang repair` — handle more repair cases automatically
 - [x] Evidence bundle diff — `boruna evidence diff <bundle-a> <bundle-b>` (post1/evidence-diff, PR #44)
-- [ ] Expanded stdlib — `std-llm`, `std-json` libraries
+- [x] Expanded stdlib — `std-llm`, `std-json` libraries (post1/std-new-packages PR #46)
 
 ## 0.3.0 — Real-use durability — SHIPPED (2026-04-26)
 
