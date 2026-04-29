@@ -20,6 +20,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **GCS adapter for `BundleStorage`** (post1-T-3.2, Wave 3). The
+  `--bundle-storage gs://bucket[/prefix]` URI now constructs a
+  Google Cloud Storage adapter when the binary is built with the
+  `gcs` feature (`cargo build --features boruna-cli/gcs`). Same
+  shape as the T-3.1 S3 adapter, also backed by `object_store`
+  (with the `gcp` feature toggled). Auth via standard
+  `GOOGLE_SERVICE_ACCOUNT` / `GOOGLE_APPLICATION_CREDENTIALS` env
+  vars; `GcsBucketBuilder::with_endpoint` lets integration tests
+  point at fake-gcs-server. Off by default. When the `gcs` feature
+  is OFF, `gs://` URIs reject at parse time with the same
+  actionable-message pattern S3 uses. Backend errors surface with
+  stable `error_kind` strings (`gcs.transient`, `gcs.permanent`,
+  `gcs.runtime`, `gcs.unexpected_key`). Integration tests behind
+  the `gcs-it` feature spin up `fsouza/fake-gcs-server` via a
+  custom testcontainers Image (testcontainers-modules has no GCS
+  module) and self-skip when Docker is unreachable. See
+  `docs/guides/bundle-storage-gcs.md`.
 - **S3 adapter for `BundleStorage`** (post1-T-3.1, Wave 3). The
   `--bundle-storage s3://bucket[/prefix]` URI now constructs a real
   remote-storage adapter when the binary is built with the `s3`

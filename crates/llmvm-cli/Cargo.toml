@@ -35,6 +35,10 @@ persist-sqlite = ["boruna-orchestrator/persist-sqlite"]
 # rejecting at parse time. Off by default — pulls in object_store +
 # tokio + reqwest. See docs/guides/bundle-storage-s3.md.
 s3 = ["boruna-orchestrator/s3"]
+# post1-T-3.2: forwards to boruna-orchestrator's `gcs` feature so
+# `--bundle-storage gs://...` constructs a real adapter. Off by
+# default. See docs/guides/bundle-storage-gcs.md.
+gcs = ["boruna-orchestrator/gcs"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }
