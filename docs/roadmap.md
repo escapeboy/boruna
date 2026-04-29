@@ -65,7 +65,7 @@ Focus: workflows that survive process restarts, handle long-running steps, and u
 - [x] **Idempotent invocation** — `--skip-if-running` for cron-driven scheduling (`0.3-S7`/`S10`)
 - [x] **Per-step attempt tracking** with first schema migration v1→v2 (`0.3-S11`/`S12`/`S13`)
 - [x] **Atomic trigger commit** closing TOCTOU race (`0.3-S16`, review-driven)
-- [ ] **Scheduled workflows** — trigger workflows on a cron schedule (deferred to 0.3.x; partially addressed by `--skip-if-running` for safe cron invocation)
+- [x] **Scheduled workflows** — trigger workflows on a cron schedule (deferred to 0.3.x; partially addressed by `--skip-if-running` for safe cron invocation) — `boruna workflow schedule <dir> --cron "..."` cron daemon (`post1/scheduler-registry-rolling`)
 
 ## 0.4.0 — Operations (mostly shipped on master, tag pending)
 
@@ -78,8 +78,8 @@ Originally targeted Q4 2026; landed early as 0.4-S1 → 0.4-S16 + 0.5-S1 → 0.5
 - [x] **Policy management as code** — `Policy` JSON files + `boruna policy validate` (0.4-S?)
 - [x] **Multi-environment support** — `--env` flag + namespaced data-dir + Prometheus `env=` label (0.4-S14)
 - [x] **Streaming output from `boruna_run`** ([#4](https://github.com/escapeboy/boruna/issues/4)) — periodic `progress` events + capability call markers (post1-T-1.1, post1-T-2.2)
-- [ ] **LLM provider registry** — configure and route between model providers
-- [ ] **Scheduled workflows** (carried over from 0.3.x) — full cron daemon vs. external-scheduler-friendly mode
+- [x] **LLM provider registry** — config-driven provider selection via `--providers providers.json`; `ProviderRegistry` validates config + logs intent (`post1/scheduler-registry-rolling`)
+- [x] **Scheduled workflows** (carried over from 0.3.x) — full cron daemon via `boruna workflow schedule` (`post1/scheduler-registry-rolling`)
 
 ## 0.5.0 — Distributed execution + spec freeze
 
@@ -99,7 +99,7 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **Coordinator HA / failover** (sprint `W2`) — multi-coord active-active against shared SQLite, worker URL failover at registration, `/api/health` for LB probes; deployment guide at [`guides/coord-ha.md`](./guides/coord-ha.md). The ADR 002 "coord restart = all leases void" assumption was audited and confirmed already-safe (threshold-based sweep preserves healthy leases under concurrent coords).
 - [x] **Worker capability tagging / placement** (sprint `W3-A`) — workers advertise a SUBSET of the coord's capability set via `--advertise-caps`; coord filters claims to caps the worker covers. Backwards-compatible (omitted flag = full fleet). New `coord.unknown_capability` error_kind.
 - [x] **Blob GC sweep** (sprint `W3-B`) — `boruna evidence gc-blobs` reclaims orphan blobs in `<data-dir>/blobs/`. Closes the 0.5-S7 accepted limitation around manual cleanup.
-- [ ] **Rolling upgrades** — heterogeneous worker versions via per-capability version negotiation
+- [x] **Rolling upgrades** — per-capability version negotiation via `--advertise-cap-versions cap=ver`; coordinator filters by version compatibility (`post1/scheduler-registry-rolling`)
 
 ### (b) Spec freeze
 
