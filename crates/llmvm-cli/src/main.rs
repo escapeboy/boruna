@@ -302,6 +302,21 @@ enum CoordinatorCommand {
         /// trio — passing CRLs without mTLS is a startup error.
         #[arg(long, value_name = "FILE")]
         tls_client_crl: Vec<PathBuf>,
+        /// post1-T-4.3 (0.7.x): DER-encoded OCSP response to
+        /// staple into every TLS handshake. When set, rustls
+        /// includes the pre-fetched response so clients do not
+        /// need a separate OCSP request to check the server
+        /// cert's revocation status.
+        ///
+        /// Generate with:
+        ///   openssl ocsp -issuer issuer.pem -cert server.pem \
+        ///     -url http://ocsp.example.com -respout server.ocsp
+        ///
+        /// File must be DER-encoded (binary). Requires the full
+        /// `--tls-cert/--tls-key/--tls-client-ca` trio — passing
+        /// an OCSP staple without mTLS is a startup error.
+        #[arg(long, value_name = "FILE")]
+        tls_ocsp_staple: Option<PathBuf>,
     },
     /// Drive a submit-only workflow run to terminal status by
     /// computing downstream-ready successors as workers complete
@@ -1354,6 +1369,7 @@ fn run_coordinator(
             tls_key,
             tls_client_ca,
             tls_client_crl,
+            tls_ocsp_staple,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
@@ -1366,6 +1382,7 @@ fn run_coordinator(
                     tls_key,
                     tls_client_ca,
                     tls_client_crl,
+                    tls_ocsp_staple,
                 )?;
                 coordinator::run_serve(
                     resolved,
@@ -1392,6 +1409,7 @@ fn run_coordinator(
                     tls_key,
                     tls_client_ca,
                     tls_client_crl,
+                    tls_ocsp_staple,
                 );
                 return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
             }

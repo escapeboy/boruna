@@ -67,6 +67,39 @@ that was already in force.
 > follow-up; reload semantics above describe the intended
 > behavior.
 
+## OCSP Stapling (post1-T-4.3)
+
+`boruna coordinator serve` also accepts `--tls-ocsp-staple <FILE>` to
+embed a pre-fetched OCSP response in every TLS handshake. This lets
+connecting clients verify that the server certificate is not revoked
+without making a separate round-trip to an OCSP responder.
+
+The file must be **DER-encoded** (binary) — this is the format rustls
+expects internally. Generate it with OpenSSL:
+
+```sh
+openssl ocsp \
+  -issuer issuer.pem \
+  -cert   server.pem \
+  -url    http://ocsp.your-ca.example.com \
+  -respout server.ocsp
+```
+
+Pass it to the coordinator:
+
+```sh
+boruna coordinator serve \
+  --tls-cert         /etc/boruna/tls/server.pem \
+  --tls-key          /etc/boruna/tls/server.key \
+  --tls-client-ca    /etc/boruna/tls/clients-ca.pem \
+  --tls-ocsp-staple  /etc/boruna/tls/server.ocsp
+```
+
+The flag requires the full `--tls-cert/--tls-key/--tls-client-ca`
+trio; passing it on a plaintext server is a fatal startup error.
+Refresh the staple file (OCSP responses typically expire within a few
+hours to days) and restart the process to pick up the new response.
+
 ## Verification recipe (manual)
 
 After deploying, exercise the revocation path with a smoke test:
