@@ -5,27 +5,22 @@
 //! trailing commas on multi-line lists/records, and one blank line between
 //! top-level declarations.
 //!
-//! # v1 limitation: comments are not preserved
-//!
-//! The compiler's lexer drops `//` line comments before they reach the
-//! parser, so the AST has no record of where comments lived. This v1 of
-//! the formatter therefore strips all comments. It is still useful as a
-//! CI gate for generated/comment-free code, and as the "fix-it" command
-//! for editor integrations on comment-free regions. Comment-preserving
-//! formatting is tracked as future work — it requires either a
-//! token-aware AST or an alternative trivia-attaching pass.
+//! `//` line comments are preserved. The formatter uses `lex_full` trivia
+//! to attach comments to their following token, then re-inserts them into
+//! the AST-formatted output at the correct indentation level.
 //!
 //! See `docs/design-boruna-fmt.md` for the full design.
 //!
 //! # Public API
 //!
-//! - [`format_source`] — return the canonically formatted string.
+//! - [`format_source`] — return the canonically formatted string (comments preserved).
 //! - [`check_source`] — return `true` if the source is already
 //!   canonically formatted (i.e. equal to `format_source(src)`),
 //!   `false` otherwise. Used by `boruna fmt --check`.
 //!
 //! Both return [`FormatError::ParseFailed`] if the input does not parse.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use boruna_compiler::ast::{
@@ -33,7 +28,8 @@ use boruna_compiler::ast::{
     TypeExpr, UnaryOp,
 };
 use boruna_compiler::error::CompileError;
-use boruna_compiler::{lexer, parser};
+use boruna_compiler::lexer::{self, Trivia};
+use boruna_compiler::parser;
 
 /// Canonical indent width.
 const INDENT: &str = "    ";
@@ -90,13 +86,139 @@ impl From<CompileError> for FormatError {
 }
 
 /// Format the given `.ax` source. Returns the canonically formatted
-/// string (always ending with a single trailing newline).
+/// string (always ending with a single trailing newline). `//` line
+/// comments are preserved and re-inserted at the correct indentation.
 pub fn format_source(src: &str) -> Result<String, FormatError> {
-    let tokens = lexer::lex(src)?;
-    let program = parser::parse(tokens)?;
-    let mut p = Printer::new();
-    p.print_program(&program);
-    Ok(p.finish())
+    format_source_v2(src)
+}
+
+/// Comment-preserving formatter (the canonical implementation).
+///
+/// Steps:
+/// 1. Run the AST-based printer (v1) to get a comment-stripped, canonically
+///    formatted string.
+/// 2. Run `lex_full` on the original source to collect `leading_trivia`
+///    (comments) attached to each real token.
+/// 3. Re-insert comments into the formatted output immediately before the
+///    line that starts with the token they were attached to, using an
+///    occurrence counter to disambiguate identical token texts.
+/// 4. Append any trailing trivia (comments after the last token).
+pub fn format_source_v2(src: &str) -> Result<String, FormatError> {
+    // Step 1: AST-based format (strips comments).
+    let tokens_for_parse = lexer::lex(src)?;
+    let program = parser::parse(tokens_for_parse)?;
+    let mut printer = Printer::new();
+    printer.print_program(&program);
+    let formatted = printer.finish();
+
+    // Step 2: Collect trivia from the original source.
+    let lex_out = lexer::lex_full(src)?;
+
+    // Build an ordered list of (token_text, occurrence_wanted, comments).
+    // `occurrence_wanted` is the Nth time this token_text appears in the
+    // formatted output (0-based), so we can place the comment before the
+    // correct line when the same keyword appears multiple times.
+    let mut comment_anchors: Vec<(String, usize, Vec<String>)> = Vec::new();
+    {
+        let mut occurrence_counter: HashMap<String, usize> = HashMap::new();
+        for tok in &lex_out.tokens {
+            if !tok.leading_trivia.is_empty() {
+                let text = token_kind_text(&tok.kind);
+                if text.is_empty() {
+                    continue;
+                }
+                let comments: Vec<String> = tok
+                    .leading_trivia
+                    .iter()
+                    .map(|t| match t {
+                        Trivia::LineComment(s) => s.clone(),
+                    })
+                    .collect();
+                let n = *occurrence_counter.get(&text).unwrap_or(&0);
+                comment_anchors.push((text.clone(), n, comments));
+            }
+            // Count every non-newline token so occurrence_counter tracks
+            // how many times we've seen each token text in source order.
+            let text = token_kind_text(&tok.kind);
+            if !text.is_empty() {
+                *occurrence_counter.entry(text).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Fast path: no comments at all.
+    let trailing: Vec<String> = lex_out
+        .trailing_trivia
+        .iter()
+        .map(|t| match t {
+            Trivia::LineComment(s) => s.clone(),
+        })
+        .collect();
+
+    if comment_anchors.is_empty() && trailing.is_empty() {
+        return Ok(formatted);
+    }
+
+    // Step 3: Walk the formatted output line by line.
+    // For each anchor (tok_text, occurrence_wanted, comments) we find the
+    // `occurrence_wanted`-th line whose trimmed content starts with tok_text
+    // as a whole token, then prepend the comment lines (at the same indent).
+    //
+    // We process anchors in order and consume them greedily as we scan lines.
+    let lines: Vec<&str> = formatted.lines().collect();
+    // seen_count[tok_text] = lines matching tok_text that we have already passed.
+    let mut seen_count: HashMap<String, usize> = HashMap::new();
+    // Index into comment_anchors of the next anchor to place.
+    let mut anchor_idx = 0;
+
+    let mut result_lines: Vec<String> = Vec::with_capacity(lines.len() + comment_anchors.len() * 2);
+
+    for line in &lines {
+        let trimmed = line.trim_start();
+
+        // Before emitting this line, check whether any pending anchors target it.
+        // An anchor (tok_text, n, comments) targets this line when:
+        //   trimmed starts with tok_text as a whole token
+        //   AND seen_count[tok_text] == n  (this is the n-th such line, 0-based)
+        while anchor_idx < comment_anchors.len() {
+            let (ref tok_text, occurrence_wanted, ref comments) = comment_anchors[anchor_idx];
+            let current = *seen_count.get(tok_text).unwrap_or(&0);
+            if line_starts_with_whole_token(trimmed, tok_text) && current == occurrence_wanted {
+                let indent = &line[..line.len() - trimmed.len()];
+                for comment in comments {
+                    result_lines.push(format!("{indent}{comment}"));
+                }
+                anchor_idx += 1;
+                // Don't increment seen_count here; we do it after the loop
+                // to keep the invariant stable across multiple anchors on the
+                // same line (multiple consecutive comments before one token).
+            } else {
+                break;
+            }
+        }
+
+        // Track that we've now passed this line's leading token.
+        if !trimmed.is_empty() {
+            let leading = extract_leading_token(trimmed);
+            *seen_count.entry(leading).or_insert(0) += 1;
+        }
+
+        result_lines.push(line.to_string());
+    }
+
+    // Step 4: append trailing trivia.
+    for comment in &trailing {
+        result_lines.push(comment.clone());
+    }
+
+    let mut out = result_lines.join("\n");
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// Return true if `src` is already canonically formatted, i.e.
@@ -105,6 +227,86 @@ pub fn format_source(src: &str) -> Result<String, FormatError> {
 pub fn check_source(src: &str) -> Result<bool, FormatError> {
     let formatted = format_source(src)?;
     Ok(formatted == src)
+}
+
+// ---------------------------------------------------------------------------
+// Trivia helpers
+// ---------------------------------------------------------------------------
+
+/// Return the canonical text representation of a token kind for matching
+/// against formatted-output lines.  Returns an empty string for token kinds
+/// that can't reliably anchor a comment (e.g. newlines, operators).
+fn token_kind_text(kind: &lexer::TokenKind) -> String {
+    use lexer::TokenKind::*;
+    match kind {
+        // Keywords
+        Fn => "fn".into(),
+        Let => "let".into(),
+        Mut => "mut".into(),
+        If => "if".into(),
+        Else => "else".into(),
+        Match => "match".into(),
+        Return => "return".into(),
+        Type => "type".into(),
+        Enum => "enum".into(),
+        ModuleKw => "module".into(),
+        Import => "import".into(),
+        Export => "export".into(),
+        True => "true".into(),
+        False => "false".into(),
+        None => "None".into(),
+        Some => "Some".into(),
+        Ok => "Ok".into(),
+        ErrKw => "Err".into(),
+        Requires => "requires".into(),
+        Ensures => "ensures".into(),
+        Spawn => "spawn".into(),
+        Send => "send".into(),
+        Receive => "receive".into(),
+        Emit => "emit".into(),
+        While => "while".into(),
+        For => "for".into(),
+        In => "in".into(),
+        // Identifiers and literals — use their text directly.
+        Ident(s) => s.clone(),
+        IntLit(n) => n.to_string(),
+        FloatLit(f) => format!("{f}"),
+        StringLit(s) => format!("\"{s}\""),
+        // Everything else (operators, delimiters, newlines) is not useful as
+        // an anchor because it appears too frequently or mid-line.
+        _ => String::new(),
+    }
+}
+
+/// True if `trimmed` (a line with leading whitespace already stripped) starts
+/// with `tok` as a whole token, i.e. not as a prefix of a longer identifier.
+fn line_starts_with_whole_token(trimmed: &str, tok: &str) -> bool {
+    if !trimmed.starts_with(tok) {
+        return false;
+    }
+    // The character after `tok` must be non-alphanumeric / non-underscore,
+    // or there is no character after (end of string / whitespace).
+    match trimmed[tok.len()..].chars().next() {
+        None => true,
+        Some(c) => !c.is_alphanumeric() && c != '_',
+    }
+}
+
+/// Extract the leading token text from an already-trimmed line, for occurrence
+/// counting.  Returns the first word (identifier/keyword) or first character.
+fn extract_leading_token(trimmed: &str) -> String {
+    let end = trimmed
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(trimmed.len());
+    if end == 0 {
+        trimmed
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    } else {
+        trimmed[..end].to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -711,5 +913,56 @@ mod tests {
     fn check_returns_true_for_canonical() {
         let src = format_source("fn main() -> Int { 0 }").unwrap();
         assert!(check_source(&src).unwrap());
+    }
+
+    #[test]
+    fn comments_before_fn_preserved() {
+        let src = "// top-level comment\nfn main() -> Int {\n0\n}\n";
+        let out = format_source(src).unwrap();
+        assert!(
+            out.contains("// top-level comment"),
+            "comment missing: {out}"
+        );
+        assert!(out.contains("fn main()"), "fn missing: {out}");
+        // Comment must appear before fn in the output.
+        let comment_pos = out.find("// top-level comment").unwrap();
+        let fn_pos = out.find("fn main()").unwrap();
+        assert!(comment_pos < fn_pos, "comment must precede fn: {out}");
+    }
+
+    #[test]
+    fn comments_before_let_preserved() {
+        let src = "fn main() -> Int {\n// before let\nlet x: Int = 1\nx\n}\n";
+        let out = format_source(src).unwrap();
+        assert!(out.contains("// before let"), "comment missing: {out}");
+        // Comment should appear before `let x` and be indented.
+        let comment_pos = out.find("// before let").unwrap();
+        let let_pos = out.find("let x").unwrap();
+        assert!(comment_pos < let_pos, "comment must precede let: {out}");
+        // Comment line should be indented (4 spaces).
+        let comment_line = out.lines().find(|l| l.contains("// before let")).unwrap();
+        assert!(
+            comment_line.starts_with("    "),
+            "comment should be indented: {comment_line:?}"
+        );
+    }
+
+    #[test]
+    fn comment_at_eof_preserved() {
+        let src = "fn main() -> Int {\n0\n}\n// trailing comment\n";
+        let out = format_source(src).unwrap();
+        assert!(
+            out.contains("// trailing comment"),
+            "trailing comment missing: {out}"
+        );
+    }
+
+    #[test]
+    fn idempotent_with_comments() {
+        let src =
+            "// header comment\nfn add(a: Int, b: Int) -> Int {\n// return the sum\na + b\n}\n";
+        let once = format_source(src).unwrap();
+        let twice = format_source(&once).unwrap();
+        assert_eq!(once, twice, "formatting should be idempotent");
     }
 }
