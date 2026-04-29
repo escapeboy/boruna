@@ -1,0 +1,34 @@
+// Step 3: Archive the stored record to blob storage.
+//
+// Inline from std.storage — import pending full package resolver integration.
+//
+// std.storage surface used: storage_key, storage_make_entry, storage_set, storage_bump_version
+
+// --- Inline from std.storage ---
+type Effect { kind: String, payload: String, callback_tag: String }
+type StorageKey { namespace: String, key: String }
+type StorageEntry { namespace: String, key: String, value: String, version: Int }
+
+fn storage_key(namespace: String, key: String) -> StorageKey {
+    StorageKey { namespace: namespace, key: key }
+}
+
+fn storage_set(namespace: String, key: String, value: String, callback_tag: String) -> Effect {
+    Effect { kind: "storage_write", payload: namespace, callback_tag: callback_tag }
+}
+
+fn storage_make_entry(namespace: String, key: String, value: String, version: Int) -> StorageEntry {
+    StorageEntry { namespace: namespace, key: key, value: value, version: version }
+}
+
+fn storage_bump_version(entry: StorageEntry, new_value: String) -> StorageEntry {
+    StorageEntry { ..entry, value: new_value, version: entry.version + 1 }
+}
+
+fn main() -> Int {
+    let key: StorageKey = storage_key("ingestion-archive", "record-001")
+    let entry: StorageEntry = storage_make_entry("ingestion-archive", "record-001", "demo_payload", 1)
+    let bumped: StorageEntry = storage_bump_version(entry, "demo_payload_v2")
+    let effect: Effect = storage_set("ingestion-archive", "record-001", bumped.value, "on_archived")
+    0
+}

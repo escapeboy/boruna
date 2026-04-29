@@ -1,0 +1,77 @@
+// Step 2: Synchronize state across concurrent writers using last-write-wins conflict resolution.
+//
+// Inline from std.sync — import pending full package resolver integration.
+//
+// std.sync surface used: sync_init, sync_queue_edit, sync_mark_synced, sync_detect_conflict, sync_resolve_conflict
+
+// --- Inline from std.sync ---
+type Effect { kind: String, payload: String, callback_tag: String }
+
+type SyncState {
+    online: Int,
+    pending_count: Int,
+    synced_count: Int,
+    status: String,
+    local_version: Int,
+    remote_version: Int,
+    conflicts: Int,
+    resolved: Int
+}
+
+fn sync_init() -> SyncState {
+    SyncState {
+        online: 1,
+        pending_count: 0,
+        synced_count: 0,
+        status: "idle",
+        local_version: 0,
+        remote_version: 0,
+        conflicts: 0,
+        resolved: 0
+    }
+}
+
+fn sync_queue_edit(state: SyncState) -> SyncState {
+    SyncState {
+        ..state,
+        pending_count: state.pending_count + 1,
+        local_version: state.local_version + 1,
+        status: if state.online == 1 { "syncing" } else { "queued" }
+    }
+}
+
+fn sync_mark_synced(state: SyncState) -> SyncState {
+    let new_pending: Int = if state.pending_count > 0 { state.pending_count - 1 } else { 0 }
+    SyncState {
+        ..state,
+        pending_count: new_pending,
+        synced_count: state.synced_count + 1,
+        status: if new_pending == 0 { "idle" } else { "syncing" }
+    }
+}
+
+fn sync_detect_conflict(state: SyncState) -> SyncState {
+    SyncState {
+        ..state,
+        conflicts: state.conflicts + 1,
+        status: "conflict"
+    }
+}
+
+fn sync_resolve_conflict(state: SyncState, strategy: String) -> SyncState {
+    SyncState {
+        ..state,
+        resolved: state.resolved + 1,
+        local_version: state.local_version + 1,
+        status: "resolving"
+    }
+}
+
+fn main() -> Int {
+    let state: SyncState = sync_init()
+    let after_edit: SyncState = sync_queue_edit(state)
+    let with_conflict: SyncState = sync_detect_conflict(after_edit)
+    let resolved: SyncState = sync_resolve_conflict(with_conflict, "last-write-wins")
+    let after_sync: SyncState = sync_mark_synced(resolved)
+    after_sync.synced_count
+}

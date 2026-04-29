@@ -1,0 +1,61 @@
+// Step 2: Check authorization for the submitting user.
+//
+// Inline from std.authz — import pending full package resolver integration.
+//
+// std.authz surface used: authz_default_policy, authz_role_level, authz_check_level
+
+// --- Inline from std.authz ---
+type Role { name: String, level: Int }
+type AuthzResult { allowed: Int, reason: String }
+
+type AuthzPolicy {
+    admin_role: String,
+    editor_role: String,
+    viewer_role: String,
+    admin_level: Int,
+    editor_level: Int,
+    viewer_level: Int
+}
+
+fn authz_default_policy() -> AuthzPolicy {
+    AuthzPolicy {
+        admin_role: "admin",
+        editor_role: "editor",
+        viewer_role: "viewer",
+        admin_level: 100,
+        editor_level: 50,
+        viewer_level: 10
+    }
+}
+
+fn authz_role_level(policy: AuthzPolicy, role_name: String) -> Int {
+    if role_name == policy.admin_role {
+        policy.admin_level
+    } else {
+        if role_name == policy.editor_role {
+            policy.editor_level
+        } else {
+            if role_name == policy.viewer_role {
+                policy.viewer_level
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn authz_check_level(policy: AuthzPolicy, role_name: String, required_level: Int) -> AuthzResult {
+    let level: Int = authz_role_level(policy, role_name)
+    if level >= required_level {
+        AuthzResult { allowed: 1, reason: "authorized" }
+    } else {
+        AuthzResult { allowed: 0, reason: "insufficient role level" }
+    }
+}
+
+fn main() -> Int {
+    let policy: AuthzPolicy = authz_default_policy()
+    let level: Int = authz_role_level(policy, "editor")
+    let result: AuthzResult = authz_check_level(policy, "editor", 10)
+    result.allowed
+}

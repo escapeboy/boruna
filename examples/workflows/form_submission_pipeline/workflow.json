@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "form-submission-pipeline",
+  "version": "1.0.0",
+  "description": "Validate form input, check authorization, and render a UI response.",
+  "steps": {
+    "validate_input": {
+      "kind": "source",
+      "source": "steps/validate_input.ax",
+      "capabilities": [],
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "check_authz": {
+      "kind": "source",
+      "source": "steps/check_authz.ax",
+      "capabilities": [],
+      "inputs": {
+        "validation_result": "validate_input.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    },
+    "render_response": {
+      "kind": "source",
+      "source": "steps/render_response.ax",
+      "capabilities": [],
+      "inputs": {
+        "authz_result": "check_authz.result"
+      },
+      "outputs": {
+        "result": "String"
+      }
+    }
+  },
+  "edges": [
+    ["validate_input", "check_authz"],
+    ["check_authz", "render_response"]
+  ]
+}
