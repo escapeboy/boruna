@@ -1,10 +1,28 @@
 use crate::error::CompileError;
 use logos::Logos;
 
+/// A piece of source text that is not semantically meaningful to the compiler
+/// but should be preserved for formatting tools.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trivia {
+    /// A `// ...` line comment including the `//` prefix but not the trailing newline.
+    LineComment(String),
+}
+
+/// The full output of lexing: a token stream plus any trivia that appears
+/// after the last real token (trailing comments at end of file).
+pub struct LexOutput {
+    pub tokens: Vec<Token>,
+    /// Trivia that appeared after the final token (e.g. a comment on the last line).
+    pub trailing_trivia: Vec<Trivia>,
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t]+")]
-#[logos(skip r"//[^\n]*")]
 pub enum TokenKind {
+    /// Captured line comment — stripped from the token stream and attached as trivia.
+    #[regex(r"//[^\n]*", |lex| lex.slice().to_string())]
+    LineComment(String),
     // Keywords
     #[token("fn")]
     Fn,
@@ -152,12 +170,17 @@ pub struct Token {
     pub kind: TokenKind,
     pub line: usize,
     pub col: usize,
+    /// Comments that appeared immediately before this token (on preceding lines
+    /// or on the same line before other content). Empty for most tokens.
+    pub leading_trivia: Vec<Trivia>,
 }
 
-pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
+/// Lex `source` and return the full output including trailing trivia.
+pub fn lex_full(source: &str) -> Result<LexOutput, CompileError> {
     let mut tokens = Vec::new();
     let mut line = 1usize;
     let mut line_start = 0usize;
+    let mut trivia_buf: Vec<Trivia> = Vec::new();
 
     let mut lexer = TokenKind::lexer(source);
 
@@ -175,11 +198,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
         let col = span.start - line_start + 1;
 
         match result {
-            Ok(kind) => {
-                if kind == TokenKind::Newline {
+            Ok(kind) => match kind {
+                TokenKind::LineComment(text) => {
+                    trivia_buf.push(Trivia::LineComment(text));
+                }
+                TokenKind::Newline => {
                     line += 1;
                     line_start = span.end;
-                    // Skip consecutive newlines but emit one
+                    // Skip consecutive newlines but emit one.
+                    // Trivia is NOT attached to Newline tokens; it carries forward
+                    // to the next real token so that `// comment\nlet` attaches the
+                    // comment to `let`, not to the intermediate newline.
                     if tokens
                         .last()
                         .is_none_or(|t: &Token| t.kind != TokenKind::Newline)
@@ -188,12 +217,19 @@ pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
                             kind: TokenKind::Newline,
                             line,
                             col,
+                            leading_trivia: Vec::new(),
                         });
                     }
-                } else {
-                    tokens.push(Token { kind, line, col });
                 }
-            }
+                other => {
+                    tokens.push(Token {
+                        kind: other,
+                        line,
+                        col,
+                        leading_trivia: std::mem::take(&mut trivia_buf),
+                    });
+                }
+            },
             Err(_) => {
                 return Err(CompileError::Lexer {
                     line,
@@ -204,5 +240,14 @@ pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
         }
     }
 
-    Ok(tokens)
+    Ok(LexOutput {
+        tokens,
+        trailing_trivia: trivia_buf,
+    })
+}
+
+/// Lex `source` and return only the token stream (trivia discarded from the return value
+/// but still attached as `leading_trivia` on individual tokens).
+pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
+    lex_full(source).map(|o| o.tokens)
 }
