@@ -1186,12 +1186,14 @@ impl WorkflowRunner {
                         WorkflowRunError::Internal(format!("synthetic output serialize: {e}"))
                     })?;
                     let output_hash = DataStore::hash_value(&synthetic);
+                    let (routed_json, routed_blob_ref) =
+                        route_output(output_json, store.blob_store());
                     store
                         .upsert_step_checkpoint(&StepCheckpoint {
                             run_id: run_id.to_string(),
                             step_id: step_id.clone(),
                             status: PersistStepStatus::Completed,
-                            output_json: Some(output_json),
+                            output_json: routed_json,
                             output_hash: Some(output_hash.clone()),
                             started_at_ms: None, // COALESCE preserves
                             ended_at_ms: Some(now),
@@ -1200,7 +1202,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
-                            output_blob_ref: None,
+                            output_blob_ref: routed_blob_ref,
                         })
                         .map_err(WorkflowRunError::from)?;
                     transitions.push((step_id.clone(), PersistStepStatus::Completed));
@@ -1271,12 +1273,13 @@ impl WorkflowRunner {
                 WorkflowRunError::Internal(format!("trigger output serialize: {e}"))
             })?;
             let output_hash = DataStore::hash_value(&synthetic);
+            let (routed_json, routed_blob_ref) = route_output(output_json, store.blob_store());
             store
                 .upsert_step_checkpoint(&StepCheckpoint {
                     run_id: run_id.to_string(),
                     step_id: step_id.clone(),
                     status: PersistStepStatus::Completed,
-                    output_json: Some(output_json),
+                    output_json: routed_json,
                     output_hash: Some(output_hash),
                     started_at_ms: None,
                     ended_at_ms: Some(now_unix_ms()),
@@ -1285,7 +1288,7 @@ impl WorkflowRunner {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
-                    output_blob_ref: None,
+                    output_blob_ref: routed_blob_ref,
                 })
                 .map_err(WorkflowRunError::from)?;
             transitions.push((step_id.clone(), PersistStepStatus::Completed));
@@ -1793,12 +1796,14 @@ impl WorkflowRunner {
                         WorkflowRunError::Internal(format!("synthetic output serialize: {e}"))
                     })?;
                     let output_hash = DataStore::hash_value(&synthetic);
+                    let (routed_json, routed_blob_ref) =
+                        route_output(output_json, store.blob_store());
                     store
                         .upsert_step_checkpoint(&StepCheckpoint {
                             run_id: run_id.to_string(),
                             step_id: step_id.clone(),
                             status: PersistStepStatus::Completed,
-                            output_json: Some(output_json),
+                            output_json: routed_json,
                             output_hash: Some(output_hash.clone()),
                             started_at_ms: None, // COALESCE preserves
                             ended_at_ms: Some(now_unix_ms()),
@@ -1807,7 +1812,7 @@ impl WorkflowRunner {
                             worker_id: None,
                             lease_expires_at_ms: None,
                             claim_id: 0,
-                            output_blob_ref: None,
+                            output_blob_ref: routed_blob_ref,
                         })
                         .map_err(WorkflowRunError::from)?;
                     data_store
@@ -1942,12 +1947,13 @@ impl WorkflowRunner {
                 WorkflowRunError::Internal(format!("trigger output serialize: {e}"))
             })?;
             let output_hash = DataStore::hash_value(&synthetic);
+            let (routed_json, routed_blob_ref) = route_output(output_json, store.blob_store());
             store
                 .upsert_step_checkpoint(&StepCheckpoint {
                     run_id: run_id.to_string(),
                     step_id: step_id.clone(),
                     status: PersistStepStatus::Completed,
-                    output_json: Some(output_json),
+                    output_json: routed_json,
                     output_hash: Some(output_hash.clone()),
                     started_at_ms: None,
                     ended_at_ms: Some(now_unix_ms()),
@@ -1956,7 +1962,7 @@ impl WorkflowRunner {
                     worker_id: None,
                     lease_expires_at_ms: None,
                     claim_id: 0,
-                    output_blob_ref: None,
+                    output_blob_ref: routed_blob_ref,
                 })
                 .map_err(WorkflowRunError::from)?;
             data_store
@@ -2505,12 +2511,14 @@ impl WorkflowRunner {
                             let output_json = serde_json::to_string(&value).map_err(|e| {
                                 WorkflowRunError::Internal(format!("output serialize: {e}"))
                             })?;
+                            let (routed_json, routed_blob_ref) =
+                                route_output(output_json, store.blob_store());
                             store
                                 .upsert_step_checkpoint(&StepCheckpoint {
                                     run_id: run_id.to_string(),
                                     step_id: step_id.clone(),
                                     status: PersistStepStatus::Completed,
-                                    output_json: Some(output_json),
+                                    output_json: routed_json,
                                     output_hash: Some(output_hash.clone()),
                                     started_at_ms: None,
                                     ended_at_ms: Some(now_unix_ms()),
@@ -2519,7 +2527,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
-                                    output_blob_ref: None,
+                                    output_blob_ref: routed_blob_ref,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                             emit_step_terminal_audit(
@@ -2844,13 +2852,17 @@ impl WorkflowRunner {
                         Ok(sr) => {
                             #[cfg(feature = "persist-sqlite")]
                             if let Some(s) = store {
-                                let output_json =
+                                let raw_output_json =
                                     Self::lookup_output_json(data_store, step_id, "result")?;
+                                let (routed_json, routed_blob_ref) = match raw_output_json {
+                                    Some(j) => route_output(j, s.blob_store()),
+                                    None => (None, None),
+                                };
                                 s.upsert_step_checkpoint(&StepCheckpoint {
                                     run_id: run_id.to_string(),
                                     step_id: step_id.clone(),
                                     status: PersistStepStatus::Completed,
-                                    output_json,
+                                    output_json: routed_json,
                                     output_hash: sr.output_hash.clone(),
                                     started_at_ms: None, // COALESCE preserves
                                     ended_at_ms: Some(now_unix_ms()),
@@ -2862,7 +2874,7 @@ impl WorkflowRunner {
                                     worker_id: None,
                                     lease_expires_at_ms: None,
                                     claim_id: 0,
-                                    output_blob_ref: None,
+                                    output_blob_ref: routed_blob_ref,
                                 })
                                 .map_err(WorkflowRunError::from)?;
                                 emit_step_terminal_audit(
@@ -3719,6 +3731,34 @@ fn sha256_hex(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Route a step output to inline storage or the blob store based on size.
+///
+/// Sprint 0.5-S7. Returns `(output_json, output_blob_ref)`. Exactly one of
+/// the two will be `Some`; the other will be `None` — satisfying the
+/// mutual-exclusion invariant enforced by `upsert_step_checkpoint`.
+///
+/// When `blob_store` is `None` or the payload is at or below
+/// [`crate::persistence::BLOB_THRESHOLD`], the output stays inline.
+/// On blob-write failure the function silently falls back to inline so no
+/// output is ever lost.
+#[cfg(feature = "persist-sqlite")]
+fn route_output(
+    output_json: String,
+    blob_store: Option<&crate::persistence::BlobStore>,
+) -> (Option<String>, Option<String>) {
+    use crate::persistence::BLOB_THRESHOLD;
+    match blob_store {
+        Some(bs) if output_json.len() > BLOB_THRESHOLD => {
+            let hash = sha256_hex(&output_json);
+            match bs.write(&hash, output_json.as_bytes()) {
+                Ok(()) => (None, Some(hash)),
+                Err(_) => (Some(output_json), None),
+            }
+        }
+        _ => (Some(output_json), None),
+    }
 }
 
 /// Emit a step-terminal audit event (Completed or Failed) based on
@@ -10984,6 +11024,143 @@ mod tests {
             // Non-empty chain → audit_log_hash is the last entry's hash,
             // not the all-zeros sentinel.
             assert_ne!(manifest.audit_log_hash, "0".repeat(64));
+        }
+    }
+
+    // ── Sprint 0.5-S7: output blob reference write-side ──────────────────────
+
+    #[cfg(feature = "persist-sqlite")]
+    mod output_blob_routing {
+        use super::*;
+        use crate::persistence::{BlobStore, RunCheckpointStore, StepStatus as PsStatus};
+
+        fn make_single_step_workflow(
+            step_id: &str,
+            source_code: &str,
+        ) -> (WorkflowDef, tempfile::TempDir) {
+            make_workflow_with_steps(&[(step_id, source_code)])
+        }
+
+        #[test]
+        fn output_under_threshold_stays_inline() {
+            let (def, dir) = make_single_step_workflow("step1", "fn main() -> Int { 42 }");
+            let data_dir = tempfile::tempdir().unwrap();
+            let opts = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: false,
+            };
+            WorkflowRunner::run_persistent(&def, &opts, data_dir.path()).unwrap();
+
+            let store = RunCheckpointStore::open(&data_dir.path().join("runs.db")).unwrap();
+            let runs = store.list_runs().unwrap();
+            assert!(!runs.is_empty());
+            let cps = store.list_step_checkpoints(&runs[0].run_id).unwrap();
+            let cp = cps.iter().find(|c| c.step_id == "step1").unwrap();
+            assert_eq!(cp.status, PsStatus::Completed);
+            // Small output stays inline; no blob reference.
+            assert!(cp.output_json.is_some(), "expected inline output_json");
+            assert!(
+                cp.output_blob_ref.is_none(),
+                "expected no blob ref for small output"
+            );
+        }
+
+        #[test]
+        fn output_over_threshold_stores_as_blob() {
+            // Step returns a large String via a fn that constructs it.
+            // We craft the .ax source so the *checkpoint* output_json
+            // (the serde_json of Value::Int(0)) is tiny, but we test
+            // the routing logic directly through the helper instead.
+            //
+            // Direct helper test: call route_output with a string > threshold
+            // and a real BlobStore, verify the blob is written and ref returned.
+            let tmp = tempfile::tempdir().unwrap();
+            let bs = BlobStore::open(tmp.path().to_path_buf()).unwrap();
+            // Build a payload just over the threshold.
+            let payload = "a".repeat(crate::persistence::BLOB_THRESHOLD + 1);
+            let (out_json, blob_ref) = route_output(payload.clone(), Some(&bs));
+            assert!(
+                out_json.is_none(),
+                "large output should be offloaded, not inline"
+            );
+            let hash = blob_ref.expect("expected a blob ref");
+            assert_eq!(hash.len(), 64, "blob ref must be 64-char hex");
+            // The blob must be readable and match the original payload.
+            let stored = bs.read_string(&hash).unwrap();
+            assert_eq!(stored, payload);
+        }
+
+        #[test]
+        fn output_over_threshold_falls_back_to_inline_without_blob_store() {
+            let payload = "b".repeat(crate::persistence::BLOB_THRESHOLD + 1);
+            let (out_json, blob_ref) = route_output(payload.clone(), None);
+            assert_eq!(
+                out_json.as_deref(),
+                Some(payload.as_str()),
+                "no blob_store → must stay inline"
+            );
+            assert!(blob_ref.is_none());
+        }
+
+        #[test]
+        fn blob_roundtrip_resume() {
+            // Write a checkpoint with output_blob_ref set, then read it back
+            // via read_step_output and verify the value round-trips.
+            let blobs_dir = tempfile::tempdir().unwrap();
+            let store =
+                RunCheckpointStore::open_in_memory_with_blob_store(blobs_dir.path().to_path_buf())
+                    .unwrap();
+
+            use crate::persistence::{RunRow, RunStatus, StepCheckpoint, StepStatus};
+            // Insert a minimal run row so FK constraints are satisfied.
+            store
+                .insert_run(&RunRow {
+                    run_id: "R1".into(),
+                    workflow_name: "test-wf".into(),
+                    workflow_hash: "abc".into(),
+                    status: RunStatus::Running,
+                    started_at_ms: 0,
+                    updated_at_ms: 0,
+                    policy_json: "{}".into(),
+                    metadata_json: "{}".into(),
+                })
+                .unwrap();
+
+            // Write the blob manually and record its hash.
+            let payload = "c".repeat(crate::persistence::BLOB_THRESHOLD + 1);
+            let hash = sha256_hex(&payload);
+            store
+                .blob_store()
+                .unwrap()
+                .write(&hash, payload.as_bytes())
+                .unwrap();
+
+            // Insert a checkpoint referencing the blob (no inline output_json).
+            store
+                .upsert_step_checkpoint(&StepCheckpoint {
+                    run_id: "R1".into(),
+                    step_id: "s1".into(),
+                    status: StepStatus::Completed,
+                    output_json: None,
+                    output_hash: Some(hash.clone()),
+                    started_at_ms: None,
+                    ended_at_ms: Some(1),
+                    error_msg: None,
+                    attempt_count: 1,
+                    worker_id: None,
+                    lease_expires_at_ms: None,
+                    claim_id: 0,
+                    output_blob_ref: Some(hash.clone()),
+                })
+                .unwrap();
+
+            // read_step_output must resolve the blob and return the payload.
+            let got = store.read_step_output("R1", "s1").unwrap();
+            assert_eq!(got.as_deref(), Some(payload.as_str()));
         }
     }
 }
