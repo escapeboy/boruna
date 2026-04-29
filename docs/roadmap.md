@@ -43,10 +43,10 @@ The DX work originally scoped for 0.2.0 ships incrementally as point releases. E
 
 - [x] `boruna new` — scaffold a new workflow from a template interactively (sprint `W3-C`)
 - [ ] `boruna fmt` — auto-formatter for `.ax` files
-- [ ] `boruna run --watch` — re-run on file change
+- [x] `boruna run --watch` — re-run on file change (post1-T-1.4)
 - [ ] Improved error messages — actionable diagnostics with suggested fixes for common mistakes
 - [ ] Better `lang repair` — handle more repair cases automatically
-- [ ] Evidence bundle diff — compare two runs side-by-side
+- [x] Evidence bundle diff — `boruna evidence diff <bundle-a> <bundle-b>` (post1/evidence-diff, PR #44)
 - [ ] Expanded stdlib — `std-llm`, `std-json` libraries
 
 ## 0.3.0 — Real-use durability — SHIPPED (2026-04-26)
@@ -77,7 +77,7 @@ Originally targeted Q4 2026; landed early as 0.4-S1 → 0.4-S16 + 0.5-S1 → 0.5
 - [x] **OpenTelemetry observability** ([#9](https://github.com/escapeboy/boruna/issues/9)) — per-capability OTLP spans (0.4-S5)
 - [x] **Policy management as code** — `Policy` JSON files + `boruna policy validate` (0.4-S?)
 - [x] **Multi-environment support** — `--env` flag + namespaced data-dir + Prometheus `env=` label (0.4-S14)
-- [ ] **Streaming output from `boruna_run`** ([#4](https://github.com/escapeboy/boruna/issues/4)) — periodic `progress` events. P1 from FleetQ.
+- [x] **Streaming output from `boruna_run`** ([#4](https://github.com/escapeboy/boruna/issues/4)) — periodic `progress` events + capability call markers (post1-T-1.1, post1-T-2.2)
 - [ ] **LLM provider registry** — configure and route between model providers
 - [ ] **Scheduled workflows** (carried over from 0.3.x) — full cron daemon vs. external-scheduler-friendly mode
 
