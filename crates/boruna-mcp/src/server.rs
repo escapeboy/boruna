@@ -239,11 +239,11 @@ impl BorunaMcpServer {
             // 100 by default), so the queue is shallow and a bounded
             // channel adds backpressure complexity for no real benefit.
             // If max_steps grew unboundedly this would need revisiting.
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Option<String>)>();
             let peer = ctx.peer.clone();
             let token_clone = token.clone();
             let forwarder = tokio::spawn(async move {
-                while let Some(steps) = rx.recv().await {
+                while let Some((steps, message)) = rx.recv().await {
                     // Best-effort delivery: a notify failure (e.g. the
                     // client disconnected mid-run) is logged-and-
                     // continued. The VM keeps running and will surface
@@ -255,12 +255,15 @@ impl BorunaMcpServer {
                     // well under the cap. With None, MCP clients
                     // treat `progress` as a monotonic count without a
                     // percentage interpretation. Reviewed in 0.4-S6.
+                    // T-2.2: `message` carries capability call markers
+                    // ("cap: llm.call", "caps: llm.call, net.fetch") so
+                    // MCP clients can surface live capability activity.
                     let _ = peer
                         .notify_progress(ProgressNotificationParam {
                             progress_token: token_clone.clone(),
                             progress: steps as f64,
                             total: None,
-                            message: None,
+                            message,
                         })
                         .await;
                 }
@@ -274,13 +277,13 @@ impl BorunaMcpServer {
                     trace,
                     limits.as_ref(),
                     output_schema.as_ref(),
-                    Some(move |steps: u64| {
+                    Some(move |steps: u64, message: Option<String>| {
                         // Channel is closed only after the blocking
                         // task drops its sender, which happens after
                         // run_source_with_progress returns. Send
                         // failures here are unreachable in practice
                         // but ignored if they ever occur.
-                        let _ = tx.send(steps);
+                        let _ = tx.send((steps, message));
                     }),
                 )
             })

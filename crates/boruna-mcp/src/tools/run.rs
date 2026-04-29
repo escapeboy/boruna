@@ -87,7 +87,7 @@ pub fn run_source(
         trace,
         limits,
         output_schema,
-        None::<fn(u64)>,
+        None::<fn(u64, Option<String>)>,
     )
 }
 
@@ -120,7 +120,7 @@ pub fn run_source_with_progress<F>(
     progress_callback: Option<F>,
 ) -> String
 where
-    F: FnMut(u64),
+    F: FnMut(u64, Option<String>),
 {
     // Reject unsupported limits BEFORE compiling, so an integrator who
     // misconfigures (e.g. sets max_memory_mb expecting it to bound memory)
@@ -277,7 +277,7 @@ where
 ///    than resetting per slice.
 fn drive_vm<F>(vm: &mut Vm, mut progress_callback: Option<F>) -> Result<Value, VmError>
 where
-    F: FnMut(u64),
+    F: FnMut(u64, Option<String>),
 {
     if progress_callback.is_none() {
         // Fast path: no progress callback. Use the existing `vm.run()`
@@ -297,7 +297,17 @@ where
             StepResult::Completed(val) => return Ok(val),
             StepResult::Yielded { .. } => {
                 if let Some(cb) = progress_callback.as_mut() {
-                    cb(vm.step_count());
+                    // T-2.2: drain capability calls made in this slice and
+                    // format as a message for the MCP progress notification.
+                    let caps = vm.take_last_cap_events();
+                    let message = if caps.is_empty() {
+                        None
+                    } else if caps.len() == 1 {
+                        Some(format!("cap: {}", caps[0]))
+                    } else {
+                        Some(format!("caps: {}", caps.join(", ")))
+                    };
+                    cb(vm.step_count(), message);
                 }
             }
             // `Blocked` cannot arise from `Op::ReceiveMsg` here:
@@ -957,7 +967,7 @@ fn main() -> Int {
             false,
             None,
             None,
-            Some(move |steps: u64| {
+            Some(move |steps: u64, _message: Option<String>| {
                 samples_clone.lock().unwrap().push(steps);
             }),
         );
@@ -1004,7 +1014,7 @@ fn main() -> Int {
             false,
             None,
             None,
-            None::<fn(u64)>,
+            None::<fn(u64, Option<String>)>,
         );
         assert_eq!(
             legacy, streamed,
@@ -1029,7 +1039,7 @@ fn main() -> Int {
             false,
             None,
             None,
-            Some(move |steps: u64| {
+            Some(move |steps: u64, _message: Option<String>| {
                 samples_clone.lock().unwrap().push(steps);
             }),
         );
@@ -1070,7 +1080,7 @@ fn main() -> Int {
             false,
             None,
             None,
-            Some(|_steps: u64| {}),
+            Some(|_steps: u64, _message: Option<String>| {}),
         );
         // Both paths must succeed with the same result. The exact step
         // count may differ trivially (start_timer placement); compare
@@ -1101,10 +1111,45 @@ fn main() -> Int {
             false,
             None,
             None,
-            Some(|_steps: u64| {}),
+            Some(|_steps: u64, _message: Option<String>| {}),
         );
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], json!(false));
         assert_eq!(parsed["error_kind"], json!("runtime_error"));
+    }
+
+    // ── T-2.2: capability_call streaming events ──
+    // The cap-name-in-message contract is tested at the VM level
+    // (boruna-vm crate) where bytecode can be injected directly.
+    // Here we test only the pure-program case to lock the MCP-layer
+    // contract: no cap calls → message is always None.
+
+    #[test]
+    fn progress_callback_message_is_none_when_no_caps_called() {
+        use std::sync::{Arc, Mutex};
+        let messages: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let messages_clone = Arc::clone(&messages);
+        // STREAMING_PROGRAM is a pure while-loop with no capability calls.
+        let out = run_source_with_progress(
+            STREAMING_PROGRAM,
+            None,
+            10_000_000,
+            false,
+            None,
+            None,
+            Some(move |_steps: u64, message: Option<String>| {
+                messages_clone.lock().unwrap().push(message);
+            }),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true), "program must succeed: {out}");
+
+        let msgs = messages.lock().unwrap();
+        // Some notifications may fire; all must have message = None (no caps called).
+        assert!(
+            msgs.iter().all(|m| m.is_none()),
+            "pure program must never emit cap messages: {:?}",
+            msgs
+        );
     }
 }
