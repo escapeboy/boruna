@@ -42,6 +42,21 @@ gcs-it = [
     "dep:tokio",
     "dep:reqwest",
 ]
+# post1-T-3.3: Azure Blob BundleStorage adapter. Same shape as
+# `s3` and `gcs` — enables the `azure` feature on object_store.
+# Off by default. See docs/guides/bundle-storage-azure.md.
+azure = ["dep:object_store", "object_store/azure", "dep:tokio", "dep:futures"]
+# post1-T-3.3: an Azurite-based integration test was deferred —
+# Azurite requires SharedKey-signed container creation calls
+# (object_store's Azure adapter doesn't expose a `create_container`
+# operation), and pulling in the full `azure-storage` crate or
+# implementing manual SharedKey signing for one test wasn't a
+# proportionate cost. Coverage today: 18 unit tests for URI
+# parsing, object-path concatenation, ref-to-run-id extraction,
+# and error classification. Integration verification against real
+# Azure is the operator follow-up. If we later decide to add an
+# `azure-it` feature, follow the s3-it / gcs-it shape; the
+# missing piece is just the bucket-create primitive.
 
 [[bin]]
 name = "boruna-orch"

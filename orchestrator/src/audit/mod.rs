@@ -4,6 +4,8 @@ pub mod fingerprint;
 pub mod log;
 pub mod rotate;
 pub mod storage;
+#[cfg(feature = "azure")]
+pub mod storage_azure;
 #[cfg(feature = "gcs")]
 pub mod storage_gcs;
 #[cfg(feature = "s3")]

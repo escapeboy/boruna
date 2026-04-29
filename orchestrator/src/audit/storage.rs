@@ -195,9 +195,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// - `gs://<bucket>[/<prefix>]` — requires the `gcs` feature
 ///   (post1-T-3.2). Constructs a
 ///   [`crate::audit::storage_gcs::GcsBucket`] backed by `object_store`.
-/// - `azblob://<container>[/<prefix>]` — reserved for T-3.3;
-///   rejected with [`StorageError::InvalidUri`] until that adapter
-///   ships.
+/// - `azblob://<account>/<container>[/<prefix>]` — requires the
+///   `azure` feature (post1-T-3.3). Constructs an
+///   [`crate::audit::storage_azure::AzureBlobBucket`] backed by
+///   `object_store`.
 ///
 /// When a remote scheme's feature is OFF the URI rejects with an
 /// actionable message that points the operator at the feature
@@ -246,19 +247,28 @@ pub fn from_uri(uri: Option<&str>) -> Result<Option<Box<dyn BundleStorage>>, Sto
              `--features boruna-cli/gcs` for the CLI binary)"
         )));
     }
+    #[cfg(feature = "azure")]
+    if uri.starts_with("azblob://") {
+        let bucket = crate::audit::storage_azure::AzureBlobBucket::from_uri(uri)?;
+        return Ok(Some(Box::new(bucket)));
+    }
+    #[cfg(not(feature = "azure"))]
     if uri.starts_with("azblob://") {
         return Err(StorageError::InvalidUri(format!(
-            "{uri} is reserved for a future remote-storage adapter (T-3.3); \
-             this Boruna build only supports {schemes}",
-            schemes = available_schemes_help()
+            "{uri} requires the `azure` feature; rebuild with \
+             `--features boruna-orchestrator/azure` (or \
+             `--features boruna-cli/azure` for the CLI binary)"
         )));
     }
     Err(StorageError::InvalidUri(uri.to_string()))
 }
 
 /// Build a human-readable list of the schemes this binary supports.
-/// Used in the "azblob:// is reserved" error message and any future
-/// scheme-specific reservation messages.
+/// Reserved for use in any future scheme-specific reservation
+/// messages. Currently unused (all remote schemes ship with their
+/// own actionable OFF-feature messages) but kept available because
+/// the next reserved scheme will need it.
+#[allow(dead_code)]
 fn available_schemes_help() -> String {
     let mut schemes = vec!["local:<path>"];
     if cfg!(feature = "s3") {
@@ -266,6 +276,9 @@ fn available_schemes_help() -> String {
     }
     if cfg!(feature = "gcs") {
         schemes.push("gs://");
+    }
+    if cfg!(feature = "azure") {
+        schemes.push("azblob://");
     }
     schemes.join(", ")
 }
@@ -377,10 +390,22 @@ mod tests {
         }
     }
 
+    /// `azblob://` is feature-gated as of T-3.3. With the `azure`
+    /// feature OFF, the URI must reject with an actionable message
+    /// (matches the s3/gcs OFF-feature pattern).
+    #[cfg(not(feature = "azure"))]
     #[test]
-    fn from_uri_azblob_reserves_clear_error() {
-        // azblob:// is unimplemented in every build (T-3.3).
-        assert_invalid_uri(from_uri(Some("azblob://c/p")));
+    fn from_uri_azure_without_feature_rejects_with_actionable_message() {
+        match from_uri(Some("azblob://acct/cont")) {
+            Err(StorageError::InvalidUri(msg)) => {
+                assert!(
+                    msg.contains("requires the `azure` feature"),
+                    "expected actionable message, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidUri, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
     }
 
     /// When the `s3` feature is OFF, `s3://` URIs must reject with

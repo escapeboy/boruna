@@ -39,6 +39,10 @@ s3 = ["boruna-orchestrator/s3"]
 # `--bundle-storage gs://...` constructs a real adapter. Off by
 # default. See docs/guides/bundle-storage-gcs.md.
 gcs = ["boruna-orchestrator/gcs"]
+# post1-T-3.3: forwards to boruna-orchestrator's `azure` feature so
+# `--bundle-storage azblob://...` constructs a real adapter. Off
+# by default. See docs/guides/bundle-storage-azure.md.
+azure = ["boruna-orchestrator/azure"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }
