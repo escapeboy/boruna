@@ -2,18 +2,11 @@
 
 This roadmap describes what Boruna is working toward. It is realistic, not aspirational marketing. Items without a milestone are under consideration but not scheduled.
 
-Last refreshed: 2026-04-27 (after the 0.5-S2 distributed-execution sprint cycle).
+Last refreshed: 2026-04-29 (after the v1.1.0 release).
 
-## Current: 0.4.0 (pending tag)
+## Current: 1.1.0 — SHIPPED (2026-04-29)
 
-Workspace version is `0.4.0` in `Cargo.toml`. The distributed-execution stack from the 0.5.0 plan landed early via the 0.5-S2 sub-sprint cycle (S2a → S2f) on master without a release tag. The next release tag will likely be cut after the 0.5-S3 (auth) sprint lands, since exposing the coordinator publicly without auth is a footgun.
-
-**On master since v0.3.0 tag:**
-- 0.4-S1 → 0.4-S16 — Operations cycle (workflow dashboard, OpenTelemetry observability, Prometheus metrics, multi-environment namespacing, policy-as-code, fine-grained policy, output schema validation, net record/replay, capability identity hash, audit decision events, parent-dir fsync). Each sprint has a corresponding `docs/design-*.md` + retro under `retro/`.
-- 0.5-S1 — ADR 002 (distributed step execution architecture).
-- 0.5-S2a → 0.5-S2f — distributed-execution stack: claim/lease persistence, coordinator/worker HTTP MVP, background lease-expiry sweep, coord+dashboard listener-merge, `workflow run --submit-only`, `coordinator wait <run-id>` for multi-wave advancement.
-
-**The 0.5.0 cycle is now end-to-end functional for arbitrary multi-wave workflows.** Operators can submit a real workflow.json + .ax files via `--submit-only` and drive to terminal status via `coordinator wait`, with a coord+workers cluster doing the actual execution.
+Workspace version is `1.1.0`. First feature minor on the 1.x LTS line. See the [1.1.0 section](#110--shipped-2026-04-29) for details.
 
 ## Previous: 0.3.0
 
