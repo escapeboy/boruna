@@ -721,6 +721,19 @@ enum WorkflowCommand {
         /// full-source coverage.
         #[arg(long, value_name = "HEX")]
         expect_workflow_hash: Option<String>,
+        /// post1-T-2.3: copy the finalized evidence bundle to a
+        /// pluggable storage backend after the local write
+        /// succeeds. URI scheme dispatches to the adapter:
+        ///   `local:<root>` — copy the bundle into `<root>/<run-id>/`.
+        /// Remote schemes (`s3://`, `gs://`, `azblob://`) are
+        /// reserved for future Wave 3 adapters and currently reject
+        /// at parse time. Falls back to `BORUNA_BUNDLE_STORAGE`
+        /// env var. When neither is set, no copy is made (the
+        /// pre-T-2.3 behavior). A copy failure is logged but does
+        /// not fail the workflow — the local bundle is the
+        /// authoritative record.
+        #[arg(long, value_name = "URI", env = "BORUNA_BUNDLE_STORAGE")]
+        bundle_storage: Option<String>,
     },
     /// Approve a paused approval-gate step. Records an approval sentinel
     /// in the run's metadata; the operator must run `boruna workflow
@@ -2648,6 +2661,7 @@ fn run_workflow(
             coord_poll_interval_ms,
             coord_max_wait_secs,
             expect_workflow_hash,
+            bundle_storage,
         } => {
             // Sprint W6-B: --encrypt-bundle implies --record. Reject
             // up front (project-conventions §1) when the operator
@@ -2877,13 +2891,32 @@ fn run_workflow(
                 });
 
                 let manifest = builder.finalize(&audit)?;
-                println!(
-                    "\nevidence bundle: {}",
-                    ev_dir.join(&result.run_id).display()
-                );
+                let bundle_dir = ev_dir.join(&result.run_id);
+                println!("\nevidence bundle: {}", bundle_dir.display());
                 println!("  bundle_hash: {}", manifest.bundle_hash);
                 println!("  audit_log_hash: {}", manifest.audit_log_hash);
                 println!("  files: {}", manifest.file_checksums.len());
+
+                // post1-T-2.3: optional copy to a pluggable storage
+                // backend. Failures are logged, not propagated —
+                // the local bundle is the authoritative record.
+                match boruna_orchestrator::audit::storage::from_uri(bundle_storage.as_deref()) {
+                    Ok(Some(storage)) => match storage.put(&result.run_id, &bundle_dir) {
+                        Ok(r) => println!("  storage_ref: {r}"),
+                        Err(e) => eprintln!(
+                            "warning: bundle storage put failed for {}: {e} \
+                                 (local bundle at {} is authoritative)",
+                            result.run_id,
+                            bundle_dir.display()
+                        ),
+                    },
+                    Ok(None) => {}
+                    Err(e) => eprintln!(
+                        "warning: --bundle-storage URI invalid: {e} \
+                             (local bundle at {} is authoritative)",
+                        bundle_dir.display()
+                    ),
+                }
             }
         }
         WorkflowCommand::Resume {

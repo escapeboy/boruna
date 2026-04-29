@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Pluggable evidence-bundle storage trait `BundleStorage` and a
+  `LocalFs` adapter (post1-T-2.3). `boruna workflow run --record`
+  now accepts `--bundle-storage <uri>` (or `BORUNA_BUNDLE_STORAGE`
+  env var); when set, the finalized bundle is copied to the
+  configured backend after the local write succeeds. Storage
+  failure is logged but never fails the workflow — the local
+  bundle remains the authoritative record. Only the `local:<root>`
+  scheme ships in this release; `s3://`, `gs://`, `azblob://` are
+  reserved for Wave 3 adapters and reject at parse time. The
+  trait is `#[doc(hidden)]` until at least one remote adapter
+  ships.
 - `boruna_run` MCP progress notifications are now part of the 1.x
   LTS-stable surface (post1-T-1.1). When a client supplies the
   standard MCP `progressToken` in the request's `_meta` field, the
