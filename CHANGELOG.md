@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Stable
+
+- `std-ui` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-ui.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-validation` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-validation.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-forms` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-forms.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-authz` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-authz.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-http` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-http.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-db` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-db.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-sync` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-sync.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-routing` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-routing.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-storage` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-storage.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-notifications` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-notifications.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-testing` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-testing.md`; bumps require a 1.x deprecation notice per LTS contract.
+
 ### Added
 
 - **Compliance templates** — three pre-built workflow patterns: `soc2_audit_workflow` (SOC 2 audit trail), `hipaa_data_pipeline` (PHI redaction + audit log), `financial_review_pipeline` (dual-control SOX approval gates)
