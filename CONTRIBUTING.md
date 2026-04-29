@@ -135,6 +135,35 @@ regression reproduces on a docs-only change, the path filter
 in `.github/workflows/bench-compare.yml` may need tightening —
 file a follow-up issue.
 
+## Running blob storage integration tests
+
+The S3, GCS, and Azure blob storage adapters have integration tests that require
+local Docker services. These tests are `#[ignore]` and do not run in CI.
+
+**Prerequisites:** Docker + Docker Compose
+
+**Start services:**
+```bash
+docker compose -f docker-compose.blob-tests.yml up -d
+```
+
+**Run tests:**
+```bash
+cargo test -p boruna-orchestrator --features blob-integration -- --ignored blob_
+```
+
+**Stop services:**
+```bash
+docker compose -f docker-compose.blob-tests.yml down
+```
+
+The tests use environment variables to connect:
+- S3 (MinIO): `MINIO_ENDPOINT=http://localhost:9000` `MINIO_ACCESS_KEY=minioadmin` `MINIO_SECRET_KEY=minioadmin`
+- GCS (fake-gcs-server): `FAKE_GCS_ENDPOINT=http://localhost:4443`
+- Azure (Azurite): `AZURITE_ENDPOINT=http://localhost:10000`
+
+Each test returns early (skips) when its environment variable is not set.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
