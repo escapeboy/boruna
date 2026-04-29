@@ -1,0 +1,42 @@
+// Step 2: Classify access events against SOC 2 Trust Service Criteria.
+//
+// Applies access classification rules aligned with SOC 2 CC6.x (Logical and
+// Physical Access Controls). Flags unauthorized access patterns and privilege
+// escalation anomalies.
+//
+// std-authz pattern: check_permission(role, action) -> Bool
+// Here inlined as pure string logic — no external capability needed.
+
+fn classify(failed_auth: Int, anomaly_flags: Int, privileged_count: Int) -> String {
+    let has_anomalies: Bool = anomaly_flags > 0
+    let excessive_failures: Bool = failed_auth > 100
+    let high_privilege_usage: Bool = privileged_count > 500
+    let risk_level: String = match has_anomalies {
+        true => "elevated"
+        _ => "normal"
+    }
+    let unauthorized_patterns: String = match excessive_failures {
+        true => "brute-force-risk"
+        _ => "none"
+    }
+    let privileged_status: String = match high_privilege_usage {
+        true => "review-required"
+        _ => "within-policy"
+    }
+    "{\"risk_level\": \"" ++ risk_level ++ "\", \"unauthorized_patterns\": \"" ++ unauthorized_patterns ++ "\", \"privileged_access_status\": \"" ++ privileged_status ++ "\", \"anomaly_count\": " ++ int_to_string(anomaly_flags) ++ ", \"classification_criteria\": \"SOC2-CC6\"}"
+}
+
+fn int_to_string(n: Int) -> String {
+    match n {
+        0 => "0"
+        1 => "1"
+        2 => "2"
+        3 => "3"
+        _ => "many"
+    }
+}
+
+fn main() -> Int {
+    let result: String = classify(47, 2, 312)
+    0
+}

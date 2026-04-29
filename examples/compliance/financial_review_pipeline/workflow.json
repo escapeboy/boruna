@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "name": "financial-review-pipeline",
+  "version": "1.0.0",
+  "description": "SOX dual-control financial change workflow: extract changes, two approval gates, reconcile, finalize.",
+  "steps": {
+    "extract_changes": {
+      "kind": "source",
+      "source": "steps/extract_changes.ax",
+      "capabilities": [],
+      "outputs": {
+        "change": "String"
+      }
+    },
+    "first_approver": {
+      "kind": "approval_gate",
+      "required_role": "finance_manager",
+      "condition": "amount_cents > 0",
+      "depends_on": ["extract_changes"]
+    },
+    "second_approver": {
+      "kind": "approval_gate",
+      "required_role": "finance_controller",
+      "condition": "amount_cents > 0",
+      "depends_on": ["first_approver"]
+    },
+    "reconcile": {
+      "kind": "source",
+      "source": "steps/reconcile.ax",
+      "capabilities": [],
+      "inputs": {
+        "change": "extract_changes.result"
+      },
+      "depends_on": ["second_approver"],
+      "outputs": {
+        "summary": "String"
+      }
+    },
+    "finalize_record": {
+      "kind": "source",
+      "source": "steps/finalize_record.ax",
+      "capabilities": [],
+      "inputs": {
+        "summary": "reconcile.result"
+      },
+      "outputs": {
+        "result": "Int"
+      }
+    }
+  },
+  "edges": [
+    ["extract_changes", "reconcile"],
+    ["reconcile", "finalize_record"]
+  ]
+}

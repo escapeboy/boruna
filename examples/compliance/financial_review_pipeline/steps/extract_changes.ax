@@ -1,0 +1,16 @@
+// Step 1: Extract a financial change record for review.
+//
+// In live mode (--live): would call db.query or net.fetch to retrieve a
+// pending change from the financial system of record.
+// In demo mode (default): returns a deterministic synthetic change record.
+//
+// Capability: db.query (declared for live mode; gated by policy)
+
+fn demo_financial_change() -> String {
+    "{\"change_id\": \"CHG-20260429-0042\", \"account_id\": \"ACC-7890\", \"amount_cents\": 250000, \"change_type\": \"journal_entry\", \"requestor\": \"ops-team\", \"description\": \"Q1 accrual adjustment for vendor contract SVC-1122\", \"submitted_at\": \"2026-04-29T09:00:00Z\"}"
+}
+
+fn main() -> Int {
+    let change: String = demo_financial_change()
+    0
+}

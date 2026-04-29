@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Compliance templates** — three pre-built workflow patterns: `soc2_audit_workflow` (SOC 2 audit trail), `hipaa_data_pipeline` (PHI redaction + audit log), `financial_review_pipeline` (dual-control SOX approval gates)
 - Four new example workflows demonstrating stdlib package usage (`form_submission_pipeline`, `data_ingestion_pipeline`, `api_routing_workflow`); closes graduation criterion 1 for all 11 `std-*` packages
 - `docs/reference/stdlib/std-llm.md` and `docs/reference/stdlib/std-json.md` — reference docs closing criterion 4 for `std-llm` and `std-json`
 - `examples/workflows/llm_content_generator/` and `examples/workflows/json_data_transformer/` — example workflows closing criterion 1 for `std-llm` and `std-json`

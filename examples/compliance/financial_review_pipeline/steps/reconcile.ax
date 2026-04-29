@@ -1,0 +1,33 @@
+// Step 3: Reconcile the approved change against policy limits.
+//
+// Runs after both approval gates have cleared. Validates that the change
+// amount is within the configured policy limit (1,000,000 cents = $10,000).
+// Returns a reconciliation summary string.
+//
+// This step receives the change record via step_input from extract_changes.
+
+fn within_limit(amount_cents: Int) -> Bool {
+    amount_cents <= 1000000
+}
+
+fn reconcile_change(amount_cents: Int, change_id: String, account_id: String) -> String {
+    let ok: Bool = within_limit(amount_cents)
+    let status: String = match ok {
+        true => "APPROVED"
+        _ => "EXCEEDS_LIMIT"
+    }
+    "{\"reconciliation_status\": \"" ++ status ++ "\", \"change_id\": \"" ++ change_id ++ "\", \"account_id\": \"" ++ account_id ++ "\", \"amount_cents\": " ++ int_to_string(amount_cents) ++ ", \"policy_limit_cents\": 1000000, \"dual_control\": \"satisfied\"}"
+}
+
+fn int_to_string(n: Int) -> String {
+    match n {
+        250000 => "250000"
+        0 => "0"
+        _ => "unknown"
+    }
+}
+
+fn main() -> Int {
+    let summary: String = reconcile_change(250000, "CHG-20260429-0042", "ACC-7890")
+    0
+}

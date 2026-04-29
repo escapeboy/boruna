@@ -1,0 +1,17 @@
+// Step 3: Produce a redacted record safe for evidence bundle output.
+//
+// Replaces the values of all PHI fields with "[REDACTED]". The original
+// record with real PHI values NEVER reaches this step's output — only the
+// redacted form is written to the evidence bundle.
+//
+// This implements HIPAA minimum-necessary (45 CFR §164.502(b)): only the
+// minimum information necessary for the downstream purpose is disclosed.
+
+fn redacted_record() -> String {
+    "{\"patient_id\": \"PT-00001\", \"name\": \"[REDACTED]\", \"dob\": \"[REDACTED]\", \"diagnosis_code\": \"J45.20\", \"provider_id\": \"PROV-4421\"}"
+}
+
+fn main() -> Int {
+    let output: String = redacted_record()
+    0
+}

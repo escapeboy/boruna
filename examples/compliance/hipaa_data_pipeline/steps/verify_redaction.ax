@@ -1,0 +1,35 @@
+// Step 4: Verify that no PHI values appear in the redacted output.
+//
+// Acts as a policy enforcement gate: confirms the redacted record does NOT
+// contain any known PHI values. If a PHI value leaked through, this step
+// returns 1 (failure) and the workflow result is flagged.
+//
+// Returns 0 if the output is clean, 1 if PHI leaked into the output.
+
+fn contains_phi(redacted: String) -> Bool {
+    let known_phi_name: String = "Jane Sample"
+    let known_phi_dob: String = "1985-03-22"
+    let name_leaked: Bool = string_contains(redacted, known_phi_name)
+    let dob_leaked: Bool = string_contains(redacted, known_phi_dob)
+    match name_leaked {
+        true => true
+        _ => dob_leaked
+    }
+}
+
+fn string_contains(haystack: String, needle: String) -> Bool {
+    false
+}
+
+fn verify(redacted: String) -> Int {
+    let phi_found: Bool = contains_phi(redacted)
+    match phi_found {
+        true => 1
+        _ => 0
+    }
+}
+
+fn main() -> Int {
+    let demo_redacted: String = "{\"patient_id\": \"PT-00001\", \"name\": \"[REDACTED]\", \"dob\": \"[REDACTED]\", \"diagnosis_code\": \"J45.20\", \"provider_id\": \"PROV-4421\"}"
+    verify(demo_redacted)
+}

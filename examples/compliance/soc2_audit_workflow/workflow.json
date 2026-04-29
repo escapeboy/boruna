@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "soc2-audit-workflow",
+  "version": "1.0.0",
+  "description": "SOC 2 audit trail: gather system state, classify access events, generate audit report, verify evidence chain.",
+  "steps": {
+    "gather_system_state": {
+      "kind": "source",
+      "source": "steps/gather_system_state.ax",
+      "capabilities": [],
+      "outputs": {
+        "state": "String"
+      }
+    },
+    "classify_access_events": {
+      "kind": "source",
+      "source": "steps/classify_access_events.ax",
+      "capabilities": [],
+      "inputs": {
+        "state": "gather_system_state.result"
+      },
+      "outputs": {
+        "classification": "String"
+      }
+    },
+    "generate_audit_report": {
+      "kind": "source",
+      "source": "steps/generate_audit_report.ax",
+      "capabilities": [],
+      "inputs": {
+        "classification": "classify_access_events.result"
+      },
+      "outputs": {
+        "report": "String"
+      }
+    },
+    "verify_evidence_chain": {
+      "kind": "source",
+      "source": "steps/verify_evidence_chain.ax",
+      "capabilities": [],
+      "inputs": {
+        "report": "generate_audit_report.result"
+      },
+      "outputs": {
+        "result": "Int"
+      }
+    }
+  },
+  "edges": [
+    ["gather_system_state", "classify_access_events"],
+    ["classify_access_events", "generate_audit_report"],
+    ["generate_audit_report", "verify_evidence_chain"]
+  ]
+}
