@@ -151,6 +151,16 @@ pub struct ServerTlsPaths {
     /// SIGHUP is documented in
     /// `docs/guides/mtls-crl.md`.
     pub crls: Vec<PathBuf>,
+    /// post1-T-4.3 (0.7.x): optional path to a DER-encoded OCSP
+    /// response to staple into the TLS handshake. When set, rustls
+    /// includes the pre-fetched response so connecting clients do
+    /// not need to perform a separate OCSP request to verify the
+    /// server cert's revocation status.
+    ///
+    /// Requires the full mTLS trio — passing an OCSP staple
+    /// without `--tls-cert/--tls-key/--tls-client-ca` is a
+    /// startup error. File must exist at startup (fail-fast).
+    pub ocsp_staple: Option<PathBuf>,
 }
 
 impl ServerTlsPaths {
@@ -159,14 +169,16 @@ impl ServerTlsPaths {
     /// triple. Mixing-and-matching (e.g. `--tls-cert` without
     /// `--tls-key`) is a startup error per project §1.
     ///
-    /// `crls` is independent — passing CRLs without the cert/key
-    /// trio is a startup error so misconfigured CRL paths don't
-    /// silently disappear into a plaintext-only server.
+    /// `crls` and `ocsp_staple` are independent extras — passing
+    /// either without the cert/key trio is a startup error so
+    /// misconfigured paths don't silently disappear into a
+    /// plaintext-only server.
     pub fn from_optional(
         cert: Option<PathBuf>,
         key: Option<PathBuf>,
         client_ca: Option<PathBuf>,
         crls: Vec<PathBuf>,
+        ocsp_staple: Option<PathBuf>,
     ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
         match (cert, key, client_ca) {
             (None, None, None) => {
@@ -177,6 +189,13 @@ impl ServerTlsPaths {
                             .into(),
                     );
                 }
+                if ocsp_staple.is_some() {
+                    return Err(
+                        "--tls-ocsp-staple requires --tls-cert/--tls-key/--tls-client-ca \
+                         to be configured (OCSP stapling applies to mTLS only)"
+                            .into(),
+                    );
+                }
                 Ok(None)
             }
             (Some(cert), Some(key), Some(client_ca)) => Ok(Some(Self {
@@ -184,6 +203,7 @@ impl ServerTlsPaths {
                 key,
                 client_ca,
                 crls,
+                ocsp_staple,
             })),
             _ => Err("--tls-cert, --tls-key, --tls-client-ca must all be provided together".into()),
         }
@@ -391,10 +411,23 @@ fn build_server_tls(
         .build()
         .map_err(|e| format!("build client cert verifier: {e}"))?;
 
-    let server_config = rustls::ServerConfig::builder()
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(cert_chain, key)
-        .map_err(|e| format!("rustls ServerConfig: {e}"))?;
+    // post1-T-4.3: load OCSP staple (DER-encoded) if provided and
+    // pass to rustls via with_single_cert_with_ocsp. When absent
+    // fall back to the plain with_single_cert path (no behaviour
+    // change for existing deployments).
+    let server_config = if let Some(ref staple_path) = paths.ocsp_staple {
+        let ocsp_bytes = std::fs::read(staple_path)
+            .map_err(|e| format!("read OCSP staple {}: {e}", staple_path.display()))?;
+        rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert_with_ocsp(cert_chain, key, ocsp_bytes)
+            .map_err(|e| format!("rustls ServerConfig (with OCSP staple): {e}"))?
+    } else {
+        rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(cert_chain, key)
+            .map_err(|e| format!("rustls ServerConfig: {e}"))?
+    };
 
     Ok(CompiledServerTls {
         config: Arc::new(server_config),
@@ -3718,9 +3751,11 @@ mod tests {
     #[test]
     fn parse_tls_flags_requires_all_three_or_none() {
         // None of the three flags = no TLS, ok.
-        assert!(ServerTlsPaths::from_optional(None, None, None, vec![])
-            .unwrap()
-            .is_none());
+        assert!(
+            ServerTlsPaths::from_optional(None, None, None, vec![], None)
+                .unwrap()
+                .is_none()
+        );
         // All three present = ok.
         let p = std::path::PathBuf::from("/tmp/x");
         let triple = ServerTlsPaths::from_optional(
@@ -3728,6 +3763,7 @@ mod tests {
             Some(p.clone()),
             Some(p.clone()),
             vec![],
+            None,
         )
         .unwrap();
         assert!(triple.is_some());
@@ -3740,7 +3776,7 @@ mod tests {
             (Some(p.clone()), None, Some(p.clone())),
             (None, Some(p.clone()), Some(p.clone())),
         ] {
-            let err = ServerTlsPaths::from_optional(a, b, c, vec![]).unwrap_err();
+            let err = ServerTlsPaths::from_optional(a, b, c, vec![], None).unwrap_err();
             assert!(
                 err.to_string().contains("must all be provided together"),
                 "unexpected err: {err}"
@@ -3755,8 +3791,37 @@ mod tests {
         // plaintext server, so silently dropping it would be a
         // dangerous footgun.
         let crl = std::path::PathBuf::from("/tmp/some.crl");
-        let err = ServerTlsPaths::from_optional(None, None, None, vec![crl]).unwrap_err();
+        let err = ServerTlsPaths::from_optional(None, None, None, vec![crl], None).unwrap_err();
         assert!(err.to_string().contains("CRL"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn parse_tls_flags_ocsp_without_mtls_rejected() {
+        // post1-T-4.3: passing --tls-ocsp-staple without the mTLS
+        // trio is a startup error. OCSP stapling requires a TLS
+        // server cert to staple against.
+        let staple = std::path::PathBuf::from("/tmp/server.ocsp");
+        let err =
+            ServerTlsPaths::from_optional(None, None, None, vec![], Some(staple)).unwrap_err();
+        assert!(err.to_string().contains("OCSP"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn parse_tls_flags_ocsp_with_valid_mtls_accepted() {
+        // post1-T-4.3: OCSP staple path is stored when all three
+        // TLS flags are also provided.
+        let p = std::path::PathBuf::from("/tmp/x");
+        let staple = std::path::PathBuf::from("/tmp/server.ocsp");
+        let paths = ServerTlsPaths::from_optional(
+            Some(p.clone()),
+            Some(p.clone()),
+            Some(p.clone()),
+            vec![],
+            Some(staple.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(paths.ocsp_staple, Some(staple));
     }
 
     #[tokio::test]

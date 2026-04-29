@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added (0.7.x speculative)
 
+- `boruna coordinator serve --tls-ocsp-staple <FILE>` (post1-T-4.3)
+  staples a pre-fetched DER-encoded OCSP response into every TLS
+  handshake via rustls's `with_single_cert_with_ocsp`. Clients
+  receive revocation proof inline without a separate OCSP round-trip.
+  Requires the full mTLS trio; file is read at startup (fail-fast).
+  See `docs/guides/mtls-crl.md` for the generation recipe.
+  **0.7.x-only** feature: not part of the 1.x LTS surface.
+
 - `boruna coordinator serve --tls-client-crl <FILE>` (post1-T-4.2)
   loads PEM-encoded X509 CRLs at startup and feeds them to
   rustls's `WebPkiClientVerifier::with_crls`. Connections from
