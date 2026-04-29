@@ -9,7 +9,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Four new example workflows demonstrating stdlib package usage (`form_submission_pipeline`, `data_ingestion_pipeline`, `api_routing_workflow`); closes graduation criterion 1 for all 11 `std-*` packages
-
+- `docs/reference/stdlib/std-llm.md` and `docs/reference/stdlib/std-json.md` — reference docs closing criterion 4 for `std-llm` and `std-json`
+- `examples/workflows/llm_content_generator/` and `examples/workflows/json_data_transformer/` — example workflows closing criterion 1 for `std-llm` and `std-json`
 - **`boruna evidence diff`** — compare two evidence bundles side-by-side.
   Reports differences in step outputs, audit event counts, workflow metadata,
   and verification status. `--json` flag for machine-readable output.

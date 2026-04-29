@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "llm-content-generator",
+  "version": "1.0.0",
+  "description": "Demonstrates std-llm: builds an LLM prompt effect for content generation.",
+  "steps": {
+    "generate": {
+      "kind": "source",
+      "source": "steps/generate.ax",
+      "capabilities": ["llm.call"],
+      "outputs": { "result": "String" }
+    }
+  },
+  "edges": []
+}

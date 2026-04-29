@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "json-data-transformer",
+  "version": "1.0.0",
+  "description": "Demonstrates std-json: serialises a data record to a JSON-formatted string.",
+  "steps": {
+    "transform": {
+      "kind": "source",
+      "source": "steps/transform.ax",
+      "capabilities": [],
+      "outputs": { "result": "String" }
+    }
+  },
+  "edges": []
+}

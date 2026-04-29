@@ -1,0 +1,44 @@
+// Inline from std.json — import pending full package resolver integration
+
+type JsonResult { ok: Bool, value: String, error: String }
+
+fn json_ok(value: String) -> JsonResult {
+    JsonResult { ok: true, value: value, error: "" }
+}
+
+fn json_err(error: String) -> JsonResult {
+    JsonResult { ok: false, value: "", error: error }
+}
+
+fn json_string_field(key: String, value: String) -> String {
+    "\"" ++ key ++ "\": \"" ++ value ++ "\""
+}
+
+fn json_bool_field(key: String, value: Bool) -> String {
+    if value {
+        "\"" ++ key ++ "\": true"
+    } else {
+        "\"" ++ key ++ "\": false"
+    }
+}
+
+fn json_null_field(key: String) -> String {
+    "\"" ++ key ++ "\": null"
+}
+
+fn json_object(fields: String) -> String {
+    "{" ++ fields ++ "}"
+}
+
+fn json_array_wrap(items: String) -> String {
+    "[" ++ items ++ "]"
+}
+
+fn main() -> Int {
+    let name_field: String = json_string_field("name", "Alice")
+    let role_field: String = json_string_field("role", "engineer")
+    let active_field: String = json_bool_field("active", true)
+    let obj: String = json_object(name_field ++ ", " ++ role_field ++ ", " ++ active_field)
+    let result: JsonResult = json_ok(obj)
+    0
+}
