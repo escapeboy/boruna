@@ -119,19 +119,26 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 - [x] **Versioned bytecode format** — opcode discriminants, value model, capability ID table, module wire format, determinism contract. Shipped sprint `W9-A`; spec at [`docs/spec/bytecode-1.0.md`](./spec/bytecode-1.0.md), `boruna_bytecode::BYTECODE_VERSION = "1.0"`.
 - [x] **Migration tooling beta** — `boruna migrate <from-version>` upgrade path for any pre-1.0 breaking change. (sprint `W5-C`)
 
-## 1.0.0 — Production readiness
-
-Target: Q2 2027
+## 1.0.0 — Production readiness — SHIPPED (2026-04-28)
 
 Milestone: the stable API surface is locked. 0.5+ programs compile and run unchanged. This is mostly a *commitment* release, not a feature release — the engineering between 0.5 and 1.0 is small but the durability promise is large.
 
 - [ ] **Security audit** of the VM and capability enforcement (external auditor; bookable months in advance — must commit Q4 2026 to land Q2 2027)
 - [x] **Performance benchmarks** — published baseline for compile time, step throughput, evidence bundle write/verify time (sprint `W5-A`; see [`PERFORMANCE.md`](./PERFORMANCE.md))
 - [x] **Long-term support commitment for 1.x** — backports for security fixes, deprecation policy (sprint W5-B; see [`lts.md`](./lts.md))
-- [ ] **Migration tooling stable** (graduated from 0.5 beta)
-- [ ] All schemas (language, DAG, evidence) finalized and documented
-- [ ] **Evidence bundle storage adapters** — pluggable shipping to S3 / object storage / document store, beyond local files
+- [x] **Migration tooling** — `boruna migrate` covering pre-1.0 breaking changes (sprint `W5-C`)
+- [x] All schemas (language, DAG, evidence, bytecode) finalized and documented
 - [x] **Evidence bundle encryption** — at-rest encryption for bundles containing sensitive data (sprint `W6-B`, AES-256-GCM envelope encryption; see `docs/design-bundle-encryption.md`)
+
+## 1.1.0 — SHIPPED (2026-04-29)
+
+First minor release on the 1.x LTS line. All changes are additive — no breaking changes.
+
+- [x] **MCP streaming capability call markers** — `boruna_run` progress notifications carry `"cap: llm.call"` or `"caps: llm.call, net.fetch"` when capability calls fire during a VM slice. Gives MCP clients real-time visibility into what the VM is executing (post1-T-2.2).
+- [x] **Evidence bundle web inspector** — `boruna evidence serve <bundle-dir> [--port N]` opens a local axum HTTP server with bundle overview, hash-chained audit log, and per-step output accordion. Verification runs inline. Feature-gated (`boruna-cli/serve`). Experimental tier (post1-T-4.4).
+- [x] **Trivia-in-AST foundation** — new `lex_full(source)` API returns tokens with `leading_trivia` (attached `//` comments). Foundation for the comment-preserving `boruna fmt v2` formatter. Existing `lex()` is unchanged. Experimental tier (post1-T-2.5).
+- [x] **BYOH reference handler library** — four new `CapabilityHandler` reference implementations in `examples/llm_handlers/`: Anthropic Messages API, Ollama, vLLM/OpenAI-compatible, AWS Bedrock skeleton. Each is ~80–120 LOC, copy-and-tweak, no Cargo dep (post1-T-1.2).
+- [x] **BundleStorage adapters stable** — S3, GCS, and Azure Blob adapters promoted from `#[doc(hidden)]` to stable public API. `StorageError` marked `#[non_exhaustive]`. New `boruna evidence rotate-kek` command re-encrypts DEKs under a new key-encryption key without touching ciphertext (post1-T-3.1–3.3, T-4.3).
 
 ## What we need to decide *now* (before 0.3.0 starts)
 

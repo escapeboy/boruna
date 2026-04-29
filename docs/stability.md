@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **1.0.0** — first stable release. This document is explicit about what is stable, what is experimental, and what is planned.
+Boruna is at version **1.1.0** — first minor release on the 1.x LTS line. This document is explicit about what is stable, what is experimental, and what is planned.
 
 > **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
 > below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
@@ -10,7 +10,7 @@ Boruna is at version **1.0.0** — first stable release. This document is explic
 
 ## Current status
 
-Boruna 1.0 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested (1183+ tests, all passing), and frozen for the 1.x line.
+Boruna 1.1 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested (1183+ tests, all passing), and frozen for the 1.x line.
 
 Boruna is appropriate for:
 - Production workloads on the LTS-protected surface (`lts.md` §B)
@@ -33,7 +33,8 @@ These components are complete, tested, and behave as documented. Every 1.0 progr
 - **Workflow DAG 1.0** — `workflow.json` format with `schema_version: 1`, topological execution, step isolation; spec at [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md)
 - **Evidence bundle 1.0** — hash-chained log + `bundle.json` manifest with `format_version: "1.0"`, optional AES-256-GCM envelope encryption; spec at [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md)
 - **Capability system** — the capability set is frozen at 1.0; any additions in 1.x are additive
-- **CLI commands** — `run`, `compile`, `workflow validate/run/approve`, `evidence inspect/verify/gc-blobs`, `coordinator serve/wait`, `worker run`, `migrate`, `new`, `lang check/repair`, `template list/apply`
+- **CLI commands** — `run`, `compile`, `workflow validate/run/approve`, `evidence inspect/verify/gc-blobs/rotate-kek`, `coordinator serve/wait`, `worker run`, `migrate`, `new`, `lang check/repair`, `template list/apply`
+- **`BundleStorage` trait and adapters** — `BundleStorage`, `StorageRef`, `StorageError` (`#[non_exhaustive]`), `LocalFs`, `from_uri` dispatcher, and the S3/GCS/Azure Blob adapter modules (`storage_s3`, `storage_gcs`, `storage_azure`) are now stable public API
 - **Coord/worker HTTP protocol** — `protocol_version: 1` responses, locked `coord.*` and `evidence.*` `error_kind` taxonomy
 - **MCP tool response shapes** — `protocol_version: 1` carried on every response (success and failure)
 - **HA + mTLS surfaces** — multi-coord deployments, worker URL failover, X.509 client certs
@@ -58,16 +59,20 @@ These components are available but under active development:
 - **Replay verification** — semantics of `--verify` with partial replays
 - **Framework app testing** — `framework test` message protocol
 
-### Planned (post-1.0 — see [roadmap.md](./roadmap.md))
+### Experimental — new in 1.1.0
+
+These components shipped in 1.1.0 but may change based on usage feedback in 1.x minors:
+
+- **`boruna evidence serve`** — local web UI for evidence bundle inspection. Requires `--features boruna-cli/serve`. May change in 1.x based on operator feedback.
+- **`lex_full()` / trivia-in-AST API** — `lex_full(source)` returning tokens with `leading_trivia`. Foundation for `boruna fmt v2`. Not yet used by any public tool; shape may change before the formatter ships.
+
+### Planned (post-1.1 — see [roadmap.md](./roadmap.md))
 
 These capabilities are on the roadmap but do not yet exist:
 
-- Evidence bundle storage adapters (S3 / object storage / document store) — 0.7.x or 1.x minor
-- Rolling-upgrade per-capability version negotiation — 0.7.x
-- Streaming output from `boruna_run` — 1.x minor (FleetQ P1)
+- Rolling-upgrade per-capability version negotiation
+- `boruna fmt` v2 (comment-preserving formatter using the `lex_full()` trivia foundation) and `boruna run --watch`
 - LLM provider registry and model routing
-- `boruna fmt` v2 (comment-preserving formatter) and `boruna run --watch`
-- Web-based evidence inspector
 - Commercial platform features (SSO, RBAC, policy management UI)
 
 ## What "stable" means

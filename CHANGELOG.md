@@ -6,6 +6,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-04-29
+
 ### Added
 
 - **Capability call markers in MCP progress notifications** (post1-T-2.2).
@@ -2376,7 +2378,9 @@ Driven by [implementer feedback from FleetQ](https://github.com/escapeboy/boruna
   `std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`, `std-notifications`, `std-testing`
 - 557+ tests across 9 crates
 
-[Unreleased]: https://github.com/escapeboy/boruna/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/escapeboy/boruna/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/escapeboy/boruna/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/escapeboy/boruna/releases/tag/v1.0.0
 [0.5.0]: https://github.com/escapeboy/boruna/releases/tag/v0.5.0
 [0.4.0]: https://github.com/escapeboy/boruna/releases/tag/v0.4.0
 [0.3.0]: https://github.com/escapeboy/boruna/releases/tag/v0.3.0
