@@ -6,6 +6,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`boruna evidence diff`** — compare two evidence bundles side-by-side.
+  Reports differences in step outputs, audit event counts, workflow metadata,
+  and verification status. `--json` flag for machine-readable output.
+
 ## [1.1.0] — 2026-04-29
 
 ### Added

@@ -19,6 +19,7 @@ use boruna_vm::vm::Vm;
 mod coordinator;
 #[cfg(feature = "serve")]
 mod dashboard;
+mod evidence_diff;
 #[cfg(feature = "serve")]
 mod evidence_serve;
 mod format;
@@ -997,6 +998,18 @@ enum EvidenceCommand {
         /// Port to listen on (default: 4444).
         #[arg(long, default_value = "4444")]
         port: u16,
+    },
+    /// Compare two evidence bundles side-by-side (post1-evidence-diff).
+    /// Reports differences in workflow metadata, step outputs, audit event
+    /// counts, and verification status.
+    Diff {
+        /// First evidence bundle directory.
+        bundle_a: PathBuf,
+        /// Second evidence bundle directory.
+        bundle_b: PathBuf,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -3745,6 +3758,13 @@ fn run_evidence(
                             build with: cargo build --features boruna-cli/serve"
                     .into());
             }
+        }
+        EvidenceCommand::Diff {
+            bundle_a,
+            bundle_b,
+            json,
+        } => {
+            evidence_diff::evidence_diff(&bundle_a, &bundle_b, json)?;
         }
     }
     Ok(())
