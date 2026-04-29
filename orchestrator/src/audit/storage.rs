@@ -1,16 +1,26 @@
-//! Pluggable bundle-storage backends (post1-T-2.3).
+//! Pluggable bundle-storage backends.
 //!
 //! [`BundleStorage`] is the narrow trait that lets evidence bundles
-//! be written to anything that implements `put`/`get`/`list` —
-//! initially only the [`LocalFs`] adapter, with S3 / GCS / Azure
-//! Blob landing in T-3.1 / T-3.2 / T-3.3 respectively.
+//! be written to anything that implements `put`/`get`/`list`. The
+//! trait shipped in post1-T-2.3 (LocalFs only, hidden); the three
+//! remote adapters landed in T-3.1 (S3), T-3.2 (GCS), and T-3.3
+//! (Azure Blob). With three independent implementations, the trait
+//! shape has stabilized and is now part of the public 1.x API
+//! surface.
 //!
 //! ## Status
 //!
-//! The trait is `#[doc(hidden)]` until at least one remote adapter
-//! ships (T-3.1, S3). Until then we may still adjust shape based on
-//! what the first remote impl actually needs. Once the S3 adapter
-//! lands the trait gets the `pub` treatment in the docs.
+//! **Stable** as of post1 promotion (Apr 2026). The trait,
+//! [`StorageRef`], [`StorageError`], [`LocalFs`], and the
+//! `from_uri` dispatcher are public 1.x API. New schemes are
+//! additive (existing code keeps working). New error_kind strings
+//! on `Backend { kind, .. }` are also additive — integrators
+//! switching on `kind` should treat unknown values as
+//! `transient`.
+//!
+//! See `docs/concepts/bundle-storage.md` for the operator-facing
+//! overview that links to the per-provider guides
+//! (`docs/guides/bundle-storage-{s3,gcs,azure}.md`).
 //!
 //! ## Semantics
 //!
@@ -21,12 +31,11 @@
 //! - `put` is idempotent on `run_id`: re-uploading is allowed and
 //!   should succeed, since bundle finalize is itself deterministic
 //!   given inputs.
-//! - `get` MAY hit a local cache directory at `<data-dir>/cache/`
-//!   so repeated `boruna evidence verify <ref>` calls don't
-//!   round-trip the network. The `LocalFs` adapter trivially
-//!   returns the same path it was given.
-
-#![allow(dead_code)] // Wave 3 adapters will exercise the full surface.
+//! - `get` MAY hit a local cache directory (the remote adapters use
+//!   `<temp>/boruna-bundle-cache` overridable via
+//!   `BORUNA_BUNDLE_CACHE`) so repeated `boruna evidence verify
+//!   <ref>` calls don't round-trip the network. The `LocalFs`
+//!   adapter trivially returns the same path it was given.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -37,7 +46,6 @@ use std::path::{Path, PathBuf};
 /// (`local:<run-id>`, `s3://bucket/prefix/<run-id>`,
 /// `gs://...`, `azblob://...`). Callers are expected to treat the
 /// inner string as opaque; only the dispatcher parses it.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageRef(pub String);
 
@@ -47,17 +55,35 @@ impl fmt::Display for StorageRef {
     }
 }
 
-#[doc(hidden)]
+/// Errors produced by the bundle-storage layer.
+///
+/// Stable for the 1.x line. New variants will be additive (existing
+/// match arms keep compiling because the enum is `#[non_exhaustive]`
+/// — see below). New `Backend { kind, .. }` strings are also
+/// additive; integrators switching on `kind` should treat unknown
+/// values as `transient` (retryable).
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum StorageError {
+    /// Local I/O failure (file not found, permission denied, etc).
+    /// Wraps the underlying `std::io::Error`.
     Io(std::io::Error),
+    /// The supplied URI does not match a recognized scheme, or is
+    /// malformed within a recognized scheme. Includes the offending
+    /// URI in the message for operator triage.
     InvalidUri(String),
+    /// `get` was called against a `StorageRef` whose backing
+    /// objects no longer exist (or never existed).
     NotFound(String),
     /// Adapter-specific failure with a stable identifying string.
     /// `LocalFs` does not produce these; remote adapters use them
-    /// for transient/permanent backend errors.
+    /// for transient/permanent backend errors. The `kind` strings
+    /// are stable (`s3.transient`, `s3.permanent`, `gcs.transient`,
+    /// etc.); see each adapter's docs for the per-provider taxonomy.
     Backend {
+        /// Stable identifier; see the per-adapter docs.
         kind: &'static str,
+        /// Human-readable message for logs.
         msg: String,
     },
 }
@@ -81,7 +107,7 @@ impl From<std::io::Error> for StorageError {
     }
 }
 
-/// Pluggable bundle storage. Send + Sync so adapters can live in
+/// Pluggable bundle storage. `Send + Sync` so adapters can live in
 /// shared state and be invoked from any thread.
 ///
 /// `put` returns the storage ref the caller should record alongside
@@ -89,11 +115,27 @@ impl From<std::io::Error> for StorageError {
 /// `boruna evidence verify`). `get` materializes the bundle on
 /// local disk and returns the directory path; the caller is
 /// expected to read it the same way it would read a freshly
-/// produced local bundle.
-#[doc(hidden)]
+/// produced local bundle. `list` enumerates run-id-keyed entries
+/// under the configured root, optionally filtered by a `prefix`.
+///
+/// Implementations ship in the orchestrator: `LocalFs` (always),
+/// `S3Bucket` (`s3` feature), `GcsBucket` (`gcs` feature),
+/// `AzureBlobBucket` (`azure` feature). Construct via
+/// [`from_uri`] or call the per-adapter `from_uri` constructors
+/// directly.
 pub trait BundleStorage: Send + Sync {
+    /// Upload (or local-copy, for `LocalFs`) the contents of
+    /// `bundle_dir` under the storage namespace, keyed by `run_id`.
+    /// Returns the [`StorageRef`] to record in metadata.
     fn put(&self, run_id: &str, bundle_dir: &Path) -> Result<StorageRef, StorageError>;
+    /// Materialize the bundle behind the given ref onto local disk
+    /// and return the resulting directory path. Remote adapters use
+    /// a local cache directory; the returned path is the cached
+    /// copy.
     fn get(&self, r: &StorageRef) -> Result<PathBuf, StorageError>;
+    /// Enumerate refs at this storage's root. Pass `Some(prefix)`
+    /// to filter run ids by a literal prefix. Returns refs in
+    /// lexicographic order.
     fn list(&self, prefix: Option<&str>) -> Result<Vec<StorageRef>, StorageError>;
 }
 
@@ -104,12 +146,14 @@ pub trait BundleStorage: Send + Sync {
 /// Construct via [`LocalFs::new`] over the operator's bundle root
 /// (e.g. `<data-dir>/evidence/`). The root is the directory under
 /// which bundle subdirectories live, one per `run_id`.
-#[doc(hidden)]
 pub struct LocalFs {
     root: PathBuf,
 }
 
 impl LocalFs {
+    /// Construct a [`LocalFs`] rooted at `root`. The root directory
+    /// does not need to exist yet; it will be created on the first
+    /// `put`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         LocalFs { root: root.into() }
     }
@@ -206,7 +250,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 ///
 /// Empty / `None` URI returns `None` so callers can fall back to
 /// their existing local-only path.
-#[doc(hidden)]
 pub fn from_uri(uri: Option<&str>) -> Result<Option<Box<dyn BundleStorage>>, StorageError> {
     let Some(uri) = uri else {
         return Ok(None);

@@ -6,6 +6,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`BundleStorage` trait promoted to public 1.x API surface.**
+  `BundleStorage`, `StorageRef`, `StorageError`, `LocalFs`, and the
+  `from_uri` dispatcher in `boruna_orchestrator::audit::storage`
+  shipped behind `#[doc(hidden)]` while the shape was still being
+  validated against remote impls. With T-3.1 (S3), T-3.2 (GCS),
+  and T-3.3 (Azure Blob) all landed and exercising the trait
+  identically, the shape is stable and the hidden attribute is
+  removed. The per-adapter modules
+  (`storage_s3` / `storage_gcs` / `storage_azure`) ship without
+  `#[doc(hidden)]` from the start, so this change is purely a
+  rustdoc visibility tweak — no API breakage. `StorageError` is
+  now `#[non_exhaustive]` so future variants are additive.
+  Backend `kind` strings (`s3.transient`, `azure.permanent`, etc.)
+  are also additive — integrators switching on `kind` should
+  treat unknown values as `transient` (retryable). New top-level
+  concept page at `docs/concepts/bundle-storage.md` covers the
+  shared contract; the per-provider operator guides remain in
+  `docs/guides/bundle-storage-{s3,gcs,azure}.md`.
+
 ### Decided
 
 - **Stdlib graduation tracker (post1-T-3.4).** Assessed all 11

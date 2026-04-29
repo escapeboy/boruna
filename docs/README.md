@@ -12,6 +12,7 @@ Core ideas that make Boruna work:
 - [Determinism](./concepts/determinism.md) — why same inputs → same outputs, and how it's enforced
 - [Capabilities](./concepts/capabilities.md) — declaring and gating side effects
 - [Evidence Bundles](./concepts/evidence-bundles.md) — tamper-evident audit logs and replay
+- [Bundle Storage](./concepts/bundle-storage.md) — local + remote (S3/GCS/Azure) destinations for evidence bundles
 
 ## Guides
 
