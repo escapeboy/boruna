@@ -1,6 +1,6 @@
 {
   "name": "std.sync",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Offline queue and conflict resolution helpers",
   "dependencies": {},
   "required_capabilities": ["net.fetch"],

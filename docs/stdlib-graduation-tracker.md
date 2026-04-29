@@ -68,33 +68,25 @@ closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 - **(2) Internal test coverage** — `tooling/src/stdlib/mod.rs::tests`
   loads each library via `load_library_source(libs_dir(), "<name>")`
   and runs `verify_compiles` plus `verify_determinism`. The current
-  test suite covers all 11 packages.
+  test suite covers all 13 packages (including `std-llm` and `std-json`).
 
 - **(3) API stability** — assessed against the last four weeks
   (since `v1.0.0` GA on 2026-04-28). No package has had its
   `package.ax.json` `[exports]` modified in this window.
 
-- **(4) Reference docs** — `docs/reference/stdlib/` does not
-  currently exist as a directory. The Wave-3 follow-up should
-  create one `<name>.md` per package with a fixed shell:
-  Capability requirements, public surface, usage example, version
-  history.
+- **(4) Reference docs** — All 13 reference docs exist under
+  `docs/reference/stdlib/`. Each covers capability requirements,
+  public surface, usage example, and version history.
 
 ## Next cycle
 
 This tracker is reassessed at every minor release (`v1.1.0`,
-`v1.2.0`, ...). To unblock the first wave of graduations:
+`v1.2.0`, ...).
 
-1. Land per-package reference docs under `docs/reference/stdlib/`.
-   Suggested PR shape: one PR per cluster of related packages
-   (e.g. `std-authz` + `std-validation` + `std-forms` together;
-   `std-http` + `std-db` + `std-routing` together) so review
-   stays bounded.
-2. Land minimal example workflows demonstrating each package.
-   Typical shape: `examples/workflows/std-<name>-demo/workflow.json`
-   plus a single-step `.ax` body that imports the package and
-   calls one function.
-3. Re-run this checklist; any package that scores 4/4 graduates.
+All 11 original packages have been graduated to 1.0.0 in this cycle.
+`std-llm` and `std-json` remain on 0.1.0 pending the 4-week API stability
+window (eligible ≥ 2026-05-27). The next cycle reassessment happens at
+`v1.3.0`.
 
 When a package graduates:
 
