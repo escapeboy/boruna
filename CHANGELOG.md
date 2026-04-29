@@ -20,6 +20,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Azure Blob Storage adapter for `BundleStorage`** (post1-T-3.3,
+  Wave 3). The `--bundle-storage azblob://account/container[/prefix]`
+  URI now constructs an Azure Blob Storage adapter when the binary
+  is built with the `azure` feature
+  (`cargo build --features boruna-cli/azure`). Same shape as the
+  T-3.1 / T-3.2 adapters, also backed by `object_store` (with the
+  `azure` feature toggled). URI shape encodes both the storage
+  account and the blob container so an operator can grep their
+  config and see exactly which account a bundle landed in. Auth
+  via standard `AZURE_STORAGE_*` env vars (account key, SAS, or
+  service-principal OAuth);
+  `AzureBlobBucketBuilder::with_use_emulator(true)` switches the
+  SDK into Azurite-emulator mode for local testing. Off by
+  default. When the `azure` feature is OFF, `azblob://` URIs
+  reject at parse time with the actionable-message pattern S3 and
+  GCS use. Backend errors surface with stable `error_kind`
+  strings (`azure.transient`, `azure.permanent`, `azure.runtime`,
+  `azure.unexpected_key`). 18 unit tests cover URI parsing,
+  object-path concatenation, ref-to-run-id extraction, and error
+  classification. An Azurite-backed integration test is deferred —
+  Azurite requires SharedKey-signed container creation and
+  object_store doesn't expose a `create_container` primitive;
+  pulling in the full `azure-storage` crate or implementing
+  SharedKey signing for one test wasn't a proportionate cost. See
+  `docs/guides/bundle-storage-azure.md`. **All three remote
+  schemes (S3, GCS, Azure) now ship** — the `BundleStorage` trait
+  can graduate from `#[doc(hidden)]` to `pub` in a follow-up.
 - **GCS adapter for `BundleStorage`** (post1-T-3.2, Wave 3). The
   `--bundle-storage gs://bucket[/prefix]` URI now constructs a
   Google Cloud Storage adapter when the binary is built with the
