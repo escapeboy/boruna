@@ -20,6 +20,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **S3 adapter for `BundleStorage`** (post1-T-3.1, Wave 3). The
+  `--bundle-storage s3://bucket[/prefix]` URI now constructs a real
+  remote-storage adapter when the binary is built with the `s3`
+  feature (`cargo build --features boruna-cli/s3`). Backed by the
+  Apache Arrow `object_store` crate's `aws` feature — works against
+  AWS S3, MinIO, Cloudflare R2, Backblaze B2, and LocalStack via
+  the standard `AWS_*` environment variables (including
+  `AWS_ENDPOINT_URL` for non-AWS endpoints). The adapter bridges
+  the sync `BundleStorage` trait against the async SDK with a
+  per-instance current-thread tokio runtime; bundle reads
+  materialize into a local cache directory rooted at
+  `BORUNA_BUNDLE_CACHE` (defaults to `<temp>/boruna-bundle-cache`).
+  When the `s3` feature is OFF, `s3://` URIs reject at parse time
+  with an actionable message that points operators at the feature
+  flag — never silently ignored. `gs://` (T-3.2) and `azblob://`
+  (T-3.3) remain reserved for upcoming adapters. Backend errors
+  surface with stable `error_kind` strings (`s3.transient`,
+  `s3.permanent`, `s3.runtime`, `s3.unexpected_key`). MinIO-backed
+  integration tests live behind the `s3-it` feature and self-skip
+  when Docker is unreachable. See `docs/guides/bundle-storage-s3.md`.
 - `boruna evidence rotate-kek` (post1-T-2.4) re-wraps the DEK of one
   or more encrypted evidence bundles under a new KEK. Operations are
   manifest-only — per-file ciphertext stays valid because the DEK

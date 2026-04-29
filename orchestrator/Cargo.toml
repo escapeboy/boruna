@@ -11,6 +11,23 @@ http = ["boruna-vm/http"]
 # that don't need persistence (boruna-mcp, boruna-pkg); on by default for
 # the orchestrator itself.
 persist-sqlite = ["dep:rusqlite"]
+# post1-T-3.1: S3 BundleStorage adapter. Pulls in object_store + a
+# tokio current_thread runtime to bridge the sync trait against the
+# async SDK. Off by default — only operators wiring
+# `--bundle-storage s3://...` pay the dep tree cost. See
+# docs/guides/bundle-storage-s3.md.
+s3 = ["dep:object_store", "dep:tokio", "dep:futures"]
+# post1-T-3.1: integration tests that spin up MinIO via
+# testcontainers. Requires Docker on the test host. The test file
+# self-skips with a clear message when Docker is absent so a missing
+# daemon is never a CI failure mode for local devs.
+s3-it = [
+    "s3",
+    "dep:testcontainers",
+    "dep:testcontainers-modules",
+    "dep:tokio",
+    "dep:reqwest",
+]
 
 [[bin]]
 name = "boruna-orch"
@@ -47,6 +64,24 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 # CLI bounds it via `--parallelism N`. Default features pulled in
 # (the crate has no system deps).
 rayon = "1"
+
+# post1-T-3.1: object_store backs the S3 BundleStorage adapter.
+# `default-features = false` per ADR 001 (musl-friendly); `aws`
+# feature pulls in just the S3 client, reqwest+rustls+tokio. Optional
+# so the dep tree only loads when an operator opts into the `s3`
+# feature. `tokio` (workspace-pinned full feature set) is also
+# optional + s3-only — sync trait uses a current_thread runtime to
+# bridge the async SDK. `futures` is needed to consume
+# object_store's listing stream.
+object_store = { version = "0.11", default-features = false, features = ["aws"], optional = true }
+tokio = { workspace = true, optional = true }
+futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
+testcontainers = { version = "0.23", features = ["blocking"], optional = true }
+testcontainers-modules = { version = "0.11", features = ["minio"], optional = true }
+# Test-only: hit MinIO's S3 endpoint to create the test bucket
+# before object_store puts at it. Reqwest is already in the dep
+# tree via object_store, so this adds nothing to the binary.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 # macOS-only: libc for fcntl(F_FULLFSYNC). Plain `fsync(2)` on Darwin
 # does NOT flush the drive's write cache to media — only F_FULLFSYNC

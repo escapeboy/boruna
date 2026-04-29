@@ -4,6 +4,8 @@ pub mod fingerprint;
 pub mod log;
 pub mod rotate;
 pub mod storage;
+#[cfg(feature = "s3")]
+pub mod storage_s3;
 pub mod verify;
 
 pub use encryption::{
