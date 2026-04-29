@@ -192,9 +192,16 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// - `s3://<bucket>[/<prefix>]` — requires the `s3` feature
 ///   (post1-T-3.1). Constructs an
 ///   [`crate::audit::storage_s3::S3Bucket`] backed by `object_store`.
-/// - `gs://<bucket>[/<prefix>]` and `azblob://<container>[/<prefix>]`
-///   — reserved for T-3.2 / T-3.3; rejected with
-///   [`StorageError::InvalidUri`] until those adapters ship.
+/// - `gs://<bucket>[/<prefix>]` — requires the `gcs` feature
+///   (post1-T-3.2). Constructs a
+///   [`crate::audit::storage_gcs::GcsBucket`] backed by `object_store`.
+/// - `azblob://<container>[/<prefix>]` — reserved for T-3.3;
+///   rejected with [`StorageError::InvalidUri`] until that adapter
+///   ships.
+///
+/// When a remote scheme's feature is OFF the URI rejects with an
+/// actionable message that points the operator at the feature
+/// flag — never silently ignored, which would create an audit gap.
 ///
 /// Empty / `None` URI returns `None` so callers can fall back to
 /// their existing local-only path.
@@ -218,9 +225,6 @@ pub fn from_uri(uri: Option<&str>) -> Result<Option<Box<dyn BundleStorage>>, Sto
         let bucket = crate::audit::storage_s3::S3Bucket::from_uri(uri)?;
         return Ok(Some(Box::new(bucket)));
     }
-    // Reserve schemes for adapters not (yet) available in this build.
-    // When the `s3` feature is OFF, `s3://` falls through here too —
-    // the error message tells operators to enable the feature.
     #[cfg(not(feature = "s3"))]
     if uri.starts_with("s3://") {
         return Err(StorageError::InvalidUri(format!(
@@ -229,19 +233,41 @@ pub fn from_uri(uri: Option<&str>) -> Result<Option<Box<dyn BundleStorage>>, Sto
              `--features boruna-cli/s3` for the CLI binary)"
         )));
     }
-    if uri.starts_with("gs://") || uri.starts_with("azblob://") {
+    #[cfg(feature = "gcs")]
+    if uri.starts_with("gs://") {
+        let bucket = crate::audit::storage_gcs::GcsBucket::from_uri(uri)?;
+        return Ok(Some(Box::new(bucket)));
+    }
+    #[cfg(not(feature = "gcs"))]
+    if uri.starts_with("gs://") {
         return Err(StorageError::InvalidUri(format!(
-            "{uri} is reserved for a future remote-storage adapter; \
-             this Boruna build only supports local:<path>\
-             {extra}",
-            extra = if cfg!(feature = "s3") {
-                " and s3://"
-            } else {
-                ""
-            }
+            "{uri} requires the `gcs` feature; rebuild with \
+             `--features boruna-orchestrator/gcs` (or \
+             `--features boruna-cli/gcs` for the CLI binary)"
+        )));
+    }
+    if uri.starts_with("azblob://") {
+        return Err(StorageError::InvalidUri(format!(
+            "{uri} is reserved for a future remote-storage adapter (T-3.3); \
+             this Boruna build only supports {schemes}",
+            schemes = available_schemes_help()
         )));
     }
     Err(StorageError::InvalidUri(uri.to_string()))
+}
+
+/// Build a human-readable list of the schemes this binary supports.
+/// Used in the "azblob:// is reserved" error message and any future
+/// scheme-specific reservation messages.
+fn available_schemes_help() -> String {
+    let mut schemes = vec!["local:<path>"];
+    if cfg!(feature = "s3") {
+        schemes.push("s3://");
+    }
+    if cfg!(feature = "gcs") {
+        schemes.push("gs://");
+    }
+    schemes.join(", ")
 }
 
 #[cfg(test)]
@@ -352,12 +378,9 @@ mod tests {
     }
 
     #[test]
-    fn from_uri_remote_schemes_reserve_clear_error() {
-        // gs:// / azblob:// are still unimplemented in this build
-        // regardless of features.
-        for uri in ["gs://b/p", "azblob://c/p"] {
-            assert_invalid_uri(from_uri(Some(uri)));
-        }
+    fn from_uri_azblob_reserves_clear_error() {
+        // azblob:// is unimplemented in every build (T-3.3).
+        assert_invalid_uri(from_uri(Some("azblob://c/p")));
     }
 
     /// When the `s3` feature is OFF, `s3://` URIs must reject with
@@ -372,6 +395,23 @@ mod tests {
             Err(StorageError::InvalidUri(msg)) => {
                 assert!(
                     msg.contains("requires the `s3` feature"),
+                    "expected actionable message, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidUri, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    /// Same UX guarantee for `gs://` when the `gcs` feature is OFF
+    /// (post1-T-3.2). Mirrors the s3 test above.
+    #[cfg(not(feature = "gcs"))]
+    #[test]
+    fn from_uri_gcs_without_feature_rejects_with_actionable_message() {
+        match from_uri(Some("gs://bucket/prefix")) {
+            Err(StorageError::InvalidUri(msg)) => {
+                assert!(
+                    msg.contains("requires the `gcs` feature"),
                     "expected actionable message, got: {msg}"
                 );
             }

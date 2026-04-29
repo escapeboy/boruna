@@ -16,7 +16,7 @@ persist-sqlite = ["dep:rusqlite"]
 # async SDK. Off by default — only operators wiring
 # `--bundle-storage s3://...` pay the dep tree cost. See
 # docs/guides/bundle-storage-s3.md.
-s3 = ["dep:object_store", "dep:tokio", "dep:futures"]
+s3 = ["dep:object_store", "object_store/aws", "dep:tokio", "dep:futures"]
 # post1-T-3.1: integration tests that spin up MinIO via
 # testcontainers. Requires Docker on the test host. The test file
 # self-skips with a clear message when Docker is absent so a missing
@@ -25,6 +25,20 @@ s3-it = [
     "s3",
     "dep:testcontainers",
     "dep:testcontainers-modules",
+    "dep:tokio",
+    "dep:reqwest",
+]
+# post1-T-3.2: GCS BundleStorage adapter. Same shape as `s3` —
+# enables the `gcp` feature on object_store; reuses the optional
+# tokio + futures deps. Off by default. See
+# docs/guides/bundle-storage-gcs.md.
+gcs = ["dep:object_store", "object_store/gcp", "dep:tokio", "dep:futures"]
+# post1-T-3.2: integration tests that spin up fake-gcs-server via
+# testcontainers (custom Image — testcontainers-modules has no GCS
+# module). Self-skips on Docker absence, matching s3-it.
+gcs-it = [
+    "gcs",
+    "dep:testcontainers",
     "dep:tokio",
     "dep:reqwest",
 ]
@@ -65,22 +79,26 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 # (the crate has no system deps).
 rayon = "1"
 
-# post1-T-3.1: object_store backs the S3 BundleStorage adapter.
-# `default-features = false` per ADR 001 (musl-friendly); `aws`
-# feature pulls in just the S3 client, reqwest+rustls+tokio. Optional
-# so the dep tree only loads when an operator opts into the `s3`
-# feature. `tokio` (workspace-pinned full feature set) is also
-# optional + s3-only — sync trait uses a current_thread runtime to
-# bridge the async SDK. `futures` is needed to consume
-# object_store's listing stream.
-object_store = { version = "0.11", default-features = false, features = ["aws"], optional = true }
+# post1-T-3.1 / T-3.2: object_store backs the S3 (T-3.1) and GCS
+# (T-3.2) BundleStorage adapters — and Azure Blob in T-3.3.
+# `default-features = false` per ADR 001 (musl-friendly); the
+# concrete provider features (`aws`, `gcp`, `azure`) are pulled in
+# by the corresponding `s3` / `gcs` / `azure` feature flag, NOT
+# unconditionally here, so a binary built with only `--features s3`
+# doesn't pay for the GCS deps.
+# `tokio` (workspace-pinned full feature set) is optional and
+# shared across the adapters — each builds a current_thread
+# runtime to bridge the sync trait against the async SDK.
+# `futures` is needed to consume object_store's listing stream.
+object_store = { version = "0.11", default-features = false, optional = true }
 tokio = { workspace = true, optional = true }
 futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
 testcontainers = { version = "0.23", features = ["blocking"], optional = true }
 testcontainers-modules = { version = "0.11", features = ["minio"], optional = true }
-# Test-only: hit MinIO's S3 endpoint to create the test bucket
-# before object_store puts at it. Reqwest is already in the dep
-# tree via object_store, so this adds nothing to the binary.
+# Test-only: hit the bucket-create endpoints (S3 PUT bucket / GCS
+# POST /storage/v1/b) before object_store puts at them. Reqwest is
+# already in the dep tree via object_store, so this adds nothing
+# to the binary.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 # macOS-only: libc for fcntl(F_FULLFSYNC). Plain `fsync(2)` on Darwin
