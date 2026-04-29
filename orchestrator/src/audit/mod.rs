@@ -2,6 +2,7 @@ pub mod encryption;
 pub mod evidence;
 pub mod fingerprint;
 pub mod log;
+pub mod storage;
 pub mod verify;
 
 pub use encryption::{
