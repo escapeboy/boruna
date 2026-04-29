@@ -1,0 +1,17 @@
+// Step 5: Finalize the approved and reconciled financial change record.
+//
+// Formats the final record as a JSON string ready for downstream systems
+// (ledger write, ERP push, archive). Returns 0 on success.
+//
+// std-json pattern (inlined): wrap the reconciliation summary in a finalized
+// envelope with a completion timestamp placeholder.
+
+fn finalize(summary: String) -> String {
+    "{\"status\": \"finalized\", \"finalized_at\": \"[REPLACE: completion timestamp]\", \"reconciliation\": " ++ summary ++ ", \"audit_note\": \"Dual-control approval satisfied. Record cleared for posting.\"}"
+}
+
+fn main() -> Int {
+    let demo_summary: String = "{\"reconciliation_status\": \"APPROVED\", \"dual_control\": \"satisfied\"}"
+    let record: String = finalize(demo_summary)
+    0
+}

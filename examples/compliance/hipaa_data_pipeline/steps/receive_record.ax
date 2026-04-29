@@ -1,0 +1,18 @@
+// Step 1: Receive a patient record for processing.
+//
+// In live mode (--live): would call db.query or net.fetch to retrieve a real
+// record from the EHR system. The record NEVER leaves the step boundary in
+// its original form — PHI is redacted in a later step before any output
+// reaches the evidence bundle.
+//
+// IMPORTANT: This file contains placeholder data only. No real PHI is used.
+// In production, replace this function with a capability call.
+
+fn demo_patient_record() -> String {
+    "{\"patient_id\": \"PT-00001\", \"name\": \"Jane Sample\", \"dob\": \"1985-03-22\", \"diagnosis_code\": \"J45.20\", \"provider_id\": \"PROV-4421\"}"
+}
+
+fn main() -> Int {
+    let record: String = demo_patient_record()
+    0
+}

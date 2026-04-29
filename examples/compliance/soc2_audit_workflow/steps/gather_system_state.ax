@@ -1,0 +1,16 @@
+// Step 1: Gather system state for SOC 2 availability and security review.
+//
+// In live mode (--live): would call net.fetch or db.query to pull real system
+// telemetry (uptime metrics, access counts, anomaly flags from SIEM).
+// In demo mode (default): returns a deterministic synthetic state record.
+//
+// Capability: net.fetch (declared for live mode; gated by policy)
+
+fn demo_system_state() -> String {
+    "{\"period_start\": \"2026-04-01\", \"period_end\": \"2026-04-30\", \"uptime_seconds\": 2592000, \"total_access_events\": 18432, \"failed_auth_count\": 47, \"privileged_access_count\": 312, \"anomaly_flags\": 2, \"systems_in_scope\": [\"api-gateway\", \"data-warehouse\", \"admin-console\"], \"sla_target_uptime_pct\": 99.9, \"actual_uptime_pct\": 99.97}"
+}
+
+fn main() -> Int {
+    let state: String = demo_system_state()
+    0
+}

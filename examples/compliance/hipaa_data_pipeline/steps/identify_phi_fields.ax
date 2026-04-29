@@ -1,0 +1,22 @@
+// Step 2: Identify which record fields are Protected Health Information (PHI).
+//
+// Applies HIPAA Safe Harbor method (45 CFR §164.514(b)) to determine which
+// fields qualify as PHI and must be redacted before the record is written
+// to any output, log, or evidence bundle.
+//
+// Classification rationale:
+//   name  — direct identifier (Safe Harbor §2.i)
+//   dob   — date of birth is a date directly related to an individual (§2.iv)
+//   diagnosis_code — ICD code alone (without name/dob) is coded data, not PHI
+//   provider_id    — provider identifier, not patient identifier; not PHI
+//
+// Returns a comma-separated list of field names that are PHI.
+
+fn phi_fields_for_patient_record() -> String {
+    "name,dob"
+}
+
+fn main() -> Int {
+    let fields: String = phi_fields_for_patient_record()
+    0
+}

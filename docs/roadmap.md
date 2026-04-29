@@ -149,7 +149,7 @@ These items are on the long-term radar but not scheduled:
 - **Commercial platform**: hosted workflow execution, managed evidence storage, SSO, RBAC, compliance reporting — built on the open source core.
 - **IDE integration**: language server (LSP) for `.ax` syntax, completion, and diagnostics in VS Code / Neovim (boruna-lsp MVP: diagnostics, completion, formatting — future/lsp).
 - **Model evaluation framework**: run the same workflow against multiple LLM providers and compare evidence bundles.
-- **Compliance templates**: pre-built workflow patterns for common regulated use cases (SOC 2, HIPAA, financial audit).
+- **Compliance templates**: pre-built workflow patterns for common regulated use cases (SOC 2, HIPAA, financial audit — future/compliance-templates).
 - **Cross-language FFI**: call into Rust/Python libraries from `.ax` through a typed capability interface.
 
 ## What is intentionally out of scope

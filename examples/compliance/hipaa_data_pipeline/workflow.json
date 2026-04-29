@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "name": "hipaa-data-pipeline",
+  "version": "1.0.0",
+  "description": "HIPAA minimum-necessary PHI pipeline: receive record, identify PHI fields, redact for output, verify redaction.",
+  "steps": {
+    "receive_record": {
+      "kind": "source",
+      "source": "steps/receive_record.ax",
+      "capabilities": [],
+      "outputs": {
+        "record": "String"
+      }
+    },
+    "identify_phi_fields": {
+      "kind": "source",
+      "source": "steps/identify_phi_fields.ax",
+      "capabilities": [],
+      "inputs": {
+        "record": "receive_record.result"
+      },
+      "outputs": {
+        "phi_fields": "String"
+      }
+    },
+    "redact_for_output": {
+      "kind": "source",
+      "source": "steps/redact_for_output.ax",
+      "capabilities": [],
+      "inputs": {
+        "phi_fields": "identify_phi_fields.result"
+      },
+      "outputs": {
+        "redacted": "String"
+      }
+    },
+    "verify_redaction": {
+      "kind": "source",
+      "source": "steps/verify_redaction.ax",
+      "capabilities": [],
+      "inputs": {
+        "redacted": "redact_for_output.result"
+      },
+      "outputs": {
+        "result": "Int"
+      }
+    }
+  },
+  "edges": [
+    ["receive_record", "identify_phi_fields"],
+    ["identify_phi_fields", "redact_for_output"],
+    ["redact_for_output", "verify_redaction"]
+  ]
+}
