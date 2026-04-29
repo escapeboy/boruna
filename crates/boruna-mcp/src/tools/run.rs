@@ -606,7 +606,10 @@ fn format_value_v2(value: &Value, module: &Module) -> serde_json::Value {
         Value::Ok(v) => serde_json::json!({"ok": format_value_v2(v, module)}),
         Value::Err(v) => serde_json::json!({"err": format_value_v2(v, module)}),
         Value::List(items) => {
-            serde_json::json!(items.iter().map(|v| format_value_v2(v, module)).collect::<Vec<_>>())
+            serde_json::json!(items
+                .iter()
+                .map(|v| format_value_v2(v, module))
+                .collect::<Vec<_>>())
         }
         Value::Record { type_id, fields } => {
             let idx = *type_id as usize;
@@ -624,7 +627,10 @@ fn format_value_v2(value: &Value, module: &Module) -> serde_json::Value {
                 }
             }
             // Fallback: positional array when type table is unavailable.
-            serde_json::json!(fields.iter().map(|v| format_value_v2(v, module)).collect::<Vec<_>>())
+            serde_json::json!(fields
+                .iter()
+                .map(|v| format_value_v2(v, module))
+                .collect::<Vec<_>>())
         }
         Value::Enum {
             type_id,
