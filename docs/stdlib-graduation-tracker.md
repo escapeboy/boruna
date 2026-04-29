@@ -29,15 +29,14 @@ A graduated package gets:
 
 ## Current cycle (2026-04-29)
 
-The 11 v0.x packages were assessed against the 4 criteria. **All 11
-packages now meet all 4 criteria.** Criterion (1) is closed: three
-new example workflows (`form_submission_pipeline`,
-`data_ingestion_pipeline`, `api_routing_workflow`) collectively
-reference all 11 `std-*` packages. Version bumps (0.1.0 → 1.0.0)
-will happen in a follow-on release PR.
+The 11 original v0.x packages all meet all 4 criteria; version bumps
+(0.1.0 → 1.0.0) will happen in a follow-on release PR. Two new 0.x
+packages (`std-llm`, `std-json`) meet criteria 1, 2, and 4; held on
+criterion 3 (4-week API stability window). All 13 reference docs now
+exist under `docs/reference/stdlib/`.
 
-Two new 0.x packages were added this cycle: `std-llm` and `std-json`.
-These close the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
+Two new 0.x packages were added this cycle: `std-llm` and `std-json`,
+closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 
 | Package | (1) ex wf | (2) tests | (3) API stable | (4) docs | Decision |
 |---------|:---------:|:---------:|:--------------:|:--------:|----------|
@@ -52,8 +51,8 @@ These close the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 | `std-storage` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
 | `std-notifications` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
 | `std-testing` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
-| `std-llm` | ✗ | ✓ | ✓ | ✗ | New 0.x — needs example workflow + docs page |
-| `std-json` | ✗ | ✓ | ✓ | ✗ | New 0.x — needs example workflow + docs page |
+| `std-llm` | ✓ | ✓ | ✓ | ✓ | Held — needs 4-week API stability window (criterion 3) |
+| `std-json` | ✓ | ✓ | ✓ | ✓ | Held — needs 4-week API stability window (criterion 3) |
 
 ### Per-criterion notes
 

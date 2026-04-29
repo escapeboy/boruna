@@ -1,0 +1,36 @@
+// Inline from std.llm — import pending full package resolver integration
+
+type Effect { kind: String, payload: String, callback_tag: String }
+
+type LlmRequest { system_prompt: String, user_prompt: String, max_tokens: Int, temperature: Int }
+
+type LlmResponse { content: String, tokens_used: Int, finish_reason: String }
+
+fn llm_call(req: LlmRequest, callback_tag: String) -> Effect {
+    let payload: String = req.system_prompt ++ "|" ++ req.user_prompt
+    Effect { kind: "llm_call", payload: payload, callback_tag: callback_tag }
+}
+
+fn llm_prompt(system: String, user: String, callback_tag: String) -> Effect {
+    let req: LlmRequest = LlmRequest { system_prompt: system, user_prompt: user, max_tokens: 1024, temperature: 72 }
+    llm_call(req, callback_tag)
+}
+
+fn llm_json_call(req: LlmRequest, callback_tag: String) -> Effect {
+    let payload: String = req.system_prompt ++ "|" ++ req.user_prompt
+    Effect { kind: "llm_json_call", payload: payload, callback_tag: callback_tag }
+}
+
+fn default_llm_request(system: String, user: String) -> LlmRequest {
+    LlmRequest { system_prompt: system, user_prompt: user, max_tokens: 1024, temperature: 72 }
+}
+
+fn main() -> Int {
+    let topic: String = "renewable energy"
+    let eff: Effect = llm_prompt(
+        "You are a content writer. Generate a short article.",
+        "Write a 200-word article about: " ++ topic,
+        "content_generated"
+    )
+    0
+}
