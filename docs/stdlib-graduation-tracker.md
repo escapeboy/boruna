@@ -1,0 +1,116 @@
+# Standard Libraries Graduation Tracker
+
+Sprint reference: post1-T-3.4.
+
+The post-1.0 plan defines a 4-criterion checklist for graduating
+each `std-*` package from `0.x` to `1.0`. A package must pass **all
+four** to ship as 1.0-stable; partial passes hold the package on
+the 0.x line until the gap closes.
+
+## Criteria
+
+1. **Example workflow usage.** Used by at least one workflow under
+   `examples/workflows/`. (Demonstrates the package in the form
+   operators actually call it from.)
+2. **Internal test coverage.** Exercised by at least one Boruna
+   internal test (compile + verify-determinism, runtime smoke).
+3. **API stability.** Public surface unchanged in the trailing
+   four-week window; no rename/removal/type-change pending.
+4. **Reference docs.** A dedicated reference page at
+   `docs/reference/stdlib/<name>.md` describing the public surface,
+   capability requirements, and at least one usage example.
+
+A graduated package gets:
+
+- Version bump in `libs/<name>/package.ax.json` from `0.1.0` → `1.0.0`.
+- CHANGELOG entry under `### Stable` calling it out by name.
+- Inclusion in the 1.x LTS reader-constants set (per
+  `docs/lts.md`).
+
+## Current cycle (2026-04-29)
+
+The 11 v0.x packages were assessed against the 4 criteria. **Zero
+packages graduate this cycle.** The same two criteria fail across
+the entire stdlib: no `examples/workflows/*` references the
+packages by name, and no per-package reference doc exists. Closing
+either alone is not sufficient; both are blockers. Filed as Wave-3
+follow-up work.
+
+| Package | (1) ex wf | (2) tests | (3) API stable | (4) docs | Decision |
+|---------|:---------:|:---------:|:--------------:|:--------:|----------|
+| `std-ui` | ✗ | ✓ (`std_ui_runs`) | ✓ | ✗ | Held — needs example workflow + `docs/reference/stdlib/std-ui.md` |
+| `std-validation` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-forms` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-authz` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-http` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-db` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-sync` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-routing` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-storage` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-notifications` | ✗ | ✓ | ✓ | ✗ | Held — same |
+| `std-testing` | ✗ | ✓ | ✓ | ✗ | Held — same |
+
+### Per-criterion notes
+
+- **(1) Example workflow usage** — `examples/workflows/` currently
+  contains three end-to-end workflows (`llm_code_review`,
+  `document_processing`, `customer_support_triage`). None of them
+  imports any `std-*` package; they emit short pure-functional
+  `.ax` programs that don't exercise stdlib surface. Closing this
+  criterion needs at least one new example workflow per stdlib
+  package — typically a minimal happy-path showing import, one
+  function call, and the resulting `Value`.
+
+- **(2) Internal test coverage** — `tooling/src/stdlib/mod.rs::tests`
+  loads each library via `load_library_source(libs_dir(), "<name>")`
+  and runs `verify_compiles` plus `verify_determinism`. The current
+  test suite covers all 11 packages.
+
+- **(3) API stability** — assessed against the last four weeks
+  (since `v1.0.0` GA on 2026-04-28). No package has had its
+  `package.ax.json` `[exports]` modified in this window.
+
+- **(4) Reference docs** — `docs/reference/stdlib/` does not
+  currently exist as a directory. The Wave-3 follow-up should
+  create one `<name>.md` per package with a fixed shell:
+  Capability requirements, public surface, usage example, version
+  history.
+
+## Next cycle
+
+This tracker is reassessed at every minor release (`v1.1.0`,
+`v1.2.0`, ...). To unblock the first wave of graduations:
+
+1. Land per-package reference docs under `docs/reference/stdlib/`.
+   Suggested PR shape: one PR per cluster of related packages
+   (e.g. `std-authz` + `std-validation` + `std-forms` together;
+   `std-http` + `std-db` + `std-routing` together) so review
+   stays bounded.
+2. Land minimal example workflows demonstrating each package.
+   Typical shape: `examples/workflows/std-<name>-demo/workflow.json`
+   plus a single-step `.ax` body that imports the package and
+   calls one function.
+3. Re-run this checklist; any package that scores 4/4 graduates.
+
+When a package graduates:
+
+- Bump `libs/<name>/package.ax.json` to `1.0.0`.
+- Add a CHANGELOG entry under `### Stable`:
+
+  ```
+  - `std-<name>` is now 1.0-stable. Public surface frozen per
+    `docs/reference/stdlib/std-<name>.md`; bumps require a 1.x
+    deprecation notice per LTS contract.
+  ```
+
+- Update this tracker's table.
+
+## Source of record
+
+- `docs/STD_LIBRARIES_SPEC.md` — ten-thousand-foot description of
+  what each package does.
+- `libs/<name>/package.ax.json` — current version + capability
+  requirements per package.
+- `tooling/src/stdlib/mod.rs::tests` — internal smoke + determinism
+  tests.
+- This file — graduation status + per-cycle decisions.

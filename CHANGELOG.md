@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Decided
+
+- **Stdlib graduation tracker (post1-T-3.4).** Assessed all 11
+  `std-*` packages against the 4-criterion graduation checklist.
+  **Zero packages graduate to 1.0 this cycle.** Two criteria fail
+  uniformly: none of the packages is referenced from any
+  `examples/workflows/*`, and none has a
+  `docs/reference/stdlib/<name>.md` reference page. Per-package
+  decisions and per-criterion notes are recorded in
+  `docs/stdlib-graduation-tracker.md`. Closing the gates is filed
+  as Wave-3 follow-up work.
+
 ### Added
 
 - `boruna evidence rotate-kek` (post1-T-2.4) re-wraps the DEK of one
