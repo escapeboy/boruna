@@ -198,6 +198,13 @@ pub struct StepDef {
     pub retry: Option<RetryPolicy>,
     #[serde(default)]
     pub budget: Option<StepBudget>,
+    /// Minimum capability version requirements for distributed-execution
+    /// workers claiming this step. Format: `{"llm.call": "2.0"}`.
+    /// A worker must advertise >= this version for each listed capability
+    /// to be eligible to claim the step. Workers without an explicit
+    /// version declaration for a capability default to "1.0".
+    #[serde(default)]
+    pub required_capability_versions: BTreeMap<String, String>,
 }
 
 /// The kind of step.

@@ -1109,6 +1109,45 @@ fn validate_advertised_capabilities(
     Ok(Some(map))
 }
 
+/// Parse a `MAJOR.MINOR` version string into `(u32, u32)`.
+/// Returns `None` on malformed input.
+fn parse_major_minor(s: &str) -> Option<(u32, u32)> {
+    let (major, minor) = s.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// Returns `true` if `worker_ver >= required_ver` in `MAJOR.MINOR`
+/// order. Falls back to string equality when either version is not
+/// a well-formed `MAJOR.MINOR` string (conservative: non-parseable
+/// versions only satisfy themselves).
+pub fn semver_gte(worker_ver: &str, required_ver: &str) -> bool {
+    match (
+        parse_major_minor(worker_ver),
+        parse_major_minor(required_ver),
+    ) {
+        (Some(wv), Some(rv)) => wv >= rv,
+        _ => worker_ver == required_ver,
+    }
+}
+
+/// Check whether a worker's advertised capability versions satisfy
+/// per-step `required_capability_versions`. Each entry in `required`
+/// specifies the MINIMUM version the worker must advertise for that
+/// capability. Workers that have not declared a version for a
+/// capability default to `"1.0"`.
+pub fn version_compatible(
+    worker_versions: &BTreeMap<String, String>,
+    required_versions: &BTreeMap<String, String>,
+) -> bool {
+    required_versions.iter().all(|(cap, required)| {
+        let worker_ver = worker_versions
+            .get(cap)
+            .map(|s| s.as_str())
+            .unwrap_or("1.0");
+        semver_gte(worker_ver, required)
+    })
+}
+
 /// Post-1.0 (T-1.3) — outcome of comparing a worker's advertised
 /// `(name, version)` set against a step's required cap-names.
 ///
@@ -4038,6 +4077,51 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error_kind"], "coord.identity_mismatch");
+    }
+
+    // post1/scheduler-registry-rolling — version_compatible / semver_gte tests.
+
+    #[test]
+    fn version_compatible_exact_match() {
+        let worker: BTreeMap<String, String> = [("llm.call".to_string(), "1.0".to_string())]
+            .into_iter()
+            .collect();
+        let required: BTreeMap<String, String> = [("llm.call".to_string(), "1.0".to_string())]
+            .into_iter()
+            .collect();
+        assert!(version_compatible(&worker, &required));
+    }
+
+    #[test]
+    fn version_compatible_newer_worker() {
+        let worker: BTreeMap<String, String> = [("llm.call".to_string(), "2.0".to_string())]
+            .into_iter()
+            .collect();
+        let required: BTreeMap<String, String> = [("llm.call".to_string(), "1.0".to_string())]
+            .into_iter()
+            .collect();
+        assert!(version_compatible(&worker, &required));
+    }
+
+    #[test]
+    fn version_compatible_older_worker() {
+        let worker: BTreeMap<String, String> = [("llm.call".to_string(), "1.0".to_string())]
+            .into_iter()
+            .collect();
+        let required: BTreeMap<String, String> = [("llm.call".to_string(), "2.0".to_string())]
+            .into_iter()
+            .collect();
+        assert!(!version_compatible(&worker, &required));
+    }
+
+    #[test]
+    fn version_compatible_missing_cap_defaults_1_0() {
+        // Worker has no version declared for "llm.call"; default is "1.0".
+        let worker: BTreeMap<String, String> = BTreeMap::new();
+        let required: BTreeMap<String, String> = [("llm.call".to_string(), "1.0".to_string())]
+            .into_iter()
+            .collect();
+        assert!(version_compatible(&worker, &required));
     }
 
     #[test]
