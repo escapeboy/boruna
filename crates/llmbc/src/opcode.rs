@@ -121,6 +121,18 @@ pub enum Op {
     /// Pop a string, push Result: Ok(Int) on success, Err(String) on failure.
     TryParseInt,
 
+    /// Pop an Int, push its decimal String representation.
+    IntToString,
+
+    /// Pop a Float, push its decimal String representation.
+    FloatToString,
+
+    /// Pop a String, push its byte length as Int.
+    StringLen,
+
+    /// Pop a String, push a List of single-character Strings.
+    StringChars,
+
     /// No operation.
     Nop,
 
@@ -178,6 +190,10 @@ impl Op {
             Op::StrContains => 0x85,
             Op::StrStartsWith => 0x86,
             Op::TryParseInt => 0x87,
+            Op::IntToString => 0x88,
+            Op::FloatToString => 0x89,
+            Op::StringLen => 0x8A,
+            Op::StringChars => 0x8B,
             Op::Nop => 0xFE,
             Op::Halt => 0xFF,
         }

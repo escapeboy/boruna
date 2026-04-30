@@ -294,6 +294,26 @@ impl Emitter {
                             fe.code.push(Op::StrStartsWith);
                             return Ok(());
                         }
+                        "__builtin_int_to_string" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::IntToString);
+                            return Ok(());
+                        }
+                        "__builtin_float_to_string" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::FloatToString);
+                            return Ok(());
+                        }
+                        "__builtin_string_len" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::StringLen);
+                            return Ok(());
+                        }
+                        "__builtin_string_chars" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::StringChars);
+                            return Ok(());
+                        }
                         // 0.3-S14: builtin `step_input(name)` reads a
                         // workflow step's resolved upstream output.
                         // Emits `Op::CapCall(StepInput, 1)` which

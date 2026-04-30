@@ -1,7 +1,5 @@
 // std.json — JSON-flavoured data extraction and manipulation utilities
 // Pure-functional. No capabilities required. No side effects.
-// Note: json_escape is an identity for now; the language lacks char iteration.
-// Note: json_int_field uses int_to_string stub; real int formatting requires compiler support.
 
 type JsonResult { ok: Bool, value: String, error: String }
 
@@ -41,14 +39,33 @@ fn json_array_wrap(items: String) -> String {
     "[" ++ items ++ "]"
 }
 
+fn escape_char(c: String) -> String {
+    if c == "\\" {
+        "\\\\"
+    } else {
+        if c == "\"" {
+            "\\\""
+        } else {
+            c
+        }
+    }
+}
+
 fn json_escape(s: String) -> String {
-    // Identity: char-level escaping requires iteration not yet in the language.
-    s
+    let chars: List<String> = __builtin_string_chars(s)
+    let result: String = ""
+    let i: Int = 0
+    let n: Int = list_len(chars)
+    while i < n {
+        let c: String = list_get(chars, i)
+        result = result ++ escape_char(c)
+        i = i + 1
+    }
+    result
 }
 
 fn int_to_string(n: Int) -> String {
-    // Built-in stub: returns empty string; real conversion requires compiler support.
-    ""
+    __builtin_int_to_string(n)
 }
 
 fn main() -> Int {

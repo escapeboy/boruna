@@ -2045,4 +2045,84 @@ mod tests {
             "pure program must leave cap events empty"
         );
     }
+
+    // ── New string built-in tests ──
+
+    #[test]
+    fn test_int_to_string() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::IntToString, Op::Ret],
+            vec![Value::Int(42)],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("42".into())
+        );
+    }
+
+    #[test]
+    fn test_int_to_string_negative() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::IntToString, Op::Ret],
+            vec![Value::Int(-7)],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("-7".into())
+        );
+    }
+
+    #[test]
+    fn test_float_to_string() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::FloatToString, Op::Ret],
+            vec![Value::Float(3.14)],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("3.14".into())
+        );
+    }
+
+    #[test]
+    fn test_string_len() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringLen, Op::Ret],
+            vec![Value::String("hello".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(5));
+    }
+
+    #[test]
+    fn test_string_len_empty() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringLen, Op::Ret],
+            vec![Value::String("".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn test_string_chars() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringChars, Op::Ret],
+            vec![Value::String("ab".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_string_chars_empty() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringChars, Op::Ret],
+            vec![Value::String("".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::List(vec![]));
+    }
 }
