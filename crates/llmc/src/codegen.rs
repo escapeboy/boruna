@@ -390,6 +390,81 @@ impl Emitter {
                             fe.code.push(Op::ListReverse);
                             return Ok(());
                         }
+                        "__builtin_string_split" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::StringSplit);
+                            return Ok(());
+                        }
+                        "__builtin_string_replace" if args.len() == 3 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            self.emit_expr(&args[2], fe)?;
+                            fe.code.push(Op::StringReplace);
+                            return Ok(());
+                        }
+                        "__builtin_string_slice" if args.len() == 3 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            self.emit_expr(&args[2], fe)?;
+                            fe.code.push(Op::StringSlice);
+                            return Ok(());
+                        }
+                        "__builtin_int_parse" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::IntParse);
+                            return Ok(());
+                        }
+                        "__builtin_float_parse" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::FloatParse);
+                            return Ok(());
+                        }
+                        "__builtin_bool_to_string" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::BoolToString);
+                            return Ok(());
+                        }
+                        "__builtin_map_get" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::MapGet);
+                            return Ok(());
+                        }
+                        "__builtin_map_set" if args.len() == 3 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            self.emit_expr(&args[2], fe)?;
+                            fe.code.push(Op::MapSet);
+                            return Ok(());
+                        }
+                        "__builtin_map_remove" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::MapRemove);
+                            return Ok(());
+                        }
+                        "__builtin_map_contains_key" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::MapContainsKey);
+                            return Ok(());
+                        }
+                        "__builtin_map_keys" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::MapKeys);
+                            return Ok(());
+                        }
+                        "__builtin_map_values" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::MapValues);
+                            return Ok(());
+                        }
+                        "__builtin_map_len" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::MapLen);
+                            return Ok(());
+                        }
                         // 0.3-S14: builtin `step_input(name)` reads a
                         // workflow step's resolved upstream output.
                         // Emits `Op::CapCall(StepInput, 1)` which

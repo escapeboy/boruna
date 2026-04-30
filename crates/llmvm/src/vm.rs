@@ -1193,6 +1193,262 @@ impl Vm {
                         }
                     }
                 }
+                Op::StringSplit => {
+                    let sep = self.pop()?;
+                    let s = self.pop()?;
+                    match (s, sep) {
+                        (Value::String(s), Value::String(sep)) => {
+                            let parts: Vec<Value> = if sep.is_empty() {
+                                s.chars().map(|c| Value::String(c.to_string())).collect()
+                            } else {
+                                s.split(sep.as_str())
+                                    .map(|p| Value::String(p.to_string()))
+                                    .collect()
+                            };
+                            self.push(Value::List(parts))?;
+                        }
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringReplace => {
+                    let to = self.pop()?;
+                    let from = self.pop()?;
+                    let s = self.pop()?;
+                    match (s, from, to) {
+                        (Value::String(s), Value::String(from), Value::String(to)) => {
+                            self.push(Value::String(s.replace(from.as_str(), to.as_str())))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: "non-String",
+                            })
+                        }
+                    }
+                }
+                Op::StringSlice => {
+                    let end = self.pop()?;
+                    let start = self.pop()?;
+                    let s = self.pop()?;
+                    match (s, start, end) {
+                        (Value::String(s), Value::Int(start), Value::Int(end)) => {
+                            let slice = s
+                                .get(start as usize..end as usize)
+                                .unwrap_or("")
+                                .to_string();
+                            self.push(Value::String(slice))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String, Int, Int",
+                                got: "wrong types",
+                            })
+                        }
+                    }
+                }
+                Op::IntParse => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => {
+                            let result = match s.parse::<i64>() {
+                                std::result::Result::Ok(n) => Value::Some(Box::new(Value::Int(n))),
+                                std::result::Result::Err(_) => Value::None,
+                            };
+                            self.push(result)?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::FloatParse => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => {
+                            let result = match s.parse::<f64>() {
+                                std::result::Result::Ok(f) => {
+                                    Value::Some(Box::new(Value::Float(f)))
+                                }
+                                std::result::Result::Err(_) => Value::None,
+                            };
+                            self.push(result)?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::BoolToString => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Bool(b) => {
+                            self.push(Value::String(if b {
+                                "true".to_string()
+                            } else {
+                                "false".to_string()
+                            }))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Bool",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapGet => {
+                    let key = self.pop()?;
+                    let map = self.pop()?;
+                    match (map, key) {
+                        (Value::Map(m), Value::String(k)) => {
+                            let result = match m.get(&k) {
+                                Some(v) => Value::Some(Box::new(v.clone())),
+                                Option::None => Value::None,
+                            };
+                            self.push(result)?;
+                        }
+                        (Value::Map(_), k) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: k.type_name(),
+                            })
+                        }
+                        (m, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: m.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapSet => {
+                    let val = self.pop()?;
+                    let key = self.pop()?;
+                    let map = self.pop()?;
+                    match (map, key) {
+                        (Value::Map(mut m), Value::String(k)) => {
+                            m.insert(k, val);
+                            self.push(Value::Map(m))?;
+                        }
+                        (Value::Map(_), k) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: k.type_name(),
+                            })
+                        }
+                        (m, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: m.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapRemove => {
+                    let key = self.pop()?;
+                    let map = self.pop()?;
+                    match (map, key) {
+                        (Value::Map(mut m), Value::String(k)) => {
+                            m.remove(&k);
+                            self.push(Value::Map(m))?;
+                        }
+                        (Value::Map(_), k) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: k.type_name(),
+                            })
+                        }
+                        (m, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: m.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapContainsKey => {
+                    let key = self.pop()?;
+                    let map = self.pop()?;
+                    match (map, key) {
+                        (Value::Map(m), Value::String(k)) => {
+                            self.push(Value::Bool(m.contains_key(&k)))?;
+                        }
+                        (Value::Map(_), k) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: k.type_name(),
+                            })
+                        }
+                        (m, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: m.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapKeys => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Map(m) => {
+                            let keys: Vec<Value> =
+                                m.keys().map(|k| Value::String(k.clone())).collect();
+                            self.push(Value::List(keys))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapValues => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Map(m) => {
+                            let values: Vec<Value> = m.values().cloned().collect();
+                            self.push(Value::List(values))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::MapLen => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Map(m) => {
+                            self.push(Value::Int(m.len() as i64))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Map",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
                 Op::Nop => {}
                 Op::Halt => {
                     return Ok(self.stack.pop().unwrap_or(Value::Unit));

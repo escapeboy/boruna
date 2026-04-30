@@ -71,6 +71,19 @@ impl TypeChecker {
         functions.insert("__builtin_list_append".to_string(), 2);
         functions.insert("__builtin_list_concat".to_string(), 2);
         functions.insert("__builtin_list_reverse".to_string(), 1);
+        functions.insert("__builtin_string_split".to_string(), 2);
+        functions.insert("__builtin_string_replace".to_string(), 3);
+        functions.insert("__builtin_string_slice".to_string(), 3);
+        functions.insert("__builtin_int_parse".to_string(), 1);
+        functions.insert("__builtin_float_parse".to_string(), 1);
+        functions.insert("__builtin_bool_to_string".to_string(), 1);
+        functions.insert("__builtin_map_get".to_string(), 2);
+        functions.insert("__builtin_map_set".to_string(), 3);
+        functions.insert("__builtin_map_remove".to_string(), 2);
+        functions.insert("__builtin_map_contains_key".to_string(), 2);
+        functions.insert("__builtin_map_keys".to_string(), 1);
+        functions.insert("__builtin_map_values".to_string(), 1);
+        functions.insert("__builtin_map_len".to_string(), 1);
         // 0.3-S14: read a workflow step's resolved input value at
         // runtime. Compiles to `Op::CapCall(StepInput, 1)` which
         // dispatches through the gateway's StepInputHandler. Returns
