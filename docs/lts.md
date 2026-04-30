@@ -117,10 +117,10 @@ The following `std-*` packages are 1.0-stable and LTS-protected from **v1.2.0**:
 | `std-storage` | v1.2.0 | [`docs/reference/stdlib/std-storage.md`](./reference/stdlib/std-storage.md) |
 | `std-notifications` | v1.2.0 | [`docs/reference/stdlib/std-notifications.md`](./reference/stdlib/std-notifications.md) |
 | `std-testing` | v1.2.0 | [`docs/reference/stdlib/std-testing.md`](./reference/stdlib/std-testing.md) |
+| `std-llm` | v1.3.0 | [`docs/reference/stdlib/std-llm.md`](./reference/stdlib/std-llm.md) |
+| `std-json` | v1.3.0 | [`docs/reference/stdlib/std-json.md`](./reference/stdlib/std-json.md) |
 
 LTS guarantees for these packages: function signatures, parameter types, and return types are frozen. New functions may be added in minor releases. Capability requirements in `package.ax.json` are frozen.
-
-**Not yet LTS-protected**: `std-llm` and `std-json` are at `0.1.0` (Experimental tier); they graduate when the 4-week API stability window closes (eligible ≥ 2026-05-27).
 
 ## What CAN change in 1.x
 
