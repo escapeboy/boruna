@@ -2363,4 +2363,303 @@ mod tests {
             Value::List(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
         );
     }
+
+    // ── New string/map built-ins ──
+
+    #[test]
+    fn test_string_split() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringSplit, Op::Ret],
+            vec![Value::String("a,b,c".into()), Value::String(",".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_string_split_empty_sep() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringSplit, Op::Ret],
+            vec![Value::String("ab".into()), Value::String("".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_string_replace() {
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::PushConst(2),
+                Op::StringReplace,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+                Value::String("Rust".into()),
+            ],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("hello Rust".into())
+        );
+    }
+
+    #[test]
+    fn test_string_slice() {
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::PushConst(2),
+                Op::StringSlice,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hello".into()),
+                Value::Int(1),
+                Value::Int(4),
+            ],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::String("ell".into())
+        );
+    }
+
+    #[test]
+    fn test_string_slice_out_of_bounds() {
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::PushConst(2),
+                Op::StringSlice,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hi".into()),
+                Value::Int(0),
+                Value::Int(100),
+            ],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("".into()));
+    }
+
+    #[test]
+    fn test_int_parse_ok() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::IntParse, Op::Ret],
+            vec![Value::String("42".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Some(Box::new(Value::Int(42)))
+        );
+    }
+
+    #[test]
+    fn test_int_parse_fail() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::IntParse, Op::Ret],
+            vec![Value::String("abc".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::None);
+    }
+
+    #[test]
+    fn test_float_parse_ok() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::FloatParse, Op::Ret],
+            vec![Value::String("3.14".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Some(Box::new(Value::Float(3.14)))
+        );
+    }
+
+    #[test]
+    fn test_float_parse_fail() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::FloatParse, Op::Ret],
+            vec![Value::String("nope".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::None);
+    }
+
+    #[test]
+    fn test_bool_to_string_true() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::BoolToString, Op::Ret],
+            vec![Value::Bool(true)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("true".into()));
+    }
+
+    #[test]
+    fn test_bool_to_string_false() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::BoolToString, Op::Ret],
+            vec![Value::Bool(false)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("false".into()));
+    }
+
+    #[test]
+    fn test_map_get_some() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("key".to_string(), Value::Int(99));
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::MapGet, Op::Ret],
+            vec![Value::Map(m), Value::String("key".into())],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Some(Box::new(Value::Int(99)))
+        );
+    }
+
+    #[test]
+    fn test_map_get_none() {
+        use std::collections::BTreeMap;
+        let m: BTreeMap<String, Value> = BTreeMap::new();
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::MapGet, Op::Ret],
+            vec![Value::Map(m), Value::String("missing".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::None);
+    }
+
+    #[test]
+    fn test_map_set() {
+        use std::collections::BTreeMap;
+        let m: BTreeMap<String, Value> = BTreeMap::new();
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::PushConst(2),
+                Op::MapSet,
+                Op::Ret,
+            ],
+            vec![
+                Value::Map(m),
+                Value::String("x".into()),
+                Value::Int(5),
+            ],
+        );
+        let mut expected = BTreeMap::new();
+        expected.insert("x".to_string(), Value::Int(5));
+        assert_eq!(run_module(module).unwrap(), Value::Map(expected));
+    }
+
+    #[test]
+    fn test_map_remove() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::Int(1));
+        m.insert("b".to_string(), Value::Int(2));
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::MapRemove, Op::Ret],
+            vec![Value::Map(m), Value::String("a".into())],
+        );
+        let mut expected = BTreeMap::new();
+        expected.insert("b".to_string(), Value::Int(2));
+        assert_eq!(run_module(module).unwrap(), Value::Map(expected));
+    }
+
+    #[test]
+    fn test_map_contains_key_true() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("k".to_string(), Value::Bool(true));
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::MapContainsKey,
+                Op::Ret,
+            ],
+            vec![Value::Map(m), Value::String("k".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_map_contains_key_false() {
+        use std::collections::BTreeMap;
+        let m: BTreeMap<String, Value> = BTreeMap::new();
+        let module = simple_module(
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::MapContainsKey,
+                Op::Ret,
+            ],
+            vec![Value::Map(m), Value::String("missing".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_map_keys() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::Int(1));
+        m.insert("b".to_string(), Value::Int(2));
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::MapKeys, Op::Ret],
+            vec![Value::Map(m)],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::String("a".into()), Value::String("b".into())])
+        );
+    }
+
+    #[test]
+    fn test_map_values() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Value::Int(10));
+        m.insert("b".to_string(), Value::Int(20));
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::MapValues, Op::Ret],
+            vec![Value::Map(m)],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::Int(10), Value::Int(20)])
+        );
+    }
+
+    #[test]
+    fn test_map_len() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert("x".to_string(), Value::Unit);
+        m.insert("y".to_string(), Value::Unit);
+        m.insert("z".to_string(), Value::Unit);
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::MapLen, Op::Ret],
+            vec![Value::Map(m)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(3));
+    }
 }

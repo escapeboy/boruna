@@ -175,6 +175,47 @@ pub enum Op {
     /// Pop a List, push reversed List.
     ListReverse,
 
+    // String built-ins (0x9A+)
+    /// Pop two strings (string, sep), push List<String>.
+    StringSplit,
+
+    /// Pop three strings (string, from, to), push String.
+    StringReplace,
+
+    /// Pop a String and two Ints (start, end), push String slice.
+    StringSlice,
+
+    /// Pop a String, push Option<Int>.
+    IntParse,
+
+    /// Pop a String, push Option<Float>.
+    FloatParse,
+
+    /// Pop a Bool, push String ("true" or "false").
+    BoolToString,
+
+    // Map built-ins (0xA0+)
+    /// Pop a Map and a String key, push Option<Value>.
+    MapGet,
+
+    /// Pop a Map, a String key, and a Value; push new Map with key set.
+    MapSet,
+
+    /// Pop a Map and a String key; push new Map with key removed.
+    MapRemove,
+
+    /// Pop a Map and a String key; push Bool.
+    MapContainsKey,
+
+    /// Pop a Map; push List<String> of keys.
+    MapKeys,
+
+    /// Pop a Map; push List of values.
+    MapValues,
+
+    /// Pop a Map; push Int length.
+    MapLen,
+
     /// No operation.
     Nop,
 
@@ -250,6 +291,19 @@ impl Op {
             Op::ListAppend => 0x97,
             Op::ListConcat => 0x98,
             Op::ListReverse => 0x99,
+            Op::StringSplit => 0x9A,
+            Op::StringReplace => 0x9B,
+            Op::StringSlice => 0x9C,
+            Op::IntParse => 0x9D,
+            Op::FloatParse => 0x9E,
+            Op::BoolToString => 0x9F,
+            Op::MapGet => 0xA0,
+            Op::MapSet => 0xA1,
+            Op::MapRemove => 0xA2,
+            Op::MapContainsKey => 0xA3,
+            Op::MapKeys => 0xA4,
+            Op::MapValues => 0xA5,
+            Op::MapLen => 0xA6,
             Op::Nop => 0xFE,
             Op::Halt => 0xFF,
         }
