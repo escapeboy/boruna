@@ -53,6 +53,10 @@ impl TypeChecker {
         functions.insert("try_parse_int".to_string(), 1);
         functions.insert("str_contains".to_string(), 2);
         functions.insert("str_starts_with".to_string(), 2);
+        functions.insert("__builtin_int_to_string".to_string(), 1);
+        functions.insert("__builtin_float_to_string".to_string(), 1);
+        functions.insert("__builtin_string_len".to_string(), 1);
+        functions.insert("__builtin_string_chars".to_string(), 1);
         // 0.3-S14: read a workflow step's resolved input value at
         // runtime. Compiles to `Op::CapCall(StepInput, 1)` which
         // dispatches through the gateway's StepInputHandler. Returns

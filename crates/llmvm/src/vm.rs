@@ -897,6 +897,58 @@ impl Vm {
                         }
                     }
                 }
+                Op::IntToString => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Int(n) => self.push(Value::String(format!("{n}")))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Int",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::FloatToString => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::Float(f) => self.push(Value::String(format!("{f}")))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "Float",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringLen => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => self.push(Value::Int(s.len() as i64))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringChars => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => {
+                            let chars: Vec<Value> =
+                                s.chars().map(|c| Value::String(c.to_string())).collect();
+                            self.push(Value::List(chars))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
                 Op::Nop => {}
                 Op::Halt => {
                     return Ok(self.stack.pop().unwrap_or(Value::Unit));
