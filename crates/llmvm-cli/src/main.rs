@@ -3981,8 +3981,9 @@ fn run_evidence(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use boruna_orchestrator::audit::{
         evidence::{BundleJson, BundleManifest},
-        resolve_kek,
+        parse_kek_hex, resolve_kek,
         verify::verify_bundle_with_kek,
+        Envelope,
     };
 
     match cmd {
@@ -4048,31 +4049,82 @@ fn run_evidence(
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok());
 
-            // Sprint W6-B: refuse to print decrypted payloads from
-            // an encrypted bundle unless the operator opted in via
-            // --decrypt. The manifest itself is plaintext metadata;
-            // it always prints. Currently `inspect` only prints
-            // manifest-level fields (no payload), so the gate is
-            // future-proofing — wire it now so the surface lands
-            // with the encryption sprint.
-            let _ = (decrypt, bundle_encryption_key);
-            if let Some(info) = &manifest.encryption {
-                if !decrypt {
-                    eprintln!(
-                        "note: bundle is encrypted (algorithm={}, kek_id={}); \
-                         pass --decrypt to print decrypted file contents",
-                        info.algorithm, info.kek_id
-                    );
-                }
-            }
+            // Resolve decrypted step outputs when --decrypt is passed.
+            let step_outputs: Option<std::collections::BTreeMap<String, serde_json::Value>> =
+                if decrypt {
+                    match &manifest.encryption {
+                        None => {
+                            eprintln!(
+                                "note: --decrypt passed but bundle is not encrypted; ignoring"
+                            );
+                            None
+                        }
+                        Some(enc_info) => {
+                            let kek_hex = bundle_encryption_key
+                                .as_deref()
+                                .ok_or("--decrypt requires --bundle-encryption-key <hex>")?;
+                            let kek = parse_kek_hex(kek_hex)
+                                .map_err(|e| format!("invalid KEK: {e}"))?;
+                            let envelope = Envelope::unwrap(enc_info, &kek)
+                                .map_err(|e| format!("error: KEK unwrap failed: {e}"))?;
+
+                            let mut outputs =
+                                std::collections::BTreeMap::<String, serde_json::Value>::new();
+                            for filename in &enc_info.files {
+                                // Only surface step outputs (outputs/<step>/<name>.json)
+                                if !filename.starts_with("outputs/") {
+                                    continue;
+                                }
+                                let path = dir.join(filename);
+                                let ciphertext = fs::read(&path).map_err(|e| {
+                                    format!("error: cannot read {filename}: {e}")
+                                })?;
+                                let plaintext =
+                                    envelope.decrypt_file(filename, &ciphertext).map_err(|e| {
+                                        format!("error: decryption failed for {filename}: {e}")
+                                    })?;
+                                let content = String::from_utf8(plaintext).map_err(|e| {
+                                    format!(
+                                        "error: decrypted content of {filename} is not UTF-8: {e}"
+                                    )
+                                })?;
+                                // Use step_id/name as key, stripping "outputs/" prefix
+                                // and ".json" suffix for readability.
+                                let key = filename
+                                    .trim_start_matches("outputs/")
+                                    .trim_end_matches(".json")
+                                    .to_string();
+                                let val: serde_json::Value =
+                                    serde_json::from_str(&content).unwrap_or_else(|_| {
+                                        serde_json::Value::String(content.clone())
+                                    });
+                                outputs.insert(key, val);
+                            }
+                            Some(outputs)
+                        }
+                    }
+                } else {
+                    // No --decrypt: hint that content is hidden if encrypted.
+                    if let Some(info) = &manifest.encryption {
+                        eprintln!(
+                            "note: bundle is encrypted (algorithm={}, kek_id={}); \
+                             pass --decrypt to print decrypted file contents",
+                            info.algorithm, info.kek_id
+                        );
+                    }
+                    None
+                };
 
             if json {
-                let merged = serde_json::json!({
+                let mut merged = serde_json::json!({
                     "format_version": bundle_meta
                         .as_ref()
                         .map(|b| b.format_version.clone()),
                     "manifest": manifest,
                 });
+                if let Some(outputs) = step_outputs {
+                    merged["step_outputs"] = serde_json::to_value(outputs)?;
+                }
                 println!("{}", serde_json::to_string_pretty(&merged)?);
             } else {
                 println!("=== Evidence Bundle ===");
@@ -4105,6 +4157,12 @@ fn run_evidence(
                     "  os: {}/{}",
                     manifest.env_fingerprint.os, manifest.env_fingerprint.arch
                 );
+                if let Some(outputs) = step_outputs {
+                    println!("\n=== Step Outputs (decrypted) ===");
+                    for (key, val) in &outputs {
+                        println!("{key}: {val}");
+                    }
+                }
             }
         }
         EvidenceCommand::GcBlobs {

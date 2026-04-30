@@ -124,15 +124,9 @@ fn inspect_does_not_leak_plaintext_without_decrypt_flag() {
 }
 
 #[test]
-fn inspect_decrypt_flag_is_inert_when_payload_display_unimplemented() {
-    // Regression guard for the current behavior: today `inspect`
-    // does NOT print decrypted payloads even with --decrypt, because
-    // payload preview is not implemented. The flag is wired through
-    // the CLI for future-proofing. This test pins that behavior so a
-    // future change adding payload display is forced to update both
-    // the gate AND this test.
+fn inspect_decrypt_reveals_step_outputs_with_correct_kek() {
     let dir = tempdir().unwrap();
-    let run_id = "R-decrypt-noop";
+    let run_id = "R-decrypt-reveal";
     build_encrypted_bundle(dir.path(), run_id);
     let bundle_dir = dir.path().join(run_id);
 
@@ -155,22 +149,68 @@ fn inspect_decrypt_flag_is_inert_when_payload_display_unimplemented() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // With --decrypt and the correct KEK the canary MUST appear.
+    assert!(
+        stdout.contains(PLAINTEXT_CANARY),
+        "stdout should contain the plaintext canary when --decrypt + correct KEK is used; \
+         stdout was: {stdout}"
+    );
+
+    // The step-outputs section header must be present.
+    assert!(
+        stdout.contains("Step Outputs (decrypted)"),
+        "stdout should contain section header; stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn inspect_decrypt_on_plaintext_bundle_prints_warning() {
+    // When --decrypt is passed against a non-encrypted bundle, the CLI
+    // should print a warning and exit 0 (not fail).
+    let dir = tempdir().unwrap();
+    let run_id = "R-decrypt-plaintext";
+
+    // Build a plaintext bundle (no .with_encryption).
+    let mut builder =
+        EvidenceBundleBuilder::new(dir.path(), run_id, "plaintext-test").unwrap();
+    builder.add_workflow_def(r#"{"name":"plain"}"#).unwrap();
+    builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+    let mut audit = AuditLog::new();
+    audit.append(AuditEvent::WorkflowStarted {
+        workflow_hash: "wf".into(),
+        policy_hash: "pol".into(),
+    });
+    audit.append(AuditEvent::WorkflowCompleted {
+        result_hash: "res".into(),
+        total_duration_ms: 1,
+    });
+    builder.finalize(&audit).unwrap();
+
+    let bundle_dir = dir.path().join(run_id);
+    let output = Command::new(boruna_bin())
+        .args([
+            "evidence",
+            "inspect",
+            bundle_dir.to_str().unwrap(),
+            "--decrypt",
+            "--bundle-encryption-key",
+            "4242424242424242424242424242424242424242424242424242424242424242",
+        ])
+        .output()
+        .expect("inspect --decrypt on plaintext bundle failed to spawn");
+
+    assert!(
+        output.status.success(),
+        "inspect --decrypt on plaintext bundle should exit 0; status {:?}, stderr: {}",
+        output.status,
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Today: even WITH --decrypt, the canary should not appear
-    // because payload preview is unimplemented. If a future sprint
-    // adds payload display under --decrypt, change this assertion to
-    // require the canary IS present, and add a complementary
-    // assertion that without --decrypt it stays hidden.
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !combined.contains(PLAINTEXT_CANARY),
-        "current `inspect` is metadata-only; this test guards the \
-         contract. If a future change adds payload preview under \
-         --decrypt, update this assertion (and the no-flag test). \
-         combined output was: {combined}"
+        stderr.contains("not encrypted"),
+        "stderr should warn that bundle is not encrypted; got: {stderr}"
     );
 }
