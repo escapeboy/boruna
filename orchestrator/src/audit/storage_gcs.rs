@@ -235,7 +235,8 @@ impl GcsBucketBuilder {
                 "gcs_base_url": endpoint,
                 "disable_oauth": true,
                 "client_email": "",
-                "private_key": ""
+                "private_key": "",
+                "private_key_id": ""
             })
             .to_string();
             GoogleCloudStorageBuilder::new()
