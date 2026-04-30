@@ -949,6 +949,250 @@ impl Vm {
                         }
                     }
                 }
+                Op::StringContains => {
+                    let needle = self.pop()?;
+                    let haystack = self.pop()?;
+                    match (haystack, needle) {
+                        (Value::String(h), Value::String(n)) => {
+                            self.push(Value::Bool(h.contains(n.as_str())))?;
+                        }
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringStartsWith => {
+                    let prefix = self.pop()?;
+                    let string = self.pop()?;
+                    match (string, prefix) {
+                        (Value::String(s), Value::String(p)) => {
+                            self.push(Value::Bool(s.starts_with(p.as_str())))?;
+                        }
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringEndsWith => {
+                    let suffix = self.pop()?;
+                    let string = self.pop()?;
+                    match (string, suffix) {
+                        (Value::String(s), Value::String(sfx)) => {
+                            self.push(Value::Bool(s.ends_with(sfx.as_str())))?;
+                        }
+                        (Value::String(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringToUpper => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => self.push(Value::String(s.to_uppercase()))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringToLower => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => self.push(Value::String(s.to_lowercase()))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringTrim => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::String(s) => self.push(Value::String(s.trim().to_string()))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::StringJoin => {
+                    let sep = self.pop()?;
+                    let list = self.pop()?;
+                    match (list, sep) {
+                        (Value::List(items), Value::String(separator)) => {
+                            let parts: Result<Vec<String>, VmError> = items
+                                .into_iter()
+                                .map(|v| match v {
+                                    Value::String(s) => Ok(s),
+                                    _ => Err(VmError::TypeError {
+                                        expected: "String",
+                                        got: v.type_name(),
+                                    }),
+                                })
+                                .collect();
+                            self.push(Value::String(parts?.join(&separator)))?;
+                        }
+                        (Value::List(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "String",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListLenBuiltin => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(items) => self.push(Value::Int(items.len() as i64))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListIsEmpty => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(items) => self.push(Value::Bool(items.is_empty()))?,
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListHead => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(items) => {
+                            let result = match items.into_iter().next() {
+                                Some(v) => Value::Some(Box::new(v)),
+                                None => Value::None,
+                            };
+                            self.push(result)?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListTail => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(items) => {
+                            let tail = if items.is_empty() {
+                                vec![]
+                            } else {
+                                items[1..].to_vec()
+                            };
+                            self.push(Value::List(tail))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListAppend => {
+                    let item = self.pop()?;
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(mut items) => {
+                            items.push(item);
+                            self.push(Value::List(items))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListConcat => {
+                    let b = self.pop()?;
+                    let a = self.pop()?;
+                    match (a, b) {
+                        (Value::List(mut la), Value::List(lb)) => {
+                            la.extend(lb);
+                            self.push(Value::List(la))?;
+                        }
+                        (Value::List(_), b) => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: b.type_name(),
+                            })
+                        }
+                        (a, _) => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: a.type_name(),
+                            })
+                        }
+                    }
+                }
+                Op::ListReverse => {
+                    let val = self.pop()?;
+                    match val {
+                        Value::List(items) => {
+                            let reversed: Vec<Value> = items.into_iter().rev().collect();
+                            self.push(Value::List(reversed))?;
+                        }
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "List",
+                                got: val.type_name(),
+                            })
+                        }
+                    }
+                }
                 Op::Nop => {}
                 Op::Halt => {
                     return Ok(self.stack.pop().unwrap_or(Value::Unit));
