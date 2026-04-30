@@ -957,6 +957,16 @@ enum WorkflowCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Find and inspect workflow definitions under a directory tree.
+    #[command(name = "find")]
+    Find {
+        /// Directory to search for workflow.json files (default: current directory).
+        #[arg(default_value = ".")]
+        dir: std::path::PathBuf,
+        /// Output as JSON array.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3601,6 +3611,9 @@ fn run_workflow(
                 json,
             )?;
         }
+        WorkflowCommand::Find { dir, json } => {
+            handle_workflow_find(&dir, json)?;
+        }
     }
     Ok(())
 }
@@ -4432,6 +4445,132 @@ fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> 
             );
             println!("  deps: {}", result.dependencies.join(", "));
             println!("  caps: {}", result.capabilities.join(", "));
+        }
+    }
+    Ok(())
+}
+
+struct WorkflowEntry {
+    path: String,
+    name: String,
+    steps: usize,
+    valid: bool,
+    error: Option<String>,
+}
+
+fn collect_workflow_jsons(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let rd = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_workflow_jsons(&p, out);
+        } else if p.file_name().and_then(|n| n.to_str()) == Some("workflow.json") {
+            out.push(p);
+        }
+    }
+}
+
+fn find_workflows(dir: &std::path::Path) -> Vec<WorkflowEntry> {
+    use boruna_orchestrator::workflow::{WorkflowDef, WorkflowValidator};
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    collect_workflow_jsons(dir, &mut paths);
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| {
+            let rel = p
+                .strip_prefix(dir)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned();
+            let json = match fs::read_to_string(&p) {
+                Ok(s) => s,
+                Err(e) => {
+                    return WorkflowEntry {
+                        path: rel,
+                        name: String::new(),
+                        steps: 0,
+                        valid: false,
+                        error: Some(format!("read error: {e}")),
+                    }
+                }
+            };
+            match WorkflowDef::from_json(&json)
+                .map_err(|e| format!("{e}"))
+                .and_then(|def| {
+                    WorkflowValidator::validate(&def)
+                        .map(|()| def)
+                        .map_err(|errs| {
+                            errs.iter()
+                                .map(|e| e.to_string())
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        })
+                }) {
+                Ok(def) => WorkflowEntry {
+                    path: rel,
+                    name: def.name.clone(),
+                    steps: def.steps.len(),
+                    valid: true,
+                    error: None,
+                },
+                Err(err) => {
+                    let name = serde_json::from_str::<serde_json::Value>(&json)
+                        .ok()
+                        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_owned))
+                        .unwrap_or_default();
+                    WorkflowEntry {
+                        path: rel,
+                        name,
+                        steps: 0,
+                        valid: false,
+                        error: Some(err),
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+fn handle_workflow_find(dir: &std::path::Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let entries = find_workflows(dir);
+    if json {
+        let arr: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|e| {
+                let mut obj = serde_json::json!({
+                    "path": e.path,
+                    "name": e.name,
+                    "steps": e.steps,
+                    "valid": e.valid,
+                });
+                if let Some(ref err) = e.error {
+                    obj["error"] = serde_json::Value::String(err.clone());
+                }
+                obj
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr)?);
+    } else {
+        println!("Workflows in {}\n", dir.display());
+        if entries.is_empty() {
+            println!("(none found)");
+        } else {
+            println!(
+                "{:<45} {:<28} {:<7} STATUS",
+                "PATH", "NAME", "STEPS"
+            );
+            for e in &entries {
+                let status = if e.valid {
+                    "\u{2713} valid".to_string()
+                } else {
+                    format!("\u{2717} {}", e.error.as_deref().unwrap_or("invalid"))
+                };
+                println!("{:<45} {:<28} {:<7} {}", e.path, e.name, e.steps, status);
+            }
         }
     }
     Ok(())
