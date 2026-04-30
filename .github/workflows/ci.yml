@@ -97,6 +97,31 @@ jobs:
         # adds <30s on a warm cache.
         run: cargo bench -p boruna-benches --no-run
 
+  blob-integration:
+    name: Blob integration (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-blob-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-blob-
+
+      - name: S3 integration tests (MinIO via testcontainers)
+        run: cargo test -p boruna-orchestrator --features s3-it -- --test-threads=1
+
+      - name: GCS integration tests (fake-gcs-server via testcontainers)
+        run: cargo test -p boruna-orchestrator --features gcs-it -- --test-threads=1
+
   clippy:
     name: Clippy
     runs-on: self-hosted
