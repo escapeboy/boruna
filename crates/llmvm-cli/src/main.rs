@@ -4108,11 +4108,44 @@ fn run_evidence(
                     if let Some(info) = &manifest.encryption {
                         eprintln!(
                             "note: bundle is encrypted (algorithm={}, kek_id={}); \
-                             pass --decrypt to print decrypted file contents",
+                             pass --decrypt --bundle-encryption-key <hex> to view step outputs",
                             info.algorithm, info.kek_id
                         );
+                        None
+                    } else {
+                        // Plaintext bundle: read outputs/ directory directly.
+                        let outputs_dir = dir.join("outputs");
+                        if outputs_dir.is_dir() {
+                            let mut outputs =
+                                std::collections::BTreeMap::<String, serde_json::Value>::new();
+                            if let Ok(entries) = fs::read_dir(&outputs_dir) {
+                                for entry in entries.flatten() {
+                                    let step_id =
+                                        entry.file_name().to_string_lossy().into_owned();
+                                    let result_path = entry.path().join("result.json");
+                                    if result_path.exists() {
+                                        if let Ok(content) =
+                                            fs::read_to_string(&result_path)
+                                        {
+                                            let val: serde_json::Value =
+                                                serde_json::from_str(&content)
+                                                    .unwrap_or_else(|_| {
+                                                        serde_json::json!({"raw": content})
+                                                    });
+                                            outputs.insert(step_id, val);
+                                        }
+                                    }
+                                }
+                            }
+                            if outputs.is_empty() {
+                                None
+                            } else {
+                                Some(outputs)
+                            }
+                        } else {
+                            None
+                        }
                     }
-                    None
                 };
 
             if json {
@@ -4158,9 +4191,23 @@ fn run_evidence(
                     manifest.env_fingerprint.os, manifest.env_fingerprint.arch
                 );
                 if let Some(outputs) = step_outputs {
-                    println!("\n=== Step Outputs (decrypted) ===");
-                    for (key, val) in &outputs {
-                        println!("{key}: {val}");
+                    if decrypt {
+                        println!("\n=== Step Outputs (decrypted) ===");
+                        for (key, val) in &outputs {
+                            println!("{key}: {val}");
+                        }
+                    } else {
+                        println!("\n=== Step Outputs ===");
+                        for (key, val) in &outputs {
+                            let rendered = val.to_string();
+                            if rendered.is_empty() {
+                                println!("[{key}] (empty)");
+                            } else if rendered.len() > 500 {
+                                println!("[{key}] {}... (truncated)", &rendered[..500]);
+                            } else {
+                                println!("[{key}] {rendered}");
+                            }
+                        }
                     }
                 }
             }
