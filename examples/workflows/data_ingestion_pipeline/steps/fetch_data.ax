@@ -1,25 +1,5 @@
 // Step 1: Fetch external data via HTTP.
-//
-// Inline from std.http — import pending full package resolver integration.
-//
-// std.http surface used: http_get, http_default_retry, http_request
-
-// --- Inline from std.http ---
-type Effect { kind: String, payload: String, callback_tag: String }
-type HttpRequest { method: String, url: String, body: String, content_type: String }
-type RetryConfig { max_retries: Int, backoff_ms: Int, multiplier: Int }
-
-fn http_get(url: String, callback_tag: String) -> Effect {
-    Effect { kind: "http_request", payload: url, callback_tag: callback_tag }
-}
-
-fn http_request(req: HttpRequest, callback_tag: String) -> Effect {
-    Effect { kind: "http_request", payload: req.url, callback_tag: callback_tag }
-}
-
-fn http_default_retry() -> RetryConfig {
-    RetryConfig { max_retries: 3, backoff_ms: 1000, multiplier: 2 }
-}
+import "std-http"
 
 fn main() -> Int {
     let retry: RetryConfig = http_default_retry()

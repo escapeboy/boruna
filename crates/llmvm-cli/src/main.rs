@@ -1259,7 +1259,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "module".into());
-            let module = boruna_compiler::compile(&name, &source)?;
+            let resolved = maybe_resolve_imports(&source)?;
+            let module = boruna_compiler::compile(&name, &resolved)?;
             let out_path = output.unwrap_or_else(|| file.with_extension("axbc"));
             let bytes = module.to_bytes()?;
             fs::write(&out_path, bytes)?;
@@ -2452,9 +2453,23 @@ fn load_module(path: &PathBuf) -> Result<Module, Box<dyn std::error::Error>> {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "module".into());
-            Ok(boruna_compiler::compile(&name, &source)?)
+            let resolved = maybe_resolve_imports(&source)?;
+            Ok(boruna_compiler::compile(&name, &resolved)?)
         }
         _ => Err(format!("unknown file extension: {ext}").into()),
+    }
+}
+
+/// Run import resolution if a `libs/` directory exists relative to cwd.
+/// If no `libs/` dir is found, returns the source unchanged (additive only).
+fn maybe_resolve_imports(source: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let libs_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join("libs");
+    if libs_dir.is_dir() {
+        Ok(boruna_tooling::resolve_imports(source, &libs_dir)?)
+    } else {
+        Ok(source.to_owned())
     }
 }
 

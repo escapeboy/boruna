@@ -1,46 +1,5 @@
 // Step 4: Push a completion notification to the queue.
-//
-// Inline from std.notifications — import pending full package resolver integration.
-//
-// std.notifications surface used: notification_init, notification_push, notification_make
-
-// --- Inline from std.notifications ---
-type Effect { kind: String, payload: String, callback_tag: String }
-type Notification { id: Int, level: String, message: String, dismiss_ms: Int }
-type NotificationQueue {
-    next_id: Int,
-    count: Int,
-    max_visible: Int,
-    last_level: String,
-    last_message: String,
-    last_id: Int
-}
-
-fn notification_init(max_visible: Int) -> NotificationQueue {
-    NotificationQueue {
-        next_id: 1,
-        count: 0,
-        max_visible: max_visible,
-        last_level: "",
-        last_message: "",
-        last_id: 0
-    }
-}
-
-fn notification_make(id: Int, level: String, message: String, dismiss_ms: Int) -> Notification {
-    Notification { id: id, level: level, message: message, dismiss_ms: dismiss_ms }
-}
-
-fn notification_push(queue: NotificationQueue, level: String, message: String, dismiss_ms: Int) -> NotificationQueue {
-    NotificationQueue {
-        ..queue,
-        next_id: queue.next_id + 1,
-        count: queue.count + 1,
-        last_level: level,
-        last_message: message,
-        last_id: queue.next_id
-    }
-}
+import "std-notifications"
 
 fn main() -> Int {
     let queue: NotificationQueue = notification_init(5)
