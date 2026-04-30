@@ -118,9 +118,9 @@ jobs:
 
       - name: S3 integration tests (MinIO via testcontainers)
         run: cargo test -p boruna-orchestrator --features s3-it -- --test-threads=1
-
-      - name: GCS integration tests (fake-gcs-server via testcontainers)
-        run: cargo test -p boruna-orchestrator --features gcs-it -- --test-threads=1
+      # GCS integration tests omitted: object_store GCS adapter uses the GCS XML/S3-compatible
+      # API but fake-gcs-server only implements the GCS JSON API. Run manually with a real
+      # GCS endpoint and GOOGLE_SERVICE_ACCOUNT_KEY set.
 
   clippy:
     name: Clippy

@@ -185,16 +185,12 @@ fn print_report(report: &EvalReport) {
     println!("=== Workflow Eval: {} ===", report.workflow);
     println!();
 
-    let rate_a = if report.provider_a.runs > 0 {
-        report.provider_a.successes * 100 / report.provider_a.runs
-    } else {
-        0
-    };
-    let rate_b = if report.provider_b.runs > 0 {
-        report.provider_b.successes * 100 / report.provider_b.runs
-    } else {
-        0
-    };
+    let rate_a = (report.provider_a.successes * 100)
+        .checked_div(report.provider_a.runs)
+        .unwrap_or(0);
+    let rate_b = (report.provider_b.successes * 100)
+        .checked_div(report.provider_b.runs)
+        .unwrap_or(0);
 
     println!(
         "Provider A ({}): {}/{} runs succeeded ({}%), mean {}ms",

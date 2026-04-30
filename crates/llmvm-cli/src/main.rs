@@ -3753,10 +3753,7 @@ fn run_workflow_schedule(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        let fire_ms = match next_cron_fire_ms(&cron, now_ms) {
-            Ok(t) => t,
-            Err(e) => return Err(e.into()),
-        };
+        let fire_ms = next_cron_fire_ms(&cron, now_ms)?;
         let sleep_ms = (fire_ms - now_ms).max(0) as u64;
         eprintln!(
             "scheduler: next fire in {}s (at unix_ms={fire_ms})",
