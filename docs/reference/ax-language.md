@@ -236,7 +236,7 @@ import "std-name"
 
 Import statements load a standard library package at compile time. The library source is inlined into the compilation unit before type-checking. The import line itself is removed from the compiled output.
 
-Standard library packages are resolved from the `libs/` directory relative to the current working directory.
+Standard library packages are resolved from the `libs/` directory relative to the current working directory. When a library source is inlined, any `fn main() -> Int` stub present in the library file is stripped so it does not conflict with the importing program's own `main`.
 
 Example:
 
@@ -259,6 +259,20 @@ These functions are provided by the runtime and do not need to be imported:
 | `__builtin_float_to_string` | `(Float) -> String` | Convert a float to its string representation |
 | `__builtin_string_len` | `(String) -> Int` | Length of a string in bytes |
 | `__builtin_string_chars` | `(String) -> List<String>` | Split a string into a list of single-character strings |
+| `__builtin_string_contains` | `(String, String) -> Bool` | True if first string contains the second |
+| `__builtin_string_starts_with` | `(String, String) -> Bool` | True if string starts with prefix |
+| `__builtin_string_ends_with` | `(String, String) -> Bool` | True if string ends with suffix |
+| `__builtin_string_to_upper` | `(String) -> String` | Uppercase copy |
+| `__builtin_string_to_lower` | `(String) -> String` | Lowercase copy |
+| `__builtin_string_trim` | `(String) -> String` | Strip leading/trailing whitespace |
+| `__builtin_string_join` | `(List<String>, String) -> String` | Join list with separator |
+| `__builtin_list_len` | `(List<T>) -> Int` | Number of elements |
+| `__builtin_list_is_empty` | `(List<T>) -> Bool` | True if list has zero elements |
+| `__builtin_list_head` | `(List<T>) -> Option<T>` | First element, or None |
+| `__builtin_list_tail` | `(List<T>) -> List<T>` | All elements after the first |
+| `__builtin_list_append` | `(List<T>, T) -> List<T>` | New list with item added at end |
+| `__builtin_list_concat` | `(List<T>, List<T>) -> List<T>` | Concatenate two lists |
+| `__builtin_list_reverse` | `(List<T>) -> List<T>` | Reversed copy |
 
 These built-ins are also wrapped in `std-json` (via `int_to_string`, `json_escape`) and can be called directly in any `.ax` file.
 

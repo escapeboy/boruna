@@ -438,6 +438,42 @@ Pattern matching introduces bindings into the arm's scope:
 
 Bindings are only in scope within the arm's right-hand side.
 
+## 5a. Standard built-in functions
+
+The following functions are provided by the runtime in every compilation unit. They require no import. Their names begin with `__builtin_` to prevent shadowing by user-defined identifiers.
+
+All built-ins are pure (no capability annotation). Their semantics are defined below.
+
+### String operations
+
+| Name | Signature | Semantics |
+|------|-----------|-----------|
+| `__builtin_int_to_string` | `(Int) -> String` | Returns the decimal string representation of the argument. |
+| `__builtin_float_to_string` | `(Float) -> String` | Returns a string representation of the float argument. |
+| `__builtin_string_len` | `(String) -> Int` | Returns the number of bytes in the UTF-8 encoding of the string. |
+| `__builtin_string_chars` | `(String) -> List<String>` | Returns a list of single-character strings, one per Unicode scalar value. |
+| `__builtin_string_contains` | `(String, String) -> Bool` | Returns `true` iff the first argument contains the second as a substring. |
+| `__builtin_string_starts_with` | `(String, String) -> Bool` | Returns `true` iff the first argument begins with the prefix given by the second. |
+| `__builtin_string_ends_with` | `(String, String) -> Bool` | Returns `true` iff the first argument ends with the suffix given by the second. |
+| `__builtin_string_to_upper` | `(String) -> String` | Returns a copy of the string with all ASCII alphabetic characters uppercased. |
+| `__builtin_string_to_lower` | `(String) -> String` | Returns a copy of the string with all ASCII alphabetic characters lowercased. |
+| `__builtin_string_trim` | `(String) -> String` | Returns a copy of the string with leading and trailing ASCII whitespace removed. |
+| `__builtin_string_join` | `(List<String>, String) -> String` | Returns the elements of the list concatenated, with the second argument inserted between each pair of adjacent elements. |
+
+### List operations
+
+| Name | Signature | Semantics |
+|------|-----------|-----------|
+| `__builtin_list_len` | `(List<T>) -> Int` | Returns the number of elements in the list. |
+| `__builtin_list_is_empty` | `(List<T>) -> Bool` | Returns `true` iff the list has zero elements. |
+| `__builtin_list_head` | `(List<T>) -> Option<T>` | Returns `Some(first)` if the list is non-empty, otherwise `None`. |
+| `__builtin_list_tail` | `(List<T>) -> List<T>` | Returns a new list containing all elements after the first. Returns an empty list if the argument is empty. |
+| `__builtin_list_append` | `(List<T>, T) -> List<T>` | Returns a new list equal to the original with the second argument appended at the end. |
+| `__builtin_list_concat` | `(List<T>, List<T>) -> List<T>` | Returns a new list that is the concatenation of the two arguments, in order. |
+| `__builtin_list_reverse` | `(List<T>) -> List<T>` | Returns a new list containing the same elements in reversed order. |
+
+All list built-ins are non-mutating; the original list is unchanged. This is consistent with the immutability requirement in §7.2.
+
 ## 6. Capability semantics
 
 ### 6.1 Annotation form
