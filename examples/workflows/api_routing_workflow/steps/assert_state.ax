@@ -1,54 +1,5 @@
 // Step 3: Assert state invariants after synchronization.
-//
-// Inline from std.testing — import pending full package resolver integration.
-//
-// std.testing surface used: assert_eq_int, assert_true, assert_eq_string, test_summary, test_all_passed_3
-
-// --- Inline from std.testing ---
-type TestResult { passed: Int, label: String, detail: String }
-type TestSummary { total: Int, passed: Int, failed: Int }
-
-fn assert_eq_int(actual: Int, expected: Int, label: String) -> TestResult {
-    if actual == expected {
-        TestResult { passed: 1, label: label, detail: "ok" }
-    } else {
-        TestResult { passed: 0, label: label, detail: "mismatch" }
-    }
-}
-
-fn assert_true(value: Int, label: String) -> TestResult {
-    if value == 1 {
-        TestResult { passed: 1, label: label, detail: "ok" }
-    } else {
-        TestResult { passed: 0, label: label, detail: "expected true" }
-    }
-}
-
-fn assert_eq_string(actual: String, expected: String, label: String) -> TestResult {
-    if actual == expected {
-        TestResult { passed: 1, label: label, detail: "ok" }
-    } else {
-        TestResult { passed: 0, label: label, detail: "mismatch" }
-    }
-}
-
-fn test_summary(t1: TestResult, t2: TestResult, t3: TestResult) -> TestSummary {
-    let passed: Int = t1.passed + t2.passed + t3.passed
-    let failed: Int = 3 - passed
-    TestSummary { total: 3, passed: passed, failed: failed }
-}
-
-fn test_all_passed_3(t1: TestResult, t2: TestResult, t3: TestResult) -> Int {
-    if t1.passed == 1 {
-        if t2.passed == 1 {
-            if t3.passed == 1 { 1 } else { 0 }
-        } else {
-            0
-        }
-    } else {
-        0
-    }
-}
+import "std-testing"
 
 fn main() -> Int {
     let t1: TestResult = assert_eq_int(1, 1, "synced_count is 1")
