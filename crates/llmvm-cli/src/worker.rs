@@ -165,6 +165,7 @@ pub fn parse_coordinator_urls(raw: &str) -> Result<Vec<String>, String> {
     Ok(urls)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tokio::main]
 pub async fn run_worker(
     coordinator: String,

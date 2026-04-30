@@ -31,7 +31,14 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build
-        run: cargo build --workspace
+        run: |
+          # Remove the binary before building so Cargo always produces a fresh
+          # copy. Self-hosted runners persist target/ between runs; stale
+          # fingerprints can mark the binary as up-to-date even when the file
+          # is absent, causing integration tests that use CARGO_BIN_EXE_boruna
+          # to fail with "No such file or directory".
+          rm -f target/debug/boruna
+          cargo build --workspace
 
       - name: Run tests
         run: cargo test --workspace
