@@ -224,10 +224,26 @@ impl GcsBucketBuilder {
     pub fn build(self) -> Result<GcsBucket, StorageError> {
         let parsed = GsUri::parse(&self.uri)?;
         let cache_root = self.cache_root.unwrap_or_else(default_cache_root);
-        let mut sb = GoogleCloudStorageBuilder::from_env().with_bucket_name(&parsed.bucket);
-        if let Some(endpoint) = self.endpoint {
-            sb = sb.with_url(endpoint);
-        }
+        let sb = if let Some(endpoint) = self.endpoint {
+            // Emulator mode (e.g. fake-gcs-server): inject a service-account
+            // JSON that sets `gcs_base_url` to the emulator HTTP URL and
+            // disables OAuth so no real GCP credentials are required.
+            // `with_url` rejects non-gs:// schemes; the service-account
+            // JSON path is the object_store-documented way to override the
+            // base URL for local emulators (see builder.rs docs).
+            let sa_json = serde_json::json!({
+                "gcs_base_url": endpoint,
+                "disable_oauth": true,
+                "client_email": "",
+                "private_key": ""
+            })
+            .to_string();
+            GoogleCloudStorageBuilder::new()
+                .with_bucket_name(&parsed.bucket)
+                .with_service_account_key(sa_json)
+        } else {
+            GoogleCloudStorageBuilder::from_env().with_bucket_name(&parsed.bucket)
+        };
         let store = sb.build().map_err(|e| classify_os_error(e, "construct"))?;
         let runtime = RuntimeBuilder::new_current_thread()
             .enable_all()

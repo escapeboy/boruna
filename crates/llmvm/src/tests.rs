@@ -2070,9 +2070,9 @@ mod tests {
     fn test_float_to_string() {
         let module = simple_module(
             vec![Op::PushConst(0), Op::FloatToString, Op::Ret],
-            vec![Value::Float(3.14)],
+            vec![Value::Float(2.5)],
         );
-        assert_eq!(run_module(module).unwrap(), Value::String("3.14".into()));
+        assert_eq!(run_module(module).unwrap(), Value::String("2.5".into()));
     }
 
     #[test]
@@ -2498,11 +2498,11 @@ mod tests {
     fn test_float_parse_ok() {
         let module = simple_module(
             vec![Op::PushConst(0), Op::FloatParse, Op::Ret],
-            vec![Value::String("3.14".into())],
+            vec![Value::String("2.5".into())],
         );
         assert_eq!(
             run_module(module).unwrap(),
-            Value::Some(Box::new(Value::Float(3.14)))
+            Value::Some(Box::new(Value::Float(2.5)))
         );
     }
 
