@@ -122,8 +122,8 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 
 ### Standard Libraries (libs/)
 
-11 deterministic libraries, each with `package.ax.json` and `src/core.ax`:
-std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing.
+13 deterministic libraries, each with `package.ax.json` and `src/core.ax`:
+std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing (all 1.0-stable as of v1.2.0), plus std-llm and std-json (0.1.0, Experimental).
 
 All are pure-functional (no hidden side effects). Libraries needing capabilities declare them in their manifest (e.g., std-http requires `net.fetch`, std-db requires `db.query`).
 
