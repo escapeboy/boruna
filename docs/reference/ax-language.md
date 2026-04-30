@@ -228,6 +228,42 @@ Err("message")
 { "key": "value" }
 ```
 
+## Import statements
+
+```ax
+import "std-name"
+```
+
+Import statements load a standard library package at compile time. The library source is inlined into the compilation unit before type-checking. The import line itself is removed from the compiled output.
+
+Standard library packages are resolved from the `libs/` directory relative to the current working directory.
+
+Example:
+
+```ax
+import "std-json"
+
+fn main() -> Int {
+    let s: String = int_to_string(42)
+    0
+}
+```
+
+## Built-in functions
+
+These functions are provided by the runtime and do not need to be imported:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `__builtin_int_to_string` | `(Int) -> String` | Convert an integer to its decimal string representation |
+| `__builtin_float_to_string` | `(Float) -> String` | Convert a float to its string representation |
+| `__builtin_string_len` | `(String) -> Int` | Length of a string in bytes |
+| `__builtin_string_chars` | `(String) -> List<String>` | Split a string into a list of single-character strings |
+
+These built-ins are also wrapped in `std-json` (via `int_to_string`, `json_escape`) and can be called directly in any `.ax` file.
+
+**Note on naming:** The `__builtin_` prefix distinguishes these from user-defined functions and prevents shadowing. User-facing wrappers in stdlib packages use cleaner names.
+
 ## What .ax is not
 
 `.ax` is deliberately minimal. It does not have:
@@ -236,6 +272,5 @@ Err("message")
 - Exceptions (use `Result<T, E>`)
 - Implicit side effects (every effect must be declared)
 - Generics (types are concrete at definition time)
-- Modules/imports (capability is via the standard library system)
 
 These omissions are intentional. They keep the language deterministic and auditable.

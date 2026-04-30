@@ -229,35 +229,99 @@ cargo run --features boruna-cli/http --bin boruna -- \
   --policy allow-all --live --record
 ```
 
+### `boruna workflow schedule`
+
+Run a workflow on a cron schedule. Loops until SIGINT (Ctrl-C).
+
+```bash
+boruna workflow schedule <workflow-dir/> [options]
+
+Options:
+  --cron <expr>            5-field cron expression (required), e.g. "*/5 * * * *"
+  --policy <name>          Capability policy (default: deny-all)
+  --data-dir <dir>         Directory for runs.db and per-run output (default: .boruna/data)
+  --max-concurrency <n>    Maximum concurrent runs; skips tick if a run is already active (default: 1)
+  --live                   Enable real capability handlers (requires http feature)
+```
+
+When a scheduled tick fires while a previous run is still active, that tick is skipped.
+
+### `boruna workflow eval`
+
+Run a workflow against two LLM provider configurations and compare evidence bundles.
+
+```bash
+boruna workflow eval <workflow-dir/> --providers-a <file.json> --providers-b <file.json> [options]
+
+Options:
+  --providers-a <file>     First provider config JSON file (required)
+  --providers-b <file>     Second provider config JSON file (required)
+  --runs <n>               Runs per provider (default: 1)
+  --data-dir <dir>         Directory for evidence bundles
+  --json                   Machine-readable output
+```
+
+Reports per-step output agreement and timing differences between the two provider sets.
+
+### `boruna workflow find`
+
+Recursively discover `workflow.json` files under a directory tree.
+
+```bash
+boruna workflow find [dir] [--json]
+```
+
+Validates each discovered workflow and prints path, name, step count, and validity. `dir` defaults to the current directory. Use `--json` for a JSON array.
+
 ---
 
 ## `boruna evidence`
 
-Inspect and verify evidence bundles.
+Inspect, verify, and manage evidence bundles.
 
 ```bash
-boruna evidence inspect <bundle-dir/> [--json]
-boruna evidence verify <bundle-dir/>
+boruna evidence create <run-id> --output-dir <dir> [--data-dir <dir>]
+boruna evidence verify <bundle-dir/> [--bundle-encryption-key <hex>]
+boruna evidence inspect <bundle-dir/> [--json] [--decrypt] [--bundle-encryption-key <hex>]
+boruna evidence diff <bundle-a> <bundle-b> [--json]
+boruna evidence gc-blobs [--data-dir <dir>] [--dry-run] [--json]
+boruna evidence serve <bundle-dir/> [--port <port>]
+boruna evidence rotate-kek <target> --old-kek <hex> --new-kek <hex> [options]
 ```
 
 Examples:
 
 ```bash
+# Build a bundle from a completed run
+boruna evidence create abc123def456 --output-dir ./bundles
+
+# Inspect a bundle
 boruna evidence inspect .boruna/runs/20260315-143022-abc4d/
 boruna evidence inspect .boruna/runs/20260315-143022-abc4d/ --json
+
+# Verify a bundle
 boruna evidence verify .boruna/runs/20260315-143022-abc4d/
 ```
 
+### evidence create
+
+Build an evidence bundle from a persisted run. Reads the run's metadata, step checkpoints, and hash-chained audit log; writes a bundle directory with `workflow.json`, `policy.json`, per-step outputs, `audit_log.json`, `env_fingerprint.json`, and `manifest.json`. Bundles are created on demand — the runner does not auto-create them.
+
+```bash
+boruna evidence create <run-id> --output-dir <dir> [--data-dir <dir>]
+```
+
+The bundle is written to `<output-dir>/<run-id>/`.
+
 ### evidence diff
 
-Compare two evidence bundles.
+Compare two evidence bundles side-by-side.
 
 ```
 boruna evidence diff <bundle-a> <bundle-b> [--json]
 ```
 
-Reports differences in workflow metadata, step outputs, audit event counts, and
-verification status. Use `--json` for machine-readable output.
+Reports differences in workflow metadata, step outputs, audit event counts, and verification status. Use `--json` for machine-readable output.
 
 Examples:
 
@@ -265,6 +329,46 @@ Examples:
 boruna evidence diff .boruna/runs/run-baseline/ .boruna/runs/run-rerun/
 boruna evidence diff baseline/ rerun/ --json
 ```
+
+### evidence gc-blobs
+
+Sweep orphaned content-addressed blobs from the data directory.
+
+```bash
+boruna evidence gc-blobs [--data-dir <dir>] [--dry-run] [--json]
+```
+
+An orphan is a blob file no longer referenced by any run checkpoint. Reports `{deleted, skipped, bytes_freed}`. Use `--dry-run` to report without deleting.
+
+### evidence serve
+
+Start a local web UI to browse an evidence bundle.
+
+```bash
+boruna evidence serve <bundle-dir/> [--port <port>]
+```
+
+Serves a read-only inspector at `http://localhost:<port>` (default: 4444). Requires the `serve` feature:
+
+```bash
+cargo run --features boruna-cli/serve --bin boruna -- evidence serve ./bundles/my-run/
+```
+
+### evidence rotate-kek
+
+Rotate the key-encryption key (KEK) on one or more encrypted bundles without re-encrypting file content.
+
+```bash
+boruna evidence rotate-kek <target> --old-kek <hex> --new-kek <hex> [options]
+
+Options:
+  --kek-id-from <id>     Only rotate bundles whose current kek_id matches (safety check)
+  --kek-id-to <id>       kek_id written to the rotated manifest (default: "default")
+  --dry-run              Print planned actions without modifying any bundle
+  --parallelism <n>      Parallel bundle limit in batch mode (default: min(8, num_cpus))
+```
+
+`<target>` may be a single bundle directory or a parent directory whose immediate subdirectories are bundles (batch mode).
 
 ---
 
