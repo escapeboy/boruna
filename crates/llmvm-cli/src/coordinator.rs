@@ -1109,17 +1109,13 @@ fn validate_advertised_capabilities(
     Ok(Some(map))
 }
 
-/// Parse a `MAJOR.MINOR` version string into `(u32, u32)`.
-/// Returns `None` on malformed input.
+#[cfg(test)]
 fn parse_major_minor(s: &str) -> Option<(u32, u32)> {
     let (major, minor) = s.split_once('.')?;
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// Returns `true` if `worker_ver >= required_ver` in `MAJOR.MINOR`
-/// order. Falls back to string equality when either version is not
-/// a well-formed `MAJOR.MINOR` string (conservative: non-parseable
-/// versions only satisfy themselves).
+#[cfg(test)]
 pub fn semver_gte(worker_ver: &str, required_ver: &str) -> bool {
     match (
         parse_major_minor(worker_ver),
@@ -1130,11 +1126,7 @@ pub fn semver_gte(worker_ver: &str, required_ver: &str) -> bool {
     }
 }
 
-/// Check whether a worker's advertised capability versions satisfy
-/// per-step `required_capability_versions`. Each entry in `required`
-/// specifies the MINIMUM version the worker must advertise for that
-/// capability. Workers that have not declared a version for a
-/// capability default to `"1.0"`.
+#[cfg(test)]
 pub fn version_compatible(
     worker_versions: &BTreeMap<String, String>,
     required_versions: &BTreeMap<String, String>,

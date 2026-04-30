@@ -85,10 +85,63 @@ fn set_aws_env(host: &str, port: u16) {
     }
 }
 
-/// Create the test bucket in MinIO using a one-off object_store
-/// client. We can't rely on auto-bucket-create in object_store; the
-/// bucket must exist before put.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    const BLOCK: usize = 64;
+    let mut k = vec![0u8; BLOCK];
+    if key.len() > BLOCK {
+        let hash = Sha256::digest(key);
+        k[..32].copy_from_slice(&hash);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    let inner = Sha256::digest([ipad.as_slice(), data].concat());
+    hex_encode(&Sha256::digest(
+        [opad.as_slice(), inner.as_slice()].concat(),
+    ))
+    .as_bytes()
+    .chunks(2)
+    .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+    .collect()
+}
+
+/// Create the test bucket in MinIO using a SigV4-signed PUT request.
+/// MinIO requires AWS4-HMAC-SHA256 auth; basic auth is no longer accepted.
 fn create_bucket(host: &str, port: u16, bucket: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    let now = chrono::Utc::now();
+    let date_str = now.format("%Y%m%d").to_string();
+    let datetime_str = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let endpoint_host = format!("{host}:{port}");
+    let empty_hash = hex_encode(&Sha256::digest(b""));
+    let canonical_headers = format!(
+        "host:{endpoint_host}\nx-amz-content-sha256:{empty_hash}\nx-amz-date:{datetime_str}\n"
+    );
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_req =
+        format!("PUT\n/{bucket}\n\n{canonical_headers}\n{signed_headers}\n{empty_hash}");
+    let credential_scope = format!("{date_str}/us-east-1/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{datetime_str}\n{credential_scope}\n{}",
+        hex_encode(&Sha256::digest(canonical_req.as_bytes()))
+    );
+    let k_date = hmac_sha256(
+        format!("AWS4{MINIO_PASSWORD}").as_bytes(),
+        date_str.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, b"us-east-1");
+    let k_service = hmac_sha256(&k_region, b"s3");
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex_encode(&hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={MINIO_USER}/{credential_scope},SignedHeaders={signed_headers},Signature={signature}"
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -97,10 +150,11 @@ fn create_bucket(host: &str, port: u16, bucket: &str) -> Result<(), Box<dyn std:
         let client = reqwest::Client::new();
         let resp = client
             .put(&url)
-            .basic_auth(MINIO_USER, Some(MINIO_PASSWORD))
+            .header("x-amz-date", &datetime_str)
+            .header("x-amz-content-sha256", &empty_hash)
+            .header("Authorization", &auth)
             .send()
             .await?;
-        // 200 (created) or 409 (already exists) both fine.
         let status = resp.status();
         if !status.is_success() && status.as_u16() != 409 {
             let body = resp.text().await.unwrap_or_default();
