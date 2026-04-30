@@ -266,6 +266,12 @@ These functions are provided by the runtime and do not need to be imported:
 | `__builtin_string_to_lower` | `(String) -> String` | Lowercase copy |
 | `__builtin_string_trim` | `(String) -> String` | Strip leading/trailing whitespace |
 | `__builtin_string_join` | `(List<String>, String) -> String` | Join list with separator |
+| `__builtin_string_split` | `(String, String) -> List<String>` | Split string on a delimiter |
+| `__builtin_string_replace` | `(String, String, String) -> String` | Replace first occurrence of pattern |
+| `__builtin_string_slice` | `(String, Int, Int) -> String` | Substring by byte offsets |
+| `__builtin_int_parse` | `(String) -> Result<Int, String>` | Parse a decimal integer string |
+| `__builtin_float_parse` | `(String) -> Result<Float, String>` | Parse a float string |
+| `__builtin_bool_to_string` | `(Bool) -> String` | Convert a bool to "true" or "false" |
 | `__builtin_list_len` | `(List<T>) -> Int` | Number of elements |
 | `__builtin_list_is_empty` | `(List<T>) -> Bool` | True if list has zero elements |
 | `__builtin_list_head` | `(List<T>) -> Option<T>` | First element, or None |
@@ -273,6 +279,13 @@ These functions are provided by the runtime and do not need to be imported:
 | `__builtin_list_append` | `(List<T>, T) -> List<T>` | New list with item added at end |
 | `__builtin_list_concat` | `(List<T>, List<T>) -> List<T>` | Concatenate two lists |
 | `__builtin_list_reverse` | `(List<T>) -> List<T>` | Reversed copy |
+| `__builtin_map_get` | `(Map<String, V>, String) -> Option<V>` | Look up a key; returns `Some(v)` or `None` |
+| `__builtin_map_set` | `(Map<String, V>, String, V) -> Map<String, V>` | Return a new map with key set to value |
+| `__builtin_map_remove` | `(Map<String, V>, String) -> Map<String, V>` | Return a new map with key removed |
+| `__builtin_map_contains_key` | `(Map<String, V>, String) -> Bool` | True if key is present |
+| `__builtin_map_keys` | `(Map<String, V>) -> List<String>` | All keys in sorted order |
+| `__builtin_map_values` | `(Map<String, V>) -> List<V>` | All values in key-sorted order |
+| `__builtin_map_len` | `(Map<String, V>) -> Int` | Number of entries |
 
 These built-ins are also wrapped in `std-json` (via `int_to_string`, `json_escape`) and can be called directly in any `.ax` file.
 

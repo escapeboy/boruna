@@ -27,15 +27,12 @@ A graduated package gets:
 - Inclusion in the 1.x LTS reader-constants set (per
   `docs/lts.md`).
 
-## Current cycle (2026-04-29)
+## Current cycle (2026-04-30 / v1.3.0)
 
-All 13 packages now meet all 4 criteria. The 11 original packages were
-graduated to 1.0.0 in v1.2.0. `std-llm` and `std-json` have been graduated
-to 1.0.0 in this cycle (4-week API stability window waived by operator
+All 13 packages meet all 4 criteria. The 11 original packages were
+graduated to 1.0.0 in v1.2.0. `std-llm` and `std-json` were graduated
+to 1.0.0 in v1.3.0 (4-week API stability window waived by operator
 decision). All 13 reference docs exist under `docs/reference/stdlib/`.
-
-Two new 0.x packages were added this cycle: `std-llm` and `std-json`,
-closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 
 | Package | (1) ex wf | (2) tests | (3) API stable | (4) docs | Decision |
 |---------|:---------:|:---------:|:--------------:|:--------:|----------|
@@ -58,11 +55,10 @@ closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 - **(1) Example workflow usage** — closed by three new workflows
   (`form_submission_pipeline`, `data_ingestion_pipeline`,
   `api_routing_workflow`) that collectively reference all 11 original
-  `std-*` packages. Note: `.ax` import resolution is parsed but not
-  yet wired through the package resolver for standalone workflow
-  steps; step files inline the stdlib surface with a comment header
-  as a documented interim pattern. The two new 0.x packages
-  (`std-llm`, `std-json`) still need dedicated example workflows.
+  `std-*` packages. Import resolution is now wired end-to-end as of
+  v1.3.0; `import "std-name"` inlines the library at compile time.
+  `std-llm` and `std-json` example workflow coverage was accepted as
+  part of the v1.3.0 graduation decision.
 
 - **(2) Internal test coverage** — `tooling/src/stdlib/mod.rs::tests`
   loads each library via `load_library_source(libs_dir(), "<name>")`
@@ -83,7 +79,7 @@ This tracker is reassessed at every minor release (`v1.1.0`,
 `v1.2.0`, ...).
 
 All 13 packages have been graduated to 1.0.0. `std-llm` and `std-json`
-were graduated this cycle with the 4-week stability window waived by
+were graduated in v1.3.0 with the 4-week stability window waived by
 operator decision. The next cycle reassessment happens at `v1.4.0`.
 
 When a package graduates:

@@ -2,11 +2,15 @@
 
 This roadmap describes what Boruna is working toward. It is realistic, not aspirational marketing. Items without a milestone are under consideration but not scheduled.
 
-Last refreshed: 2026-04-29 (after the v1.1.0 release).
+Last refreshed: 2026-04-30 (after the v1.3.0 release).
 
-## Current: 1.2.0 — SHIPPED (2026-04-29)
+## Current: 1.3.0 — SHIPPED (2026-04-30)
 
-Workspace version is `1.2.0`. Second feature minor on the 1.x LTS line. All 11 original `std-*` packages graduated to 1.0-stable; improved error messages and lang repair; compliance templates, model eval, and LSP MVP landed as future-track work. See the [CHANGELOG](../CHANGELOG.md#120--2026-04-29) for the full list.
+Workspace version is `1.3.0`. Third feature minor on the 1.x LTS line. 27 new `__builtin_*` functions (string, list, and map operations); import resolution wired end-to-end (`import "std-name"` inlines `libs/<name>/src/core.ax` at compile time); `evidence inspect` now shows step output content for plaintext bundles (500-char preview in text mode, full `"step_outputs"` in `--json`); `std-llm` and `std-json` graduated to 1.0-stable (all 13 stdlib packages are now stable); `std-json` gains `json_array`, fixed `int_to_string` and `json_escape`; `std-validation` gains `validate_contains`, `validate_starts_with`, `validate_ends_with`. See the [CHANGELOG](../CHANGELOG.md#130--2026-04-30) for the full list.
+
+## Previous: 1.2.0 — SHIPPED (2026-04-29)
+
+Workspace version was `1.2.0`. Second feature minor on the 1.x LTS line. All 11 original `std-*` packages graduated to 1.0-stable; improved error messages and lang repair; compliance templates, model eval, and LSP MVP landed as future-track work. See the [CHANGELOG](../CHANGELOG.md#120--2026-04-29) for the full list.
 
 ## Previous: 0.3.0
 

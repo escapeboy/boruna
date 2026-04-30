@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **1.1.0** — first minor release on the 1.x LTS line. This document is explicit about what is stable, what is experimental, and what is planned.
+Boruna is at version **1.3.0** — third minor release on the 1.x LTS line. This document is explicit about what is stable, what is experimental, and what is planned.
 
 > **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
 > below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
@@ -10,7 +10,7 @@ Boruna is at version **1.1.0** — first minor release on the 1.x LTS line. This
 
 ## Current status
 
-Boruna 1.1 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested (1183+ tests, all passing), and frozen for the 1.x line.
+Boruna 1.3 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested, and frozen for the 1.x line. All 13 stdlib packages are 1.0-stable as of 1.3.0.
 
 Boruna is appropriate for:
 - Production workloads on the LTS-protected surface (`lts.md` §B)
@@ -46,7 +46,7 @@ These components work but may change based on usage feedback:
 - **Actor system** — spawning, message passing, supervision semantics
 - **Multi-agent orchestration** — `boruna-orch` binary and its API
 - **Package system** — `boruna-pkg` manifest format and registry protocol
-- **Standard libraries** — `std-*` library APIs (interfaces stabilizing across 1.x minors)
+- **Standard libraries** — all 13 `std-*` packages are 1.0-stable as of v1.3.0; see [`docs/stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md)
 - **App templates** — template variable names and generated code structure
 - **`trace2tests`** — test generation format and minimization behavior
 - **Migration tooling** — `boruna migrate` is currently in beta; covered migrators are stable, additional migrators may ship in 1.x
@@ -59,7 +59,7 @@ These components are available but under active development:
 - **Replay verification** — semantics of `--verify` with partial replays
 - **Framework app testing** — `framework test` message protocol
 
-### Experimental — new in 1.1.0
+### Experimental — new in 1.1.0 / 1.3.0
 
 These components shipped in 1.1.0 but may change based on usage feedback in 1.x minors:
 

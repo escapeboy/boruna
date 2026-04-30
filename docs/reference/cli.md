@@ -303,6 +303,10 @@ boruna evidence inspect .boruna/runs/20260315-143022-abc4d/ --json
 boruna evidence verify .boruna/runs/20260315-143022-abc4d/
 ```
 
+### evidence inspect
+
+For plaintext (non-encrypted) bundles, `evidence inspect` automatically shows step output content from `outputs/<step_id>/result.json`. Each step output is truncated at 500 characters in text mode. With `--json`, the full parsed content appears under the `"step_outputs"` key. Encrypted bundles print a hint to stderr if `--decrypt` / `--bundle-encryption-key` is not supplied.
+
 ### evidence create
 
 Build an evidence bundle from a persisted run. Reads the run's metadata, step checkpoints, and hash-chained audit log; writes a bundle directory with `workflow.json`, `policy.json`, per-step outputs, `audit_log.json`, `env_fingerprint.json`, and `manifest.json`. Bundles are created on demand — the runner does not auto-create them.

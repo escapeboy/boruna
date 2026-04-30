@@ -84,7 +84,7 @@ See [SECURITY.md](../SECURITY.md). Use GitHub Security Advisories for responsibl
 
 ## Is Boruna production-ready?
 
-No. Boruna is at 0.1.0 and is explicitly pre-production. See [Stability](./stability.md) for the honest maturity assessment and what would be required to move toward production use.
+Boruna is at 1.3.0, on the 1.x LTS line. The core engine, workflow DAG, evidence bundles, capability enforcement, and all 13 stdlib packages are stable and LTS-protected. External security audit is booked for Q4 2026. See [Stability](./stability.md) for the full maturity assessment and [lts.md](./lts.md) for the support contract.
 
 ## How do I contribute?
 
