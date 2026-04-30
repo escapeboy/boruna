@@ -6,10 +6,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-04-30
+
 ### Stable
 
 - `std-llm` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-llm.md`; bumps require a 1.x deprecation notice per LTS contract.
 - `std-json` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-json.md`; bumps require a 1.x deprecation notice per LTS contract.
+
+### Added
+
+- **27 new language built-in functions** — comprehensive string, list, and map operations now available in `.ax` programs without importing any library:
+  - *String*: `__builtin_int_to_string`, `__builtin_float_to_string`, `__builtin_string_len`, `__builtin_string_chars`, `__builtin_string_contains`, `__builtin_string_starts_with`, `__builtin_string_ends_with`, `__builtin_string_to_upper`, `__builtin_string_to_lower`, `__builtin_string_trim`, `__builtin_string_join`, `__builtin_string_split`, `__builtin_string_replace`, `__builtin_string_slice`, `__builtin_int_parse`, `__builtin_float_parse`, `__builtin_bool_to_string`
+  - *List*: `__builtin_list_len`, `__builtin_list_is_empty`, `__builtin_list_head`, `__builtin_list_tail`, `__builtin_list_append`, `__builtin_list_concat`, `__builtin_list_reverse`
+  - *Map*: `__builtin_map_get`, `__builtin_map_set`, `__builtin_map_remove`, `__builtin_map_contains_key`, `__builtin_map_keys`, `__builtin_map_values`, `__builtin_map_len`
+- **Import resolution** — `import "std-name"` statements in `.ax` source now resolve at compile time via a source-level preprocessor that inlines the named library from `libs/<name>/src/core.ax`. No compiler pipeline change required.
+- **`boruna evidence inspect` shows step outputs** — for plaintext bundles, `evidence inspect <bundle>` now reads `outputs/<step_id>/result.json` and renders a truncated preview (500 chars) per step in text mode; `--json` mode includes a `"step_outputs"` key with full parsed content. Encrypted bundles without `--decrypt` print a hint to stderr.
+- **`std-json` enhancements** — `json_array(items: List<String>) -> String` serializes a list to a JSON array string; `int_to_string` now calls `__builtin_int_to_string` (was returning empty string); `json_escape` now performs proper character-by-character escaping using `__builtin_string_chars`.
+- **`std-validation` enhancements** — `string_length` now calls `__builtin_string_len` (was hardcoded 0); added `validate_contains`, `validate_starts_with`, `validate_ends_with`.
 
 ## [1.2.0] — 2026-04-29
 
