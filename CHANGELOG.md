@@ -6,6 +6,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Stable
+
+- `std-llm` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-llm.md`; bumps require a 1.x deprecation notice per LTS contract.
+- `std-json` is now 1.0-stable. Public surface frozen per `docs/reference/stdlib/std-json.md`; bumps require a 1.x deprecation notice per LTS contract.
+
 ## [1.2.0] — 2026-04-29
 
 ### Stable

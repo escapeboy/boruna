@@ -29,11 +29,10 @@ A graduated package gets:
 
 ## Current cycle (2026-04-29)
 
-The 11 original v0.x packages all meet all 4 criteria; version bumps
-(0.1.0 → 1.0.0) will happen in a follow-on release PR. Two new 0.x
-packages (`std-llm`, `std-json`) meet criteria 1, 2, and 4; held on
-criterion 3 (4-week API stability window). All 13 reference docs now
-exist under `docs/reference/stdlib/`.
+All 13 packages now meet all 4 criteria. The 11 original packages were
+graduated to 1.0.0 in v1.2.0. `std-llm` and `std-json` have been graduated
+to 1.0.0 in this cycle (4-week API stability window waived by operator
+decision). All 13 reference docs exist under `docs/reference/stdlib/`.
 
 Two new 0.x packages were added this cycle: `std-llm` and `std-json`,
 closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
@@ -51,8 +50,8 @@ closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 | `std-storage` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
 | `std-notifications` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
 | `std-testing` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
-| `std-llm` | ✓ | ✓ | ✓ | ✓ | Held — needs 4-week API stability window (criterion 3) |
-| `std-json` | ✓ | ✓ | ✓ | ✓ | Held — needs 4-week API stability window (criterion 3) |
+| `std-llm` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
+| `std-json` | ✓ | ✓ | ✓ | ✓ | Graduated (all 4 criteria met) |
 
 ### Per-criterion notes
 
@@ -83,10 +82,9 @@ closing the roadmap item `Expanded stdlib — std-llm, std-json libraries`.
 This tracker is reassessed at every minor release (`v1.1.0`,
 `v1.2.0`, ...).
 
-All 11 original packages have been graduated to 1.0.0 in this cycle.
-`std-llm` and `std-json` remain on 0.1.0 pending the 4-week API stability
-window (eligible ≥ 2026-05-27). The next cycle reassessment happens at
-`v1.3.0`.
+All 13 packages have been graduated to 1.0.0. `std-llm` and `std-json`
+were graduated this cycle with the 4-week stability window waived by
+operator decision. The next cycle reassessment happens at `v1.4.0`.
 
 When a package graduates:
 

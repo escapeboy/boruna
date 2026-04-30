@@ -39,6 +39,11 @@ fn json_array_wrap(items: String) -> String {
     "[" ++ items ++ "]"
 }
 
+fn json_array(items: List<String>) -> String {
+    let joined: String = __builtin_string_join(items, ", ")
+    "[" ++ joined ++ "]"
+}
+
 fn escape_char(c: String) -> String {
     if c == "\\" {
         "\\\\"

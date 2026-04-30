@@ -82,8 +82,31 @@ fn validation_merge(a: ValidationResult, b: ValidationResult) -> ValidationResul
 }
 
 fn string_length(s: String) -> Int {
-    // Built-in: returns character count
-    0
+    __builtin_string_len(s)
+}
+
+fn validate_contains(field: String, value: String, substr: String) -> ValidationResult {
+    if __builtin_string_contains(value, substr) {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    } else {
+        ValidationResult { valid: 0, error_field: field, error_message: "must contain expected substring" }
+    }
+}
+
+fn validate_starts_with(field: String, value: String, prefix: String) -> ValidationResult {
+    if __builtin_string_starts_with(value, prefix) {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    } else {
+        ValidationResult { valid: 0, error_field: field, error_message: "must start with expected prefix" }
+    }
+}
+
+fn validate_ends_with(field: String, value: String, suffix: String) -> ValidationResult {
+    if __builtin_string_ends_with(value, suffix) {
+        ValidationResult { valid: 1, error_field: "", error_message: "" }
+    } else {
+        ValidationResult { valid: 0, error_field: field, error_message: "must end with expected suffix" }
+    }
 }
 
 fn parse_int(s: String) -> Int {

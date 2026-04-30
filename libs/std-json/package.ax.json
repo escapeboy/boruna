@@ -1,6 +1,6 @@
 {
   "name": "std.json",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "JSON-flavoured data extraction and manipulation utilities",
   "dependencies": {},
   "required_capabilities": [],
