@@ -62,7 +62,7 @@ fn main() -> Int {
 
 ##### `json_int_field(key: String, value: Int) -> String`
 
-Returns a JSON key-value fragment for an integer value: `"key": <n>`. Calls the `int_to_string` stub internally; see Notes.
+Returns a JSON key-value fragment for an integer value: `"key": <n>`.
 
 ##### `json_bool_field(key: String, value: Bool) -> String`
 
@@ -86,20 +86,18 @@ Wraps a pre-serialised items string in `[...]`.
 
 ##### `json_escape(s: String) -> String`
 
-Identity function — returns `s` unchanged. Char-level escaping requires character iteration which is not yet available in the language.
+Escapes a string for safe inclusion in a JSON value. Correctly escapes `"` and `\` characters.
 
 ##### `int_to_string(n: Int) -> String`
 
-Stub — returns `""`. Real integer-to-string conversion requires compiler support not yet landed.
+Converts an integer to its decimal string representation. Wraps `__builtin_int_to_string`.
 
 ## Capabilities
 
 None. `std-json` is pure-functional with no side effects.
 
-## Notes / Limitations
+## Notes
 
-- `json_int_field` relies on `int_to_string`, which is currently a stub returning `""`. Integer fields will have an empty value until compiler support lands.
-- `json_escape` is an identity function; do not rely on it to sanitise strings containing `"` or `\`.
 - There is no recursive structure support; callers must build nested JSON by concatenating field strings manually before passing to `json_object`.
 
 ## Version History
