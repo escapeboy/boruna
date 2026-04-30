@@ -157,7 +157,8 @@ mod tests {
 
     #[test]
     fn test_import_resolves_std_ui() {
-        let source = "import \"std-ui\"\n\nfn main() -> Int {\n    let n: UINode = empty_node()\n    0\n}\n";
+        let source =
+            "import \"std-ui\"\n\nfn main() -> Int {\n    let n: UINode = empty_node()\n    0\n}\n";
         let result = resolve_imports(source, &libs_dir()).expect("resolve_imports failed");
         assert!(result.contains("fn button("), "expected std-ui fn button");
         assert!(result.contains("fn text("), "expected std-ui fn text");

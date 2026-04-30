@@ -173,8 +173,7 @@ fn inspect_decrypt_on_plaintext_bundle_prints_warning() {
     let run_id = "R-decrypt-plaintext";
 
     // Build a plaintext bundle (no .with_encryption).
-    let mut builder =
-        EvidenceBundleBuilder::new(dir.path(), run_id, "plaintext-test").unwrap();
+    let mut builder = EvidenceBundleBuilder::new(dir.path(), run_id, "plaintext-test").unwrap();
     builder.add_workflow_def(r#"{"name":"plain"}"#).unwrap();
     builder.add_policy(r#"{"default_allow":true}"#).unwrap();
     let mut audit = AuditLog::new();

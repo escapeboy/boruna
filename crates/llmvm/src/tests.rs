@@ -2054,10 +2054,7 @@ mod tests {
             vec![Op::PushConst(0), Op::IntToString, Op::Ret],
             vec![Value::Int(42)],
         );
-        assert_eq!(
-            run_module(module).unwrap(),
-            Value::String("42".into())
-        );
+        assert_eq!(run_module(module).unwrap(), Value::String("42".into()));
     }
 
     #[test]
@@ -2066,10 +2063,7 @@ mod tests {
             vec![Op::PushConst(0), Op::IntToString, Op::Ret],
             vec![Value::Int(-7)],
         );
-        assert_eq!(
-            run_module(module).unwrap(),
-            Value::String("-7".into())
-        );
+        assert_eq!(run_module(module).unwrap(), Value::String("-7".into()));
     }
 
     #[test]
@@ -2078,10 +2072,7 @@ mod tests {
             vec![Op::PushConst(0), Op::FloatToString, Op::Ret],
             vec![Value::Float(3.14)],
         );
-        assert_eq!(
-            run_module(module).unwrap(),
-            Value::String("3.14".into())
-        );
+        assert_eq!(run_module(module).unwrap(), Value::String("3.14".into()));
     }
 
     #[test]
@@ -2110,10 +2101,7 @@ mod tests {
         );
         assert_eq!(
             run_module(module).unwrap(),
-            Value::List(vec![
-                Value::String("a".into()),
-                Value::String("b".into()),
-            ])
+            Value::List(vec![Value::String("a".into()), Value::String("b".into()),])
         );
     }
 
@@ -2131,8 +2119,16 @@ mod tests {
     #[test]
     fn test_string_contains_true() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringContains, Op::Ret],
-            vec![Value::String("hello world".into()), Value::String("world".into())],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringContains,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
     }
@@ -2140,7 +2136,12 @@ mod tests {
     #[test]
     fn test_string_contains_false() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringContains, Op::Ret],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringContains,
+                Op::Ret,
+            ],
             vec![Value::String("hello".into()), Value::String("xyz".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(false));
@@ -2149,8 +2150,16 @@ mod tests {
     #[test]
     fn test_string_starts_with_true() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringStartsWith, Op::Ret],
-            vec![Value::String("hello world".into()), Value::String("hello".into())],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringStartsWith,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hello world".into()),
+                Value::String("hello".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
     }
@@ -2158,7 +2167,12 @@ mod tests {
     #[test]
     fn test_string_starts_with_false() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringStartsWith, Op::Ret],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringStartsWith,
+                Op::Ret,
+            ],
             vec![Value::String("hello".into()), Value::String("world".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(false));
@@ -2167,8 +2181,16 @@ mod tests {
     #[test]
     fn test_string_ends_with_true() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringEndsWith, Op::Ret],
-            vec![Value::String("hello world".into()), Value::String("world".into())],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringEndsWith,
+                Op::Ret,
+            ],
+            vec![
+                Value::String("hello world".into()),
+                Value::String("world".into()),
+            ],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(true));
     }
@@ -2176,7 +2198,12 @@ mod tests {
     #[test]
     fn test_string_ends_with_false() {
         let module = simple_module(
-            vec![Op::PushConst(0), Op::PushConst(1), Op::StringEndsWith, Op::Ret],
+            vec![
+                Op::PushConst(0),
+                Op::PushConst(1),
+                Op::StringEndsWith,
+                Op::Ret,
+            ],
             vec![Value::String("hello".into()), Value::String("xyz".into())],
         );
         assert_eq!(run_module(module).unwrap(), Value::Bool(false));
@@ -2390,10 +2417,7 @@ mod tests {
         );
         assert_eq!(
             run_module(module).unwrap(),
-            Value::List(vec![
-                Value::String("a".into()),
-                Value::String("b".into()),
-            ])
+            Value::List(vec![Value::String("a".into()), Value::String("b".into()),])
         );
     }
 
@@ -2429,16 +2453,9 @@ mod tests {
                 Op::StringSlice,
                 Op::Ret,
             ],
-            vec![
-                Value::String("hello".into()),
-                Value::Int(1),
-                Value::Int(4),
-            ],
+            vec![Value::String("hello".into()), Value::Int(1), Value::Int(4)],
         );
-        assert_eq!(
-            run_module(module).unwrap(),
-            Value::String("ell".into())
-        );
+        assert_eq!(run_module(module).unwrap(), Value::String("ell".into()));
     }
 
     #[test]
@@ -2451,11 +2468,7 @@ mod tests {
                 Op::StringSlice,
                 Op::Ret,
             ],
-            vec![
-                Value::String("hi".into()),
-                Value::Int(0),
-                Value::Int(100),
-            ],
+            vec![Value::String("hi".into()), Value::Int(0), Value::Int(100)],
         );
         assert_eq!(run_module(module).unwrap(), Value::String("".into()));
     }
@@ -2558,11 +2571,7 @@ mod tests {
                 Op::MapSet,
                 Op::Ret,
             ],
-            vec![
-                Value::Map(m),
-                Value::String("x".into()),
-                Value::Int(5),
-            ],
+            vec![Value::Map(m), Value::String("x".into()), Value::Int(5)],
         );
         let mut expected = BTreeMap::new();
         expected.insert("x".to_string(), Value::Int(5));

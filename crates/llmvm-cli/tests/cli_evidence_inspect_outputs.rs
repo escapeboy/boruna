@@ -88,7 +88,12 @@ fn inspect_json_includes_step_outputs_for_plaintext_bundle() {
     let bundle_dir = build_plaintext_bundle(dir.path());
 
     let output = Command::new(boruna_bin())
-        .args(["evidence", "inspect", bundle_dir.to_str().unwrap(), "--json"])
+        .args([
+            "evidence",
+            "inspect",
+            bundle_dir.to_str().unwrap(),
+            "--json",
+        ])
         .output()
         .expect("inspect --json failed to spawn");
 

@@ -2473,9 +2473,7 @@ fn load_module(path: &PathBuf) -> Result<Module, Box<dyn std::error::Error>> {
 /// Run import resolution if a `libs/` directory exists relative to cwd.
 /// If no `libs/` dir is found, returns the source unchanged (additive only).
 fn maybe_resolve_imports(source: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let libs_dir = std::env::current_dir()
-        .unwrap_or_default()
-        .join("libs");
+    let libs_dir = std::env::current_dir().unwrap_or_default().join("libs");
     if libs_dir.is_dir() {
         Ok(boruna_tooling::resolve_imports(source, &libs_dir)?)
     } else {
@@ -4063,8 +4061,8 @@ fn run_evidence(
                             let kek_hex = bundle_encryption_key
                                 .as_deref()
                                 .ok_or("--decrypt requires --bundle-encryption-key <hex>")?;
-                            let kek = parse_kek_hex(kek_hex)
-                                .map_err(|e| format!("invalid KEK: {e}"))?;
+                            let kek =
+                                parse_kek_hex(kek_hex).map_err(|e| format!("invalid KEK: {e}"))?;
                             let envelope = Envelope::unwrap(enc_info, &kek)
                                 .map_err(|e| format!("error: KEK unwrap failed: {e}"))?;
 
@@ -4076,9 +4074,8 @@ fn run_evidence(
                                     continue;
                                 }
                                 let path = dir.join(filename);
-                                let ciphertext = fs::read(&path).map_err(|e| {
-                                    format!("error: cannot read {filename}: {e}")
-                                })?;
+                                let ciphertext = fs::read(&path)
+                                    .map_err(|e| format!("error: cannot read {filename}: {e}"))?;
                                 let plaintext =
                                     envelope.decrypt_file(filename, &ciphertext).map_err(|e| {
                                         format!("error: decryption failed for {filename}: {e}")
@@ -4094,10 +4091,8 @@ fn run_evidence(
                                     .trim_start_matches("outputs/")
                                     .trim_end_matches(".json")
                                     .to_string();
-                                let val: serde_json::Value =
-                                    serde_json::from_str(&content).unwrap_or_else(|_| {
-                                        serde_json::Value::String(content.clone())
-                                    });
+                                let val: serde_json::Value = serde_json::from_str(&content)
+                                    .unwrap_or_else(|_| serde_json::Value::String(content.clone()));
                                 outputs.insert(key, val);
                             }
                             Some(outputs)
@@ -4120,18 +4115,14 @@ fn run_evidence(
                                 std::collections::BTreeMap::<String, serde_json::Value>::new();
                             if let Ok(entries) = fs::read_dir(&outputs_dir) {
                                 for entry in entries.flatten() {
-                                    let step_id =
-                                        entry.file_name().to_string_lossy().into_owned();
+                                    let step_id = entry.file_name().to_string_lossy().into_owned();
                                     let result_path = entry.path().join("result.json");
                                     if result_path.exists() {
-                                        if let Ok(content) =
-                                            fs::read_to_string(&result_path)
-                                        {
+                                        if let Ok(content) = fs::read_to_string(&result_path) {
                                             let val: serde_json::Value =
-                                                serde_json::from_str(&content)
-                                                    .unwrap_or_else(|_| {
-                                                        serde_json::json!({"raw": content})
-                                                    });
+                                                serde_json::from_str(&content).unwrap_or_else(
+                                                    |_| serde_json::json!({"raw": content}),
+                                                );
                                             outputs.insert(step_id, val);
                                         }
                                     }
@@ -4640,7 +4631,10 @@ fn find_workflows(dir: &std::path::Path) -> Vec<WorkflowEntry> {
         .collect()
 }
 
-fn handle_workflow_find(dir: &std::path::Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_workflow_find(
+    dir: &std::path::Path,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let entries = find_workflows(dir);
     if json {
         let arr: Vec<serde_json::Value> = entries
@@ -4664,10 +4658,7 @@ fn handle_workflow_find(dir: &std::path::Path, json: bool) -> Result<(), Box<dyn
         if entries.is_empty() {
             println!("(none found)");
         } else {
-            println!(
-                "{:<45} {:<28} {:<7} STATUS",
-                "PATH", "NAME", "STEPS"
-            );
+            println!("{:<45} {:<28} {:<7} STATUS", "PATH", "NAME", "STEPS");
             for e in &entries {
                 let status = if e.valid {
                     "\u{2713} valid".to_string()

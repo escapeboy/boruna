@@ -71,24 +71,30 @@ fn find_json_output_is_valid() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let arr: serde_json::Value =
-        serde_json::from_str(&stdout).expect("output must be valid JSON");
+    let arr: serde_json::Value = serde_json::from_str(&stdout).expect("output must be valid JSON");
 
     let arr = arr.as_array().expect("output must be a JSON array");
-    assert!(arr.len() >= 3, "expected at least 3 entries; got {}", arr.len());
+    assert!(
+        arr.len() >= 3,
+        "expected at least 3 entries; got {}",
+        arr.len()
+    );
 
     for entry in arr {
         assert!(entry.get("path").is_some(), "entry missing 'path': {entry}");
         assert!(entry.get("name").is_some(), "entry missing 'name': {entry}");
-        assert!(entry.get("steps").is_some(), "entry missing 'steps': {entry}");
-        assert!(entry.get("valid").is_some(), "entry missing 'valid': {entry}");
+        assert!(
+            entry.get("steps").is_some(),
+            "entry missing 'steps': {entry}"
+        );
+        assert!(
+            entry.get("valid").is_some(),
+            "entry missing 'valid': {entry}"
+        );
     }
 
     // All known example workflows should be valid.
-    let names: Vec<&str> = arr
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<&str> = arr.iter().filter_map(|e| e["name"].as_str()).collect();
     // At least one entry has a non-empty name.
     assert!(
         names.iter().any(|n| !n.is_empty()),

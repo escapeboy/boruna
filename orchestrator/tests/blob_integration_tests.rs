@@ -171,10 +171,7 @@ fn blob_s3_list_sorted() {
 // GCS (fake-gcs-server)
 // ────────────────────────────────────────────────────────────
 
-fn fake_gcs_create_bucket(
-    endpoint: &str,
-    bucket: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn fake_gcs_create_bucket(endpoint: &str, bucket: &str) -> Result<(), Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -301,7 +298,10 @@ fn azurite_create_container(
             .put(&url)
             .header("x-ms-version", "2020-12-06")
             .header("x-ms-date", "Thu, 01 Jan 2099 00:00:00 GMT")
-            .header("Authorization", "SharedKeyLite devstoreaccount1:placeholder")
+            .header(
+                "Authorization",
+                "SharedKeyLite devstoreaccount1:placeholder",
+            )
             .send()
             .await?;
         let status = resp.status();
@@ -339,10 +339,7 @@ fn blob_azure_put_get_roundtrip() {
         .expect("build AzureBlobBucket");
 
     let r = store.put("run-1", bundle.path()).expect("put");
-    assert_eq!(
-        r.0,
-        "azblob://devstoreaccount1/blob-it-az/test/run-1"
-    );
+    assert_eq!(r.0, "azblob://devstoreaccount1/blob-it-az/test/run-1");
 
     let resolved = store.get(&r).expect("get");
     assert!(resolved.join("manifest.json").exists());
