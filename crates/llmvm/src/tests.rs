@@ -2125,4 +2125,242 @@ mod tests {
         );
         assert_eq!(run_module(module).unwrap(), Value::List(vec![]));
     }
+
+    // ── New string built-ins (post1/more-string-list-builtins) ──
+
+    #[test]
+    fn test_string_contains_true() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringContains, Op::Ret],
+            vec![Value::String("hello world".into()), Value::String("world".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_string_contains_false() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringContains, Op::Ret],
+            vec![Value::String("hello".into()), Value::String("xyz".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_string_starts_with_true() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringStartsWith, Op::Ret],
+            vec![Value::String("hello world".into()), Value::String("hello".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_string_starts_with_false() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringStartsWith, Op::Ret],
+            vec![Value::String("hello".into()), Value::String("world".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_string_ends_with_true() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringEndsWith, Op::Ret],
+            vec![Value::String("hello world".into()), Value::String("world".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_string_ends_with_false() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringEndsWith, Op::Ret],
+            vec![Value::String("hello".into()), Value::String("xyz".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_string_to_upper() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringToUpper, Op::Ret],
+            vec![Value::String("hello".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("HELLO".into()));
+    }
+
+    #[test]
+    fn test_string_to_lower() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringToLower, Op::Ret],
+            vec![Value::String("HELLO".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_string_trim() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::StringTrim, Op::Ret],
+            vec![Value::String("  hello  ".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_string_join() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringJoin, Op::Ret],
+            vec![
+                Value::List(vec![
+                    Value::String("a".into()),
+                    Value::String("b".into()),
+                    Value::String("c".into()),
+                ]),
+                Value::String(", ".into()),
+            ],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("a, b, c".into()));
+    }
+
+    #[test]
+    fn test_string_join_empty_list() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::StringJoin, Op::Ret],
+            vec![Value::List(vec![]), Value::String(",".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("".into()));
+    }
+
+    // ── New list built-ins ──
+
+    #[test]
+    fn test_list_len_builtin() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListLenBuiltin, Op::Ret],
+            vec![Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ])],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn test_list_is_empty_true() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListIsEmpty, Op::Ret],
+            vec![Value::List(vec![])],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_is_empty_false() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListIsEmpty, Op::Ret],
+            vec![Value::List(vec![Value::Int(1)])],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_head_some() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListHead, Op::Ret],
+            vec![Value::List(vec![Value::Int(10), Value::Int(20)])],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Some(Box::new(Value::Int(10)))
+        );
+    }
+
+    #[test]
+    fn test_list_head_none() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListHead, Op::Ret],
+            vec![Value::List(vec![])],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::None);
+    }
+
+    #[test]
+    fn test_list_tail() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListTail, Op::Ret],
+            vec![Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ])],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn test_list_tail_empty() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListTail, Op::Ret],
+            vec![Value::List(vec![])],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::List(vec![]));
+    }
+
+    #[test]
+    fn test_list_append() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::ListAppend, Op::Ret],
+            vec![
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::Int(3),
+            ],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn test_list_concat() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::ListConcat, Op::Ret],
+            vec![
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::List(vec![Value::Int(3), Value::Int(4)]),
+            ],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_list_reverse() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::ListReverse, Op::Ret],
+            vec![Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ])],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+        );
+    }
 }

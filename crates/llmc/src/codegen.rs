@@ -314,6 +314,82 @@ impl Emitter {
                             fe.code.push(Op::StringChars);
                             return Ok(());
                         }
+                        "__builtin_string_contains" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::StringContains);
+                            return Ok(());
+                        }
+                        "__builtin_string_starts_with" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::StringStartsWith);
+                            return Ok(());
+                        }
+                        "__builtin_string_ends_with" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::StringEndsWith);
+                            return Ok(());
+                        }
+                        "__builtin_string_to_upper" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::StringToUpper);
+                            return Ok(());
+                        }
+                        "__builtin_string_to_lower" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::StringToLower);
+                            return Ok(());
+                        }
+                        "__builtin_string_trim" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::StringTrim);
+                            return Ok(());
+                        }
+                        "__builtin_string_join" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::StringJoin);
+                            return Ok(());
+                        }
+                        "__builtin_list_len" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::ListLenBuiltin);
+                            return Ok(());
+                        }
+                        "__builtin_list_is_empty" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::ListIsEmpty);
+                            return Ok(());
+                        }
+                        "__builtin_list_head" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::ListHead);
+                            return Ok(());
+                        }
+                        "__builtin_list_tail" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::ListTail);
+                            return Ok(());
+                        }
+                        "__builtin_list_append" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::ListAppend);
+                            return Ok(());
+                        }
+                        "__builtin_list_concat" if args.len() == 2 => {
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::ListConcat);
+                            return Ok(());
+                        }
+                        "__builtin_list_reverse" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::ListReverse);
+                            return Ok(());
+                        }
                         // 0.3-S14: builtin `step_input(name)` reads a
                         // workflow step's resolved upstream output.
                         // Emits `Op::CapCall(StepInput, 1)` which

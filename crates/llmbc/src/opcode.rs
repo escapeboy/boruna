@@ -133,6 +133,48 @@ pub enum Op {
     /// Pop a String, push a List of single-character Strings.
     StringChars,
 
+    /// Pop two strings (haystack, needle), push Bool.
+    StringContains,
+
+    /// Pop two strings (string, prefix), push Bool.
+    StringStartsWith,
+
+    /// Pop two strings (string, suffix), push Bool.
+    StringEndsWith,
+
+    /// Pop a String, push its uppercase version as String.
+    StringToUpper,
+
+    /// Pop a String, push its lowercase version as String.
+    StringToLower,
+
+    /// Pop a String, push its trimmed version as String.
+    StringTrim,
+
+    /// Pop a List<String> and a separator String, push joined String.
+    StringJoin,
+
+    /// Pop a List, push its length as Int.
+    ListLenBuiltin,
+
+    /// Pop a List, push Bool (true if empty).
+    ListIsEmpty,
+
+    /// Pop a List, push Option<T> (first element or None).
+    ListHead,
+
+    /// Pop a List, push List (all elements except first).
+    ListTail,
+
+    /// Pop a List and a value, push new List with value appended.
+    ListAppend,
+
+    /// Pop two Lists, push their concatenation.
+    ListConcat,
+
+    /// Pop a List, push reversed List.
+    ListReverse,
+
     /// No operation.
     Nop,
 
@@ -194,6 +236,20 @@ impl Op {
             Op::FloatToString => 0x89,
             Op::StringLen => 0x8A,
             Op::StringChars => 0x8B,
+            Op::StringContains => 0x8C,
+            Op::StringStartsWith => 0x8D,
+            Op::StringEndsWith => 0x8E,
+            Op::StringToUpper => 0x8F,
+            Op::StringToLower => 0x90,
+            Op::StringTrim => 0x91,
+            Op::StringJoin => 0x92,
+            Op::ListLenBuiltin => 0x93,
+            Op::ListIsEmpty => 0x94,
+            Op::ListHead => 0x95,
+            Op::ListTail => 0x96,
+            Op::ListAppend => 0x97,
+            Op::ListConcat => 0x98,
+            Op::ListReverse => 0x99,
             Op::Nop => 0xFE,
             Op::Halt => 0xFF,
         }
