@@ -47,6 +47,21 @@ The server communicates over JSON-RPC stdio. All tools return structured JSON wi
 | `boruna_capability_list` | List the frozen 1.0 capability set with `capability_set_hash` |
 | `boruna_policy_validate` | Validate a `Policy` JSON document; returns typed `error_kind` on rejection |
 
+## Agent-native CLI surfaces
+
+Beyond the MCP server, the `boruna` binary exposes read-only inspection
+commands designed for agents. Every one accepts `--json`:
+
+| Command | Use |
+|---------|-----|
+| `boruna skills list` / `boruna skills get <name>` | Self-describing docs — learn `.ax` and the toolchain from the binary alone |
+| `boruna lang codes` | Resolve any `E0NN` diagnostic code seen in `lang check --json` output |
+| `boruna doctor` | Verify the environment before relying on the toolchain |
+| `boruna workflow graph <dir>` | Read a workflow's DAG (nodes, edges, topo order) before editing it |
+| `boruna size <file.ax>` | Check the bytecode artifact cost of a program |
+
+A fresh agent should start with `boruna skills get cli`.
+
 ## Usage patterns
 
 **Compile and check for errors:**

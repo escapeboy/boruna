@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod collector;
+pub mod registry;
 pub mod suggest;
 
 use serde::{Deserialize, Serialize};

@@ -19,6 +19,7 @@ use boruna_vm::vm::Vm;
 mod coordinator;
 #[cfg(feature = "serve")]
 mod dashboard;
+mod doctor;
 mod evidence_diff;
 #[cfg(feature = "serve")]
 mod evidence_serve;
@@ -27,6 +28,8 @@ mod provider_registry;
 mod scaffold;
 #[cfg(feature = "serve")]
 mod serve;
+mod size;
+mod skills;
 #[cfg(feature = "serve")]
 mod worker;
 mod workflow_eval;
@@ -144,6 +147,23 @@ enum Command {
     /// Language tooling commands (diagnostics, repair).
     #[command(subcommand)]
     Lang(LangCommand),
+    /// Environment and toolchain health checks.
+    Doctor {
+        /// Output the health report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report the bytecode artifact size of a .ax source file.
+    Size {
+        /// Source file (.ax).
+        file: PathBuf,
+        /// Output the size report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Embedded, agent-curated documentation (list, get).
+    #[command(subcommand)]
+    Skills(SkillsCommand),
     /// Trace-to-test tools (record, generate, run, minimize).
     #[command(subcommand)]
     Trace2tests(Trace2TestsCommand),
@@ -548,6 +568,30 @@ enum LangCommand {
         /// Strategy: "best" (default), "all", or a specific patch ID.
         #[arg(long, default_value = "best")]
         apply: String,
+    },
+    /// List the registry of stable diagnostic codes.
+    Codes {
+        /// Output the registry as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsCommand {
+    /// List available agent skill documents.
+    List {
+        /// Output the skill list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print an agent skill document by name.
+    Get {
+        /// Skill name (see `boruna skills list`).
+        name: String,
+        /// Output the skill as JSON ({ name, summary, content }).
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -964,6 +1008,14 @@ enum WorkflowCommand {
         #[arg(default_value = ".")]
         dir: std::path::PathBuf,
         /// Output as JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Emit the workflow DAG as structured graph facts.
+    Graph {
+        /// Workflow directory containing workflow.json.
+        dir: PathBuf,
+        /// Output graph facts as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1397,6 +1449,29 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Fmt { file, check } => format::run_fmt(&file, check)?,
         Command::Framework(fw) => run_framework(fw)?,
         Command::Lang(lang) => run_lang(lang)?,
+        Command::Doctor { json } => {
+            let data_dir = resolve_data_dir(None, env_arg);
+            if !doctor::run(&data_dir, json) {
+                process::exit(1);
+            }
+        }
+        Command::Size { file, json } => {
+            let source = fs::read_to_string(&file)?;
+            let name = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "module".into());
+            let resolved = maybe_resolve_imports(&source)?;
+            size::run(&name, &resolved, json)?;
+        }
+        Command::Skills(cmd) => match cmd {
+            SkillsCommand::List { json } => skills::run_list(json),
+            SkillsCommand::Get { name, json } => {
+                if !skills::run_get(&name, json) {
+                    process::exit(1);
+                }
+            }
+        },
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
         Command::New {
@@ -1864,6 +1939,24 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
                     println!("verify: PASS");
                 } else {
                     println!("verify: FAIL (remaining issues)");
+                }
+            }
+        }
+        LangCommand::Codes { json } => {
+            let registry = boruna_tooling::diagnostics::registry::registry();
+            if json {
+                let payload = serde_json::json!({
+                    "version": 1,
+                    "codes": registry,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!("{:<6} {:<22} {:<16} SUMMARY", "CODE", "NAME", "CATEGORY");
+                for c in registry {
+                    println!(
+                        "{:<6} {:<22} {:<16} {}",
+                        c.code, c.name, c.category, c.summary
+                    );
                 }
             }
         }
@@ -3612,6 +3705,126 @@ fn run_workflow(
         WorkflowCommand::Find { dir, json } => {
             handle_workflow_find(&dir, json)?;
         }
+        WorkflowCommand::Graph { dir, json } => {
+            handle_workflow_graph(&dir, json)?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit the workflow DAG under `dir` as structured graph facts: nodes (with
+/// kind, capabilities, dependencies), edges, topological order, roots, and
+/// leaves. Read-only. Exits non-zero if the directory is unreadable or the
+/// graph is not a DAG.
+fn handle_workflow_graph(
+    dir: &std::path::Path,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::workflow::{StepKind, WorkflowDef, WorkflowValidator};
+    use std::collections::BTreeSet;
+
+    let def_path = dir.join("workflow.json");
+    let raw = fs::read_to_string(&def_path)
+        .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
+    let def: WorkflowDef =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid workflow.json: {e}"))?;
+
+    let kind_label = |k: &StepKind| -> &'static str {
+        match k {
+            StepKind::Source { .. } => "source",
+            StepKind::ApprovalGate { .. } => "approval_gate",
+            StepKind::ExternalTrigger { .. } => "external_trigger",
+        }
+    };
+
+    // Dependency relation = union of per-step `depends_on` and global `edges`.
+    let mut deps: std::collections::BTreeMap<&str, BTreeSet<&str>> = def
+        .steps
+        .keys()
+        .map(|id| (id.as_str(), BTreeSet::new()))
+        .collect();
+    for (id, step) in &def.steps {
+        let entry = deps.entry(id.as_str()).or_default();
+        for d in &step.depends_on {
+            entry.insert(d.as_str());
+        }
+    }
+    for (from, to) in &def.edges {
+        // Only record edges between declared steps — an edge to an unknown
+        // step is a malformed def (caught by `workflow validate`) and must
+        // not introduce a phantom node into `deps`/`roots`.
+        if let Some(set) = deps.get_mut(to.as_str()) {
+            set.insert(from.as_str());
+        }
+    }
+    let has_dependents: BTreeSet<&str> = deps.values().flatten().copied().collect();
+
+    let roots: Vec<&str> = deps
+        .iter()
+        .filter(|(_, d)| d.is_empty())
+        .map(|(id, _)| *id)
+        .collect();
+    let leaves: Vec<&str> = def
+        .steps
+        .keys()
+        .map(|s| s.as_str())
+        .filter(|s| !has_dependents.contains(s))
+        .collect();
+
+    let topo = WorkflowValidator::topological_order(&def);
+    let is_dag = topo.is_ok();
+
+    let nodes: Vec<serde_json::Value> = def
+        .steps
+        .iter()
+        .map(|(id, step)| {
+            serde_json::json!({
+                "id": id,
+                "kind": kind_label(&step.kind),
+                "capabilities": step.capabilities,
+                "depends_on": deps[id.as_str()].iter().collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    if json {
+        let payload = serde_json::json!({
+            "workflow": def.name,
+            "version": def.version,
+            "schema_version": def.schema_version,
+            "node_count": def.steps.len(),
+            "edge_count": def.edges.len(),
+            "is_dag": is_dag,
+            "nodes": nodes,
+            "edges": def.edges,
+            "topological_order": topo.clone().unwrap_or_default(),
+            "roots": roots,
+            "leaves": leaves,
+            "error": topo.as_ref().err(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("workflow '{}' v{}", def.name, def.version);
+        println!("  nodes: {}  edges: {}", def.steps.len(), def.edges.len());
+        for (id, step) in &def.steps {
+            let d = &deps[id.as_str()];
+            let dep_str = if d.is_empty() {
+                "(root)".to_string()
+            } else {
+                d.iter().copied().collect::<Vec<_>>().join(", ")
+            };
+            println!("  {} [{}] <- {}", id, kind_label(&step.kind), dep_str);
+        }
+        println!("  roots: {}", roots.join(", "));
+        println!("  leaves: {}", leaves.join(", "));
+        match &topo {
+            Ok(order) => println!("  topological order: {}", order.join(" -> ")),
+            Err(e) => println!("  NOT A DAG: {e}"),
+        }
+    }
+
+    if !is_dag {
+        process::exit(1);
     }
     Ok(())
 }

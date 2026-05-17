@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-native CLI surfaces** — five read-only, `--json`-capable commands so AI agents can inspect Boruna projects without reading source. Motivated by a competitive review of `vercel-labs/zero`.
+  - `boruna lang codes [--json]` — emit the registry of stable diagnostic codes (`E001`–`E009`) with name, summary, and category. Backed by `tooling/src/diagnostics/registry.rs`; a drift test keeps the registry 1:1 with the `E0NN` constants the compiler emits.
+  - `boruna doctor [--json]` — environment and toolchain health: binary version, compiled features, Rust toolchain, data-directory writability, and project-layout detection. Exits 1 if any check fails.
+  - `boruna workflow graph <dir> [--json]` — emit DAG facts for a workflow: nodes (kind, capabilities, dependencies), edges, topological order, roots, and leaves. Exits 1 on a non-DAG.
+  - `boruna size <file.ax> [--json]` — bytecode artifact cost: per-function opcode counts, module-wide totals, and serialized `.axbc` byte size.
+  - `boruna skills list` / `boruna skills get <name> [--json]` — embedded, agent-curated documentation (`ax-language`, `cli`, `workflows`, `diagnostics`) compiled into the binary, usable with no repository checkout.
+- **`docs/reference/diagnostic-codes.md`** — human reference for the diagnostic-code registry.
+
 ## [1.3.0] — 2026-04-30
 
 ### Stable
