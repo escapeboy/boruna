@@ -6,6 +6,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-05-17
+
+Fourth feature minor on the 1.x LTS line. Agent-native CLI inspection surfaces,
+the `boruna-lsp` language server, and compliance example workflows.
+
 ### Added
 
 - **Agent-native CLI surfaces** — five read-only, `--json`-capable commands so AI agents can inspect Boruna projects without reading source. Motivated by a competitive review of `vercel-labs/zero`.
@@ -15,6 +20,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   - `boruna size <file.ax> [--json]` — bytecode artifact cost: per-function opcode counts, module-wide totals, and serialized `.axbc` byte size.
   - `boruna skills list` / `boruna skills get <name> [--json]` — embedded, agent-curated documentation (`ax-language`, `cli`, `workflows`, `diagnostics`) compiled into the binary, usable with no repository checkout.
 - **`docs/reference/diagnostic-codes.md`** — human reference for the diagnostic-code registry.
+- **`boruna-lsp` language server** — new crate `crates/boruna-lsp`. A Language Server Protocol implementation for `.ax` files providing live diagnostics, completion, and formatting in any LSP-capable editor (VS Code, Neovim, …). See `docs/guides/lsp.md`.
+- **Compliance example workflows** — three regulated-use-case workflows under `examples/compliance/`: `soc2_audit_workflow` (SOC 2 audit trail), `hipaa_data_pipeline` (PHI redaction + audit log), `financial_review_pipeline` (dual-control SOX approval gates). See `docs/reference/compliance/README.md`.
 
 ## [1.3.0] — 2026-04-30
 

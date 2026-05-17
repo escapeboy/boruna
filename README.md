@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
 > **LTS — in force.** 1.x is the long-term-support line: through 2027-11-15 active and 2028-05-15 security. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
@@ -158,7 +158,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v1.3.0** — third minor release on the 1.x LTS line. New in 1.3.0: 27 language built-in functions (string, list, map), end-to-end import resolution (`import "std-name"`), step-output display in `evidence inspect` for plaintext bundles, `std-llm` and `std-json` graduated to 1.0-stable (all 13 stdlib packages are now stable), plus `std-json` and `std-validation` enhancements. The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) are feature-complete and frozen. The 1.x line is under long-term-support per [`docs/lts.md`](docs/lts.md): every 1.0 program, workflow, and bundle keeps working on every 1.y release.
+Boruna is at **v1.4.0** — fourth minor release on the 1.x LTS line. New in 1.4.0: agent-native CLI inspection surfaces (`boruna doctor`, `boruna size`, `boruna workflow graph`, `boruna lang codes`, `boruna skills` — all `--json`), the `boruna-lsp` language server for `.ax` files (diagnostics, completion, formatting in any LSP-capable editor), and three compliance example workflows (SOC 2, HIPAA, financial audit). The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) are feature-complete and frozen. The 1.x line is under long-term-support per [`docs/lts.md`](docs/lts.md): every 1.0 program, workflow, and bundle keeps working on every 1.y release.
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 
