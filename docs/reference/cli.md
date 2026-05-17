@@ -27,11 +27,14 @@ Commands:
   replay      Replay from a recorded event log
   inspect     Inspect a compiled module
   ast         Print the AST for a .ax file
-  lang        Language diagnostics and repair
+  lang        Language diagnostics, repair, and the code registry
+  doctor      Environment and toolchain health checks
+  size        Bytecode artifact size report for a .ax file
   framework   Framework app validation and testing
-  workflow    Workflow validation and execution
+  workflow    Workflow validation, execution, and graph inspection
   evidence    Evidence bundle inspection and verification
   template    Template listing and application
+  skills      Embedded, agent-curated documentation
   trace2tests Generate regression tests from traces
 ```
 
@@ -156,10 +159,12 @@ Language diagnostics and auto-repair.
 ```bash
 boruna lang check <file.ax> [--json]
 boruna lang repair <file.ax>
+boruna lang codes [--json]
 
 Subcommands:
   check     Run diagnostics: type errors, undeclared capabilities, unreachable code
   repair    Apply auto-repair suggestions from diagnostics
+  codes     List the registry of stable diagnostic codes (E001–E009)
 ```
 
 Examples:
@@ -170,7 +175,60 @@ boruna lang check app.ax --json
 
 # Automatically repair issues
 boruna lang repair app.ax
+
+# Resolve a diagnostic code seen in `lang check --json` output
+boruna lang codes --json
 ```
+
+`lang codes` emits the registry from `docs/reference/diagnostic-codes.md`. Codes
+are stable forever — tools and agents may switch on them.
+
+---
+
+## `boruna doctor`
+
+Environment and toolchain health checks.
+
+```bash
+boruna doctor [--json]
+```
+
+Reports the binary version, which optional features were compiled in, whether a
+Rust toolchain is reachable, the persistent data directory's writability, and
+whether the current directory looks like a Boruna project root. Read-only.
+Exits 1 if any check has `error` status.
+
+---
+
+## `boruna size`
+
+Bytecode artifact size report for a `.ax` source file.
+
+```bash
+boruna size <file.ax> [--json]
+```
+
+Compiles the file and reports per-function opcode counts, module-wide totals
+(functions, ops, constants, types, globals), and the serialized `.axbc`
+artifact byte size. Nothing is written to disk.
+
+---
+
+## `boruna skills`
+
+Embedded, agent-curated documentation — compiled into the binary so an agent can
+learn Boruna from the installed binary alone.
+
+```bash
+boruna skills list [--json]
+boruna skills get <name> [--json]
+
+Subcommands:
+  list   List available skill documents
+  get    Print one skill document (ax-language, cli, workflows, diagnostics)
+```
+
+`skills get` exits 1 on an unknown skill name and lists the available names.
 
 ---
 
@@ -272,6 +330,21 @@ boruna workflow find [dir] [--json]
 ```
 
 Validates each discovered workflow and prints path, name, step count, and validity. `dir` defaults to the current directory. Use `--json` for a JSON array.
+
+---
+
+### `boruna workflow graph`
+
+Emit the workflow DAG as structured graph facts.
+
+```bash
+boruna workflow graph <dir> [--json]
+```
+
+Reports nodes (each step's kind, capabilities, and dependencies), edges,
+topological execution order, `roots` (steps with no dependencies), and `leaves`
+(steps nothing depends on). Read-only — only `workflow.json` is read, step
+source files are not. Exits 1 if the graph contains a cycle (`is_dag: false`).
 
 ---
 
