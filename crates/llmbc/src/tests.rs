@@ -7,9 +7,48 @@ mod tests {
     /// Locked by `docs/spec/bytecode-1.0.md` (sprint `W9-A`). The
     /// `BYTECODE_VERSION` constant is the public spec identifier; bumping it
     /// is a coordinated spec freeze, not a routine release operation.
+    ///
+    /// **1.1** added `Op::Debug` (0xA7) and `Op::DebugMsg` (0xA8) per
+    /// §1.2(6) of the spec — additive opcode minor bump.
     #[test]
-    fn test_bytecode_version_is_1_0() {
-        assert_eq!(BYTECODE_VERSION, "1.0");
+    fn test_bytecode_version_is_1_1() {
+        assert_eq!(BYTECODE_VERSION, "1.1");
+    }
+
+    /// The new 1.1 opcodes must have stable byte tags that do not collide
+    /// with any existing assignment. A regression here means the 1.x line
+    /// has been corrupted.
+    #[test]
+    fn test_bytecode_1_1_debug_opcodes_have_assigned_tags() {
+        assert_eq!(Op::Debug.to_byte_tag(), 0xA7);
+        assert_eq!(Op::DebugMsg.to_byte_tag(), 0xA8);
+    }
+
+    /// Asserts the 1.1 additions do not collide with any other opcode tag.
+    /// Catches accidental reuse of a discriminant under refactoring.
+    #[test]
+    fn test_bytecode_1_1_debug_opcodes_do_not_alias() {
+        let all_tags = [
+            Op::PushConst(0).to_byte_tag(),
+            Op::LoadLocal(0).to_byte_tag(),
+            Op::Call(0, 0).to_byte_tag(),
+            Op::Ret.to_byte_tag(),
+            Op::MapLen.to_byte_tag(),
+            Op::Debug.to_byte_tag(),
+            Op::DebugMsg.to_byte_tag(),
+            Op::Nop.to_byte_tag(),
+            Op::Halt.to_byte_tag(),
+        ];
+        for (i, t1) in all_tags.iter().enumerate() {
+            for (j, t2) in all_tags.iter().enumerate() {
+                if i != j {
+                    assert_ne!(
+                        t1, t2,
+                        "tag collision between index {i} and {j}: 0x{t1:02X}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

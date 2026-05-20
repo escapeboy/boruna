@@ -2671,4 +2671,106 @@ mod tests {
         );
         assert_eq!(run_module(module).unwrap(), Value::Int(3));
     }
+
+    // ─── 1.1 — debug print-and-passthrough ────────────────────────────
+
+    /// `Op::Debug` returns the input value unchanged. Side-effect
+    /// (stderr print) is exercised by integration tests; this asserts the
+    /// identity-on-stack property which is what guards the determinism
+    /// contract (`project-conventions-2026-04` §15).
+    #[test]
+    fn test_op_debug_returns_input_value_int() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Ret],
+            vec![Value::Int(42)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn test_op_debug_returns_input_value_string() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Ret],
+            vec![Value::String("hello".into())],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_op_debug_returns_input_value_list() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Ret],
+            vec![Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ])],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn test_op_debug_returns_input_value_option_some() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Ret],
+            vec![Value::Some(Box::new(Value::Int(7)))],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Some(Box::new(Value::Int(7)))
+        );
+    }
+
+    #[test]
+    fn test_op_debug_returns_input_value_result_err() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Ret],
+            vec![Value::Err(Box::new(Value::String("boom".into())))],
+        );
+        assert_eq!(
+            run_module(module).unwrap(),
+            Value::Err(Box::new(Value::String("boom".into())))
+        );
+    }
+
+    /// `Op::DebugMsg` takes `[msg, value]` (msg deeper on stack, value on top)
+    /// and returns the value unchanged. Mirrors the codegen contract in
+    /// `crates/llmc/src/codegen.rs` (`__builtin_debug_msg` arm).
+    #[test]
+    fn test_op_debug_msg_returns_value_not_msg() {
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // msg
+                Op::PushConst(1), // value
+                Op::DebugMsg,
+                Op::Ret,
+            ],
+            vec![Value::String("answer:".into()), Value::Int(42)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn test_op_debug_msg_non_string_msg_does_not_panic() {
+        // If msg is not a String, VM stringifies via Display; result is
+        // still the value, NOT the stringified msg.
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::PushConst(1), Op::DebugMsg, Op::Ret],
+            vec![Value::Int(99), Value::Bool(true)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Bool(true));
+    }
+
+    /// Chain of debug calls preserves the value end-to-end.
+    #[test]
+    fn test_op_debug_chain_preserves_value() {
+        let module = simple_module(
+            vec![Op::PushConst(0), Op::Debug, Op::Debug, Op::Debug, Op::Ret],
+            vec![Value::Int(123)],
+        );
+        assert_eq!(run_module(module).unwrap(), Value::Int(123));
+    }
 }

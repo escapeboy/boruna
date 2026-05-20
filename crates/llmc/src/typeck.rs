@@ -84,6 +84,10 @@ impl TypeChecker {
         functions.insert("__builtin_map_keys".to_string(), 1);
         functions.insert("__builtin_map_values".to_string(), 1);
         functions.insert("__builtin_map_len".to_string(), 1);
+        // bytecode 1.1 — print-and-passthrough debug helpers.
+        // See docs/spec/bytecode-1.0.md §4 (Debug, DebugMsg).
+        functions.insert("__builtin_debug".to_string(), 1);
+        functions.insert("__builtin_debug_msg".to_string(), 2);
         // 0.3-S14: read a workflow step's resolved input value at
         // runtime. Compiles to `Op::CapCall(StepInput, 1)` which
         // dispatches through the gateway's StepInputHandler. Returns

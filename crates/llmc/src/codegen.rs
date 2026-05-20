@@ -465,6 +465,21 @@ impl Emitter {
                             fe.code.push(Op::MapLen);
                             return Ok(());
                         }
+                        // bytecode 1.1 — debug print-and-passthrough.
+                        // See docs/spec/bytecode-1.0.md §4 (Debug, DebugMsg).
+                        "__builtin_debug" if args.len() == 1 => {
+                            self.emit_expr(&args[0], fe)?;
+                            fe.code.push(Op::Debug);
+                            return Ok(());
+                        }
+                        "__builtin_debug_msg" if args.len() == 2 => {
+                            // Stack layout the VM expects (top → bottom):
+                            // [value, msg]. We emit msg first, then value.
+                            self.emit_expr(&args[0], fe)?;
+                            self.emit_expr(&args[1], fe)?;
+                            fe.code.push(Op::DebugMsg);
+                            return Ok(());
+                        }
                         // 0.3-S14: builtin `step_input(name)` reads a
                         // workflow step's resolved upstream output.
                         // Emits `Op::CapCall(StepInput, 1)` which

@@ -24,4 +24,9 @@ pub use value::Value;
 /// Locked by [`docs/spec/bytecode-1.0.md`](../../../docs/spec/bytecode-1.0.md)
 /// (sprint `W9-A`). A 1.x VM accepts any 1.y bytecode module; a 2.0 module
 /// MUST be rejected with a typed error.
-pub const BYTECODE_VERSION: &str = "1.0";
+///
+/// **1.1** (this session) — additive: introduces `Op::Debug` (0xA7) and
+/// `Op::DebugMsg` (0xA8) per §1.2(6) of the spec doc. A 1.0 reader presented
+/// with a 1.1 module containing either opcode MUST reject with an unknown-
+/// opcode typed error.
+pub const BYTECODE_VERSION: &str = "1.1";

@@ -25,6 +25,7 @@ mod evidence_diff;
 mod evidence_serve;
 mod format;
 mod provider_registry;
+mod repl;
 mod scaffold;
 #[cfg(feature = "serve")]
 mod serve;
@@ -175,6 +176,50 @@ enum Command {
     /// `docs/architecture-literate-workflows.md`.
     #[command(subcommand)]
     Literate(LiterateCommand),
+    /// Interactive REPL for `.ax` modules — load a file, evaluate
+    /// expressions interactively, inspect the environment.
+    /// See `docs/architecture-boruna-repl.md`.
+    Repl {
+        /// Optional `.ax` file to load at startup.
+        file: Option<PathBuf>,
+        /// Capability policy: "allow-all", "deny-all", or a JSON
+        /// policy file. Defaults to deny-all for safety — REPL inputs
+        /// are non-deterministic by definition.
+        #[arg(short, long, default_value = "deny-all")]
+        policy: String,
+    },
+    /// Random property-based simulation of a workflow. Runs the
+    /// workflow N times under a user-supplied invariant (and optional
+    /// witnesses) and reports violation count + witness frequencies.
+    /// See `docs/architecture-boruna-simulate.md`.
+    Simulate {
+        /// Workflow directory holding `workflow.json` and step sources.
+        dir: PathBuf,
+        /// Number of samples (1..=100_000). Default 1000.
+        #[arg(long, default_value = "1000")]
+        max_samples: usize,
+        /// Deterministic seed (currently used only for reporting; v1
+        /// simulator runs sequentially so per-trace seeding is a no-op
+        /// until input fuzzing lands in a follow-up sprint).
+        #[arg(long, default_value = "0")]
+        seed: u64,
+        /// Capability policy: "allow-all", "deny-all", or a JSON file.
+        #[arg(long, default_value = "allow-all")]
+        policy: String,
+        /// Invariant DSL expression. See `docs/architecture-boruna-simulate.md`
+        /// for the grammar — supports `status == "..."`,
+        /// `total_duration_ms < N`, `step.<id>.status == "..."`,
+        /// and `&&` / `||` combinators with parentheses.
+        #[arg(long)]
+        invariant: Option<String>,
+        /// Witness predicates as `name=expr,name=expr,...`. Same DSL
+        /// as `--invariant`; reports frequency per witness.
+        #[arg(long)]
+        witnesses: Option<String>,
+        /// Emit the simulation report as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
     /// Scaffold a new project from a template (interactive).
     ///
     /// Walks the user through template selection, target dir, and
@@ -1508,6 +1553,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
         Command::Literate(lit) => run_literate(lit)?,
+        Command::Repl { file, policy } => {
+            let policy_obj = match policy.as_str() {
+                "allow-all" => Policy::allow_all(),
+                "deny-all" => Policy::deny_all(),
+                path => boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?,
+            };
+            repl::run(file, policy_obj)?;
+        }
+        Command::Simulate {
+            dir,
+            max_samples,
+            seed,
+            policy,
+            invariant,
+            witnesses,
+            json,
+        } => {
+            run_simulate(dir, max_samples, seed, policy, invariant, witnesses, json)?;
+        }
         Command::New {
             template,
             dir,
@@ -4738,6 +4802,95 @@ fn run_evidence_gc_blobs(
             eprintln!("errors:");
             for e in &errors {
                 eprintln!("  {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_simulate(
+    dir: PathBuf,
+    max_samples: usize,
+    seed: u64,
+    policy: String,
+    invariant: Option<String>,
+    witnesses: Option<String>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::simulate::{Invariant, SimulationOptions, Simulator, WitnessSpec};
+    use boruna_orchestrator::workflow::{RunOptions, WorkflowDef};
+
+    let def_path = dir.join("workflow.json");
+    let raw = fs::read_to_string(&def_path)
+        .map_err(|e| format!("cannot read {}: {e}", def_path.display()))?;
+    let def: WorkflowDef = serde_json::from_str(&raw)
+        .map_err(|e| format!("[simulate.invalid_workflow] invalid workflow.json: {e}"))?;
+
+    let policy_obj = match policy.as_str() {
+        "allow-all" => Policy::allow_all(),
+        "deny-all" => Policy::deny_all(),
+        path => boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?,
+    };
+
+    let base_opts = RunOptions {
+        policy: Some(policy_obj),
+        workflow_dir: dir.to_string_lossy().into_owned(),
+        ..RunOptions::default()
+    };
+
+    let sim_opts = SimulationOptions {
+        max_samples,
+        seed,
+        emit_violation_bundles: false,
+    };
+
+    let mut sim = Simulator::new(&def, base_opts, sim_opts)
+        .map_err(|e| format!("[{}] {}", e.error_kind(), e))?;
+
+    if let Some(inv_src) = invariant.as_deref() {
+        let inv =
+            Invariant::parse(inv_src).map_err(|e| format!("[simulate.invariant_parse] {}", e))?;
+        sim = sim.with_invariant(inv);
+    }
+    if let Some(w_spec) = witnesses.as_deref() {
+        let ws = WitnessSpec::parse_csv(w_spec)
+            .map_err(|e| format!("[simulate.witness_parse] {}", e))?;
+        sim = sim.with_witnesses(ws);
+    }
+
+    let report = sim
+        .run()
+        .map_err(|e| format!("[{}] {}", e.error_kind(), e))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("=== Simulation Report ===");
+        println!("workflow:               {}", report.workflow_name);
+        println!("total_samples:          {}", report.total_samples);
+        println!("completed_runs:         {}", report.completed_runs);
+        println!("run_errors:             {}", report.run_errors);
+        println!("invariant_violations:   {}", report.invariant_violations);
+        println!("seed:                   0x{:016x}", report.seed);
+        println!("elapsed_ms:             {}", report.elapsed_ms);
+        if !report.first_violation_samples.is_empty() {
+            println!(
+                "first_violation_samples: {:?}",
+                report.first_violation_samples
+            );
+        }
+        if !report.witnesses.is_empty() {
+            println!();
+            println!("Witnesses:");
+            for w in &report.witnesses {
+                println!(
+                    "  {} was witnessed in {} trace(s) out of {} explored ({:.2}%)  [{}]",
+                    w.name,
+                    w.trace_count,
+                    w.total,
+                    w.frequency * 100.0,
+                    w.source,
+                );
             }
         }
     }
