@@ -1449,6 +1449,25 @@ impl Vm {
                         }
                     }
                 }
+                Op::Debug => {
+                    // Print to stderr, return value unchanged. Operational-
+                    // only side effect; no audit event, no replay impact.
+                    // Bytecode 1.1; see docs/spec/bytecode-1.0.md §4.
+                    let value = self.pop()?;
+                    eprintln!("{value}");
+                    self.push(value)?;
+                }
+                Op::DebugMsg => {
+                    // Stack (top → bottom): [value, msg].
+                    let value = self.pop()?;
+                    let msg = self.pop()?;
+                    let msg_str = match &msg {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    eprintln!("{msg_str} {value}");
+                    self.push(value)?;
+                }
                 Op::Nop => {}
                 Op::Halt => {
                     return Ok(self.stack.pop().unwrap_or(Value::Unit));

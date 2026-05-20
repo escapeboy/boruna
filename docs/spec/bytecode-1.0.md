@@ -19,16 +19,18 @@ The reference implementation lives in `crates/llmbc/` (`Op`, `Value`, `Capabilit
 
 ### 1.1 Version identifier
 
-The current bytecode version is **`1.0`**. Implementations MUST expose this value programmatically.
+The current bytecode version is **`1.1`**. Implementations MUST expose this value programmatically.
 
 In the reference implementation:
 
 ```rust
 // crates/llmbc/src/lib.rs
-pub const BYTECODE_VERSION: &str = "1.0";
+pub const BYTECODE_VERSION: &str = "1.1";
 ```
 
-The spec version `1.0` is the public, semver-like format identifier. The on-disk module header carries an internal `version` byte (currently `1`, see §3.1) which is incremented for any wire-format change inside the `1.x` line; clarifying spec edits do not bump it.
+The spec version `1.1` is the public, semver-like format identifier. The on-disk module header carries an internal `version` byte (currently `1`, see §3.1) which is incremented for any wire-format change inside the `1.x` line; clarifying spec edits do not bump it.
+
+**1.1 (additive minor bump, this session)** adds two opcodes: `Op::Debug` at byte tag `0xA7` and `Op::DebugMsg` at byte tag `0xA8` (see §4.5). Per §1.2(6) these are additive only; a 1.0 reader presented with either MUST reject with a typed unknown-opcode error.
 
 The `BYTECODE_VERSION` string is a `<major>.<minor>` decimal number. A bytecode module emitted against `1.x` MUST load and execute against any `1.y` VM where `y >= x`.
 
@@ -234,6 +236,19 @@ Every opcode below is part of the frozen 1.0 set. The byte tag column gives the 
 
 The byte tag space contains gaps (e.g. `0x14`–`0x1F`, `0x26`–`0x2F`, `0x36`–`0x3F`, `0x43`–`0x4F`, `0x51`–`0x5F`, `0x62`–`0x6F`, `0x71`–`0x7F`, `0x88`–`0xFD`). These are **reserved for additive opcodes in 1.y minor bumps**. A 1.0 reader MUST reject any encountered tag not listed in §4.2 with an unknown-opcode error.
 
+### 4.5 1.1 additions (debug print-and-passthrough)
+
+The following opcodes were introduced in bytecode version `1.1` per §1.2(6). They consume tag space previously reserved under §4.4. A 1.0 reader MUST reject any module containing either with an unknown-opcode error.
+
+| Opcode      | Byte tag | Stack effect      | Behavior                                                                                                                                                                                                              |
+|-------------|---------:|-------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Debug`     | `0xA7`   | (v → v)           | Pop one value; write its `Value::Display` form followed by a newline to host stderr; push the value back unchanged. No capability gate; no audit-log event; never feeds replay verification. Operational-only (§8.2). |
+| `DebugMsg`  | `0xA8`   | (msg, v → v)      | Pop value, then pop message; write `<msg> <value>\n` to host stderr (the message is `Display`-formatted if not already a `String`); push value back unchanged. Same operational-only semantics as `Debug`.            |
+
+Both opcodes are stack-effect identity for the value flow — they exist only for human-driven debugging of `.ax` source. Compiler surface: `__builtin_debug(v)` and `__builtin_debug_msg(msg, v)`. See `docs/architecture-q-debug.md` for the design rationale.
+
+**Determinism note.** A workflow that calls `Debug` or `DebugMsg` is still deterministic in its replay-verified state (§8.1) because the value flow is identity. The stderr output is operational-only (§8.2). Evidence-bundle hash chains are unaffected.
+
 ## 5. Value model
 
 ### 5.1 Value variants
@@ -435,3 +450,4 @@ A 1.y VM (`y > 0`) accepting an additively-extended module MUST still reject any
 ## 12. Change log for this specification
 
 - **1.0** (2026-04-28) — Initial freeze. Sprint W9-A. Captures the bytecode format as shipped in Boruna v1.0.0-rc2: magic `LLMB`, internal version `1`, JSON-payload module wire format, 48 frozen opcodes, 15 `Value` variants, 11 capabilities at contract version `"1"`, key-sorted `Map` iteration, deterministic actor scheduling.
+- **1.1** (2026-05-20) — Additive opcode minor bump per §1.2(6). Adds `Op::Debug` (`0xA7`) and `Op::DebugMsg` (`0xA8`) for `__builtin_debug(v)` / `__builtin_debug_msg(msg, v)` — stack-identity print-and-passthrough helpers writing to host stderr. Operational-only (§8.2); replay-verified state and capability gating unchanged. A 1.0 reader presented with either MUST reject with an unknown-opcode typed error (§10). Rationale in `claudedocs/research_quint_borrowable_ideas_2026-05-20.md` and `docs/retro-quint-borrow-2026-05-20.md`.

@@ -216,6 +216,17 @@ pub enum Op {
     /// Pop a Map; push Int length.
     MapLen,
 
+    /// Pop one value; print it to stderr in `Value::Display` form followed
+    /// by a newline; push the value back unchanged. Used by the `debug(v)`
+    /// builtin. Operational-only — emits no audit-log event, no capability
+    /// gate, no effect on replay verification.
+    Debug,
+
+    /// Pop a value, then pop a message String; print `<msg> <value>\n` to
+    /// stderr; push the value back unchanged. Used by the `debug_msg(msg, v)`
+    /// builtin. Same operational-only semantics as [`Op::Debug`].
+    DebugMsg,
+
     /// No operation.
     Nop,
 
@@ -304,6 +315,8 @@ impl Op {
             Op::MapKeys => 0xA4,
             Op::MapValues => 0xA5,
             Op::MapLen => 0xA6,
+            Op::Debug => 0xA7,
+            Op::DebugMsg => 0xA8,
             Op::Nop => 0xFE,
             Op::Halt => 0xFF,
         }

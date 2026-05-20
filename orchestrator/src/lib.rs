@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod patch;
 #[cfg(feature = "persist-sqlite")]
 pub mod persistence;
+pub mod simulate;
 pub mod storage;
 pub mod workflow;
 
