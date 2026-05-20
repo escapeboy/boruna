@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-20
+
+Fifth feature minor on the 1.x LTS line. Quint-inspired tooling additions:
+literate workflow specs, ITF trace export, an interactive REPL,
+random property-based workflow simulation with witnesses, and the
+`__builtin_debug` print-and-passthrough helpers. The first bytecode
+minor bump (1.0 → 1.1) under the additive-opcode contract.
+
 ### Added
 
 - **Literate workflow specs (`boruna literate extract`)** — borrowed from Quint's Literate Specifications. A markdown file with `<lang> <filename> +=` code fences (where `<lang>` ∈ `ax|boruna|quint`) is the single source of truth for both the audit narrative AND the executable Boruna source. `boruna literate extract <file.md> --out-dir <dir>` walks the document, validates each fence, and emits per-file outputs that compile and run via the normal `boruna run` / `workflow run` paths. Idempotent: re-running produces byte-identical output. Path traversal and absolute paths are rejected at parse time with stable `error_kind` strings (`literate.invalid_fence`, `literate.path_traversal`, `literate.absolute_path`, `literate.invalid_out_dir`, `literate.io`). New module `tooling/src/literate/`, reusable from any caller including `boruna-mcp`. Example fixture at `examples/literate/hello_literate.md`. See `docs/design-literate-workflows.md` and `docs/architecture-literate-workflows.md`.
