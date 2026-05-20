@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Literate workflow specs (`boruna literate extract`)** — borrowed from Quint's Literate Specifications. A markdown file with `<lang> <filename> +=` code fences (where `<lang>` ∈ `ax|boruna|quint`) is the single source of truth for both the audit narrative AND the executable Boruna source. `boruna literate extract <file.md> --out-dir <dir>` walks the document, validates each fence, and emits per-file outputs that compile and run via the normal `boruna run` / `workflow run` paths. Idempotent: re-running produces byte-identical output. Path traversal and absolute paths are rejected at parse time with stable `error_kind` strings (`literate.invalid_fence`, `literate.path_traversal`, `literate.absolute_path`, `literate.invalid_out_dir`, `literate.io`). New module `tooling/src/literate/`, reusable from any caller including `boruna-mcp`. Example fixture at `examples/literate/hello_literate.md`. See `docs/design-literate-workflows.md` and `docs/architecture-literate-workflows.md`.
+- **ITF (Informal Trace Format) export from evidence bundles** — borrowed from Quint / Apalache / the ITF Trace Viewer. `boruna evidence inspect <bundle> --itf` emits the bundle's audit log as an ITF v0.15 document on stdout, with one ITF state per audit-log entry and event variant names preserved as `#meta.action`. `--itf` is mutually exclusive with `--json`. Boruna's internal evidence-bundle format is unchanged — ITF is purely an export. Vendored producer constant `ITF_FORMAT_VERSION = "0.15"`. New module `tooling/src/trace/{itf,audit_to_itf}.rs`. Spec source: <https://apalache-mc.org/docs/adr/015adr-trace.html>. See `docs/design-itf-traces.md` and `docs/architecture-itf-traces.md`.
+
+### Decided
+
+- **Five Quint-borrow ideas evaluated against Boruna's current surface** — research report at `claudedocs/research_quint_borrowable_ideas_2026-05-20.md`. Two shipped this sprint (literate, ITF). Three planned-and-architected but not built: `boruna repl` (interactive `.ax` evaluation), `boruna simulate` (random property-based workflow simulation), `--witnesses` (probabilistic any-state predicates that pair with `simulate`). One deferred entirely: the `debug` / `debug_msg` builtins — discovered during the build phase that every `__builtin_*` in Boruna materializes as a dedicated opcode (`Op::StringToUpper` precedent), so adding `debug` requires bytecode version bump 1.0 → 1.1 and `docs/spec/bytecode-1.0.md` evolution. That's clean spec evolution per §1.2(6) of the bytecode spec, but it is not the low-risk additive work the sprint accepted; deferred to its own follow-up. Design + architecture documents for all five are committed to `docs/`.
+- **Apalache-style bounded symbolic model checking is NOT recommended for Boruna.** A pull-in of Apalache + Z3 + a Boruna IR → SMT translator would be a multi-engineer-year integration aimed at an audience (consensus-protocol provers) that does not appear in Boruna's compliance-runtime positioning. Boruna's concrete-trace + replay + evidence-bundle model is a different design philosophy and stays as-is.
+
 ## [1.4.0] — 2026-05-17
 
 Fourth feature minor on the 1.x LTS line. Agent-native CLI inspection surfaces,

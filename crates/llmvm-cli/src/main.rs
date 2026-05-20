@@ -170,6 +170,11 @@ enum Command {
     /// Template tools (list, apply, validate).
     #[command(subcommand)]
     Template(TemplateCommand),
+    /// Literate workflow specs — extract embedded `.ax`/`.qnt` code
+    /// fences from a markdown narrative into per-file outputs. See
+    /// `docs/architecture-literate-workflows.md`.
+    #[command(subcommand)]
+    Literate(LiterateCommand),
     /// Scaffold a new project from a template (interactive).
     ///
     /// Walks the user through template selection, target dir, and
@@ -574,6 +579,27 @@ enum LangCommand {
         /// Output the registry as JSON.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LiterateCommand {
+    /// Extract `<lang> <filename> +=` code fences from a markdown
+    /// document into per-file outputs. Accepted languages: `ax`,
+    /// `boruna`, `quint`. Other fences (`rust`, `bash`, …) are
+    /// ignored. See `docs/architecture-literate-workflows.md`.
+    Extract {
+        /// Markdown source file.
+        file: PathBuf,
+        /// Output directory (created if missing).
+        #[arg(long, default_value = "gen")]
+        out_dir: PathBuf,
+        /// Emit a JSON extraction report on stdout.
+        #[arg(long)]
+        json: bool,
+        /// Print each block extracted as it happens.
+        #[arg(long)]
+        verbose: bool,
     },
 }
 
@@ -1061,8 +1087,15 @@ enum EvidenceCommand {
         /// Evidence bundle directory.
         dir: PathBuf,
         /// Output as JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "itf")]
         json: bool,
+        /// Emit the bundle's audit log as an Informal Trace Format
+        /// (ITF v0.15) document on stdout. ITF is the interchange
+        /// format used by Apalache / Quint / the ITF Trace Viewer.
+        /// One ITF state per audit-log entry, with action and hash
+        /// metadata preserved. Mutually exclusive with `--json`.
+        #[arg(long, conflicts_with = "json")]
+        itf: bool,
         /// Sprint W6-B: when the bundle is encrypted, refuse to
         /// print decrypted file contents unless this flag is set.
         /// The manifest itself (which is plaintext) prints either
@@ -1474,6 +1507,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         },
         Command::Trace2tests(t2t) => run_trace2tests(t2t)?,
         Command::Template(tmpl) => run_template(tmpl)?,
+        Command::Literate(lit) => run_literate(lit)?,
         Command::New {
             template,
             dir,
@@ -4241,9 +4275,29 @@ fn run_evidence(
         EvidenceCommand::Inspect {
             dir,
             json,
+            itf,
             decrypt,
             bundle_encryption_key,
         } => {
+            // --itf takes the audit log fast-path: no manifest decryption
+            // or step-output materialization needed. ITF is operational-only
+            // (project-conventions §15) — purely an export view.
+            if itf {
+                let audit_path = dir.join("audit_log.json");
+                let audit_json = fs::read_to_string(&audit_path)
+                    .map_err(|e| format!("cannot read audit_log.json: {e}"))?;
+                let entries: Vec<boruna_orchestrator::audit::log::AuditEntry> =
+                    serde_json::from_str(&audit_json)
+                        .map_err(|e| format!("invalid audit_log.json: {e}"))?;
+                let log = boruna_orchestrator::audit::log::AuditLog::from_entries(entries);
+                let source = format!("boruna {}", env!("CARGO_PKG_VERSION"));
+                let doc = boruna_tooling::trace::audit_to_itf::audit_log_to_itf(&log, source);
+                let s = boruna_tooling::trace::itf::to_string_pretty(&doc)
+                    .map_err(|e| format!("ITF serialization failed: {e}"))?;
+                println!("{s}");
+                return Ok(());
+            }
+
             let manifest_path = dir.join("manifest.json");
             let manifest_json = fs::read_to_string(&manifest_path)
                 .map_err(|e| format!("cannot read manifest: {e}"))?;
@@ -4688,6 +4742,46 @@ fn run_evidence_gc_blobs(
         }
     }
     Ok(())
+}
+
+fn run_literate(cmd: LiterateCommand) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_tooling::literate::{extract, ExtractOptions};
+    match cmd {
+        LiterateCommand::Extract {
+            file,
+            out_dir,
+            json,
+            verbose,
+        } => {
+            let markdown = fs::read_to_string(&file)
+                .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            let opts = ExtractOptions::default();
+            let report = extract(&markdown, &out_dir, &opts).map_err(|e| {
+                // Surface the typed error_kind in the message so CI logs
+                // and humans both see the stable code.
+                format!("[{}] {}", e.error_kind(), e)
+            })?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "Extracted {} block(s) into {}",
+                    report.blocks_extracted,
+                    out_dir.display()
+                );
+                if report.blocks_skipped > 0 {
+                    println!("Skipped {} non-extractable fence(s)", report.blocks_skipped);
+                }
+                if verbose {
+                    for f in &report.files_written {
+                        println!("  wrote {}", f.display());
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_template(cmd: TemplateCommand) -> Result<(), Box<dyn std::error::Error>> {
