@@ -140,6 +140,67 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_intent() {
+        let tokens = lexer::lex(r#"fn main() -> Int intent "Compute the answer" { 42 }"#).unwrap();
+        let program = parser::parse(tokens).unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            assert_eq!(f.intent.as_deref(), Some("Compute the answer"));
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_parse_no_intent_is_none() {
+        let tokens = lexer::lex("fn main() -> Int { 42 }").unwrap();
+        let program = parser::parse(tokens).unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            assert_eq!(f.intent, None);
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_parse_duplicate_intent_errors() {
+        let tokens = lexer::lex(r#"fn main() -> Int intent "a" intent "b" { 0 }"#).unwrap();
+        let err = parser::parse(tokens).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("duplicate 'intent'"),
+            "expected duplicate-intent error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_intent_with_capabilities_and_requires() {
+        // intent coexists with capability annotations and requires clauses,
+        // in any order after the signature.
+        let tokens = lexer::lex(
+            r#"fn transfer(x: Int) -> Int !{db.write} intent "Move funds" requires x { x }"#,
+        )
+        .unwrap();
+        let program = parser::parse(tokens).unwrap();
+        if let Item::Function(f) = &program.items[0] {
+            assert_eq!(f.capabilities, vec!["db.write"]);
+            assert_eq!(f.intent.as_deref(), Some("Move funds"));
+            assert_eq!(f.requires.len(), 1);
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_codegen_threads_intent_to_function() {
+        let module = compile("m", r#"fn main() -> Int intent "declared purpose" { 7 }"#).unwrap();
+        let main = module
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main function present");
+        assert_eq!(main.intent.as_deref(), Some("declared purpose"));
+    }
+
+    #[test]
     fn test_parse_type_def() {
         let tokens = lexer::lex("type User { name: String, age: Int }").unwrap();
         let program = parser::parse(tokens).unwrap();

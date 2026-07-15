@@ -31,6 +31,7 @@ fn display_token(kind: &TokenKind) -> String {
         TokenKind::ErrKw => "'Err'".into(),
         TokenKind::Requires => "'requires'".into(),
         TokenKind::Ensures => "'ensures'".into(),
+        TokenKind::Intent => "'intent'".into(),
         TokenKind::Spawn => "'spawn'".into(),
         TokenKind::Send => "'send'".into(),
         TokenKind::Receive => "'receive'".into(),
@@ -104,6 +105,7 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::ErrKw => "Err",
         TokenKind::Requires => "requires",
         TokenKind::Ensures => "ensures",
+        TokenKind::Intent => "intent",
         TokenKind::Spawn => "spawn",
         TokenKind::Send => "send",
         TokenKind::Receive => "receive",
@@ -206,6 +208,24 @@ impl Parser {
             }
             other => Err(self.error(format!(
                 "expected identifier, found {}",
+                display_token(other)
+            ))),
+        }
+    }
+
+    fn expect_string(&mut self) -> Result<String, CompileError> {
+        self.skip_newlines();
+        if self.pos >= self.tokens.len() {
+            return Err(self.error("expected string literal, found end of input".into()));
+        }
+        match &self.tokens[self.pos].kind {
+            TokenKind::StringLit(s) => {
+                let s = s.clone();
+                self.pos += 1;
+                Ok(s)
+            }
+            other => Err(self.error(format!(
+                "expected string literal, found {}",
                 display_token(other)
             ))),
         }
@@ -336,16 +356,28 @@ impl Parser {
             Vec::new()
         };
 
-        // Parse requires/ensures
+        // Parse intent / requires / ensures clauses (order-independent).
+        let mut intent: Option<String> = None;
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
-        while self.check(&TokenKind::Requires) || self.check(&TokenKind::Ensures) {
-            if self.check(&TokenKind::Requires) {
+        loop {
+            if self.check(&TokenKind::Intent) {
+                self.advance();
+                if intent.is_some() {
+                    return Err(self.error(
+                        "duplicate 'intent' clause: a function may declare at most one intent"
+                            .into(),
+                    ));
+                }
+                intent = Some(self.expect_string()?);
+            } else if self.check(&TokenKind::Requires) {
                 self.advance();
                 requires.push(self.parse_expr()?);
-            } else {
+            } else if self.check(&TokenKind::Ensures) {
                 self.advance();
                 ensures.push(self.parse_expr()?);
+            } else {
+                break;
             }
         }
 
@@ -356,6 +388,7 @@ impl Parser {
             params,
             return_type,
             capabilities,
+            intent,
             requires,
             ensures,
             body,

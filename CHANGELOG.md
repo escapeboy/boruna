@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-07-15
+
+Sixth feature minor on the 1.x LTS line. First sprint of the agentlanguages.dev
+competitive-borrow program (Theme B): machine-read `intent` declarations captured
+into tamper-evident evidence bundles.
+
+### Added
+
+- **`intent "..."` declarations captured into evidence bundles.** Borrowed from **Pact** (intent-in-signature) and **Intent**/**Prove** (machine-read purpose), per the agentlanguages.dev competitive research (`claudedocs/research_agentlanguages_competitive_2026-07-15.md`, Theme B). A function may declare a single machine-read purpose after its signature: `fn transfer(x: Int) -> Int !{db.write} intent "Move funds between accounts" { ... }`. The clause is optional, order-independent with `requires`/`ensures`, and a second `intent` on one function is a parse error. Intent threads through lexer → AST (`FnDef.intent`) → codegen → bytecode (`Function.intent`, additive `#[serde(default)]` — pre-Sprint-1 modules load with `None`) and is surfaced in `boruna ast --json`. When a workflow runs, each source-kind step's `intent` is captured into the evidence bundle as `intents.json` (step_id → declared purpose), covered by the bundle's checksums and `bundle_hash` — so `evidence verify` fails if a captured intent is tampered, and an auditor sees what each step was *authorized* to do next to what it did. Determinism (§15): intent is replay-verified evidence, already transitively in `workflow_hash`. See `docs/design-intent-evidence.md`.
+
 ## [1.5.0] — 2026-05-20
 
 Fifth feature minor on the 1.x LTS line. Quint-inspired tooling additions:

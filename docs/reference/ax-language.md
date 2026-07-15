@@ -73,6 +73,24 @@ fn fetch_and_cache(url: String) -> String !{net.fetch, fs.write} {
 
 Without the annotation, the VM will reject any attempt to call the capability at runtime.
 
+## Intent declarations
+
+A function may declare a single machine-read purpose with an `intent "..."` clause
+after its signature. The clause is optional and order-independent with capability
+and contract clauses:
+
+```ax
+fn transfer(amount: Int) -> Int !{db.write} intent "Move funds between accounts" {
+    // implementation
+}
+```
+
+Intent is captured into the run's evidence bundle (`intents.json`, keyed by step id)
+so an auditor sees what each step was *authorized* to do alongside what it actually
+did. It is covered by the bundle checksums, so tampering with a captured intent makes
+`boruna evidence verify` fail. A function may declare at most one `intent`; a second
+is a compile error.
+
 ## Records
 
 Define named record types:
