@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-07-15
+
+Eighth feature minor on the 1.x LTS line. Third sprint of the agentlanguages.dev
+competitive-borrow program (Theme C-lite): the LLM effect now propagates up the
+call graph and is recorded in evidence.
+
+### Added
+
+- **LLM effect propagates up the call graph; model-invoking steps recorded in evidence.** Theme C-lite — borrowed from **Vera** (LLM inference as a tracked typed effect). New `Module::transitively_invokes(func_idx, capability)` computes whether a function reaches a capability through its call graph (its own declared capabilities, or any function it `Call`s / `SpawnActor`s, transitively — cycle-safe, order-independent). When a workflow runs, each source-kind step is analysed for transitive `llm.call` reachability and the sorted list of model-invoking step ids is captured into the evidence bundle as `model_invoking_steps.json` — checksummed and covered by `bundle_hash`, so `evidence verify` fails on tamper. An auditor can now see *which steps touched a model*, even when the call is indirect through a helper. Deliberately **no conformal-prediction / uncertainty quantification** (research-grade; deferred). See `docs/design-llm-typed-effect.md`.
+
 ## [1.7.0] — 2026-07-15
 
 Seventh feature minor on the 1.x LTS line. Second sprint of the agentlanguages.dev

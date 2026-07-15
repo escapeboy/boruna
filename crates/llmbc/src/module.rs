@@ -151,4 +151,36 @@ impl Module {
         self.functions.push(func);
         idx
     }
+
+    /// Whether `func_idx` can reach the `cap` effect through its call graph —
+    /// either it declares `cap` directly, or some function it (transitively)
+    /// calls or spawns does. This is the "effect propagates up the call graph"
+    /// analysis: a step that calls a helper which calls a model transitively
+    /// invokes the model. The result is a deterministic function of the module
+    /// (independent of traversal order). Recursion is cycle-safe via `visited`.
+    pub fn transitively_invokes(&self, func_idx: u32, cap: Capability) -> bool {
+        let mut visited = std::collections::BTreeSet::new();
+        self.reaches_cap(func_idx, cap, &mut visited)
+    }
+
+    fn reaches_cap(
+        &self,
+        idx: u32,
+        cap: Capability,
+        visited: &mut std::collections::BTreeSet<u32>,
+    ) -> bool {
+        if !visited.insert(idx) {
+            return false;
+        }
+        let Some(f) = self.functions.get(idx as usize) else {
+            return false;
+        };
+        if f.capabilities.contains(&cap) {
+            return true;
+        }
+        f.code.iter().any(|op| match op {
+            Op::Call(callee, _) | Op::SpawnActor(callee) => self.reaches_cap(*callee, cap, visited),
+            _ => false,
+        })
+    }
 }

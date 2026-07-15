@@ -4606,6 +4606,10 @@ pub fn create_bundle(
     // intent simply contributes nothing rather than failing the bundle —
     // intent is additive audit metadata, never load-bearing for the run.
     let mut intents: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    // Steps that transitively invoke an LLM (Theme C-lite: the `llm` effect
+    // propagated up the call graph). `step_sources` is a BTreeMap, so this
+    // list is built in sorted order → deterministic bytes.
+    let mut model_invoking_steps: Vec<String> = Vec::new();
     for (step_id, source) in &metadata.step_sources {
         if let Ok(module) = boruna_compiler::compile(step_id, source) {
             if let Some(intent) = module
@@ -4616,11 +4620,17 @@ pub fn create_bundle(
             {
                 intents.insert(step_id.clone(), intent);
             }
+            if module.transitively_invokes(module.entry, boruna_bytecode::Capability::LlmCall) {
+                model_invoking_steps.push(step_id.clone());
+            }
         }
     }
     builder
         .add_intents(&intents)
         .map_err(|e| WorkflowRunError::Io(format!("bundle add_intents: {e}")))?;
+    builder
+        .add_model_invocations(&model_invoking_steps)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle add_model_invocations: {e}")))?;
 
     // Hash-chained audit log from metadata. We verify the chain at
     // bundle-creation time so that direct sqlite3 tamper of
