@@ -30,6 +30,10 @@ on:
       - 'LICENSE'
       - 'CHANGELOG.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
