@@ -177,6 +177,70 @@ mod tests {
     }
 
     #[test]
+    fn test_needed_and_over_declared_capabilities() {
+        let mut module = Module::new("t");
+        // idx 0: worker directly does a NetFetch effect and declares exactly it.
+        module.add_function(Function {
+            name: "worker".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::CapCall(Capability::NetFetch.id(), 0), Op::Ret],
+            capabilities: vec![Capability::NetFetch],
+            intent: None,
+            match_tables: vec![],
+        });
+        // idx 1: `over` only calls worker but declares NetFetch AND FsWrite.
+        // It transitively needs NetFetch (via worker) but never needs FsWrite.
+        module.add_function(Function {
+            name: "over".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Call(0, 0), Op::Ret],
+            capabilities: vec![Capability::NetFetch, Capability::FsWrite],
+            intent: None,
+            match_tables: vec![],
+        });
+        // worker: minimal — no over-grant.
+        assert_eq!(module.needed_capabilities(0), vec![Capability::NetFetch]);
+        assert!(module.over_declared_capabilities(0).is_empty());
+        // over: needs NetFetch transitively; FsWrite is an over-grant.
+        assert_eq!(module.needed_capabilities(1), vec![Capability::NetFetch]);
+        assert_eq!(
+            module.over_declared_capabilities(1),
+            vec![Capability::FsWrite]
+        );
+    }
+
+    #[test]
+    fn test_needed_capabilities_cycle_safe() {
+        let mut module = Module::new("t");
+        module.add_function(Function {
+            name: "a".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Call(1, 0), Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        module.add_function(Function {
+            name: "b".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![
+                Op::CapCall(Capability::DbQuery.id(), 0),
+                Op::Call(0, 0),
+                Op::Ret,
+            ],
+            capabilities: vec![Capability::DbQuery],
+            intent: None,
+            match_tables: vec![],
+        });
+        // a → b → a (cycle); a transitively needs DbQuery via b, no infinite loop.
+        assert_eq!(module.needed_capabilities(0), vec![Capability::DbQuery]);
+    }
+
+    #[test]
     fn test_module_legacy_json_without_intent_defaults_to_none() {
         // A module serialized before Sprint 1 has no `intent` key on its
         // functions. `#[serde(default)]` must load it cleanly as `None`.
