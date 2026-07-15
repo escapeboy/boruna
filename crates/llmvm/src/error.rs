@@ -45,6 +45,16 @@ pub enum VmError {
     #[error("assertion failed: {0}")]
     AssertionFailed(String),
 
+    /// A declared `requires`/`ensures` contract was violated at runtime.
+    /// `counterexample` is the concrete argument list that triggered the
+    /// violation (positional, rendered) — the replayable input an auditor
+    /// needs (borrowed from Vow: counterexample = concrete failing input).
+    #[error("{message} [counterexample: ({})]", counterexample.join(", "))]
+    ContractViolation {
+        message: String,
+        counterexample: Vec<String>,
+    },
+
     #[error("list index out of bounds: index {index}, length {length}")]
     IndexOutOfBounds { index: i64, length: usize },
 

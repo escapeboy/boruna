@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-07-15
+
+Seventh feature minor on the 1.x LTS line. Second sprint of the agentlanguages.dev
+competitive-borrow program (Theme A-lite): runtime-checked contracts with
+concrete, replayable counterexamples — no SMT.
+
+### Added
+
+- **Runtime-checked `requires` preconditions with counterexample evidence.** Sprint 2 / Theme A-lite of the agentlanguages.dev competitive-borrow program — borrowed from **Vera**/**Aver** (design-by-contract) and **Vow** (counterexample = concrete replayable input). A function's `requires <expr>` clauses are now compiled to runtime guards checked at entry against the arguments; a violation traps with a new `VmError::ContractViolation { message, counterexample }` where `counterexample` is the offending argument list (positional, rendered) — the exact input an auditor needs to reproduce the breach. The failure surfaces with a stable, distinct `error_kind` `contract_violation` (retry: no — a violation is a deterministic function of the inputs), and because failed-step errors are recorded in the hash-chained audit log, the counterexample lands in tamper-evident evidence. Reuses the previously-dormant `Op::Assert` opcode (no bytecode bump); functions without contracts emit no guard. **Deliberately NO SMT/Z3** — this stays in Boruna's concrete-trace + replay philosophy, consistent with the 1.5.0 "Decided" ruling against symbolic model checking. `ensures` postconditions (needing a `result` binding at each return) are a documented follow-up. See `docs/design-contracts-runtime.md`.
+
 ## [1.6.0] — 2026-07-15
 
 Sixth feature minor on the 1.x LTS line. First sprint of the agentlanguages.dev

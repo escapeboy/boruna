@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
 > **LTS — in force.** 1.x is the long-term-support line: through 2027-11-15 active and 2028-05-15 security. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.

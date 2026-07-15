@@ -572,8 +572,27 @@ impl Vm {
                             .constants
                             .get(err_const as usize)
                             .map(|v| format!("{v}"))
-                            .unwrap_or_else(|| "assertion failed".into());
-                        return Err(VmError::AssertionFailed(msg));
+                            .unwrap_or_else(|| "contract violation".into());
+                        // Capture the offending arguments (locals[0..arity])
+                        // as a concrete, replayable counterexample. `Op::Assert`
+                        // is emitted only by codegen for `requires`/`ensures`
+                        // contracts, so this is always a contract site.
+                        let arity = self.module.functions[func_idx as usize].arity as usize;
+                        let counterexample: Vec<String> = self
+                            .call_stack
+                            .last()
+                            .map(|f| {
+                                f.locals
+                                    .iter()
+                                    .take(arity)
+                                    .map(|v| format!("{v}"))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        return Err(VmError::ContractViolation {
+                            message: msg,
+                            counterexample,
+                        });
                     }
                 }
                 Op::CapCall(cap_id, arg_count) => {

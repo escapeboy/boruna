@@ -3231,6 +3231,12 @@ pub mod error_class {
     /// exhaustion, stack errors, bytecode errors.
     /// Recommended for retry: no — usually deterministic.
     pub const RUNTIME_ERROR: &str = "runtime_error";
+    /// A declared `requires`/`ensures` contract was violated
+    /// (`VmError::ContractViolation`). The error carries a concrete
+    /// counterexample (the offending arguments).
+    /// Recommended for retry: no — a contract violation is a
+    /// deterministic function of the inputs.
+    pub const CONTRACT_VIOLATION: &str = "contract_violation";
     /// IO error reading the step's source file.
     /// Recommended for retry: maybe — transient FS issues do happen.
     pub const IO_ERROR: &str = "io_error";
@@ -3265,6 +3271,7 @@ fn classify_vm_error(e: &VmError) -> &'static str {
         VmError::AssertionFailed(msg) if is_transient_network_error(msg) => {
             error_class::TRANSIENT_NETWORK
         }
+        VmError::ContractViolation { .. } => error_class::CONTRACT_VIOLATION,
         // All other VmError variants — including assertion failures,
         // type errors, index-out-of-bounds, division by zero, match
         // exhaustion, stack errors, invalid IP / function / constant /
@@ -6635,6 +6642,20 @@ mod tests {
                     length: 3
                 }),
                 error_class::RUNTIME_ERROR
+            );
+        }
+
+        #[test]
+        fn classify_contract_violation() {
+            // A contract violation gets its own stable, distinct class
+            // (not the runtime_error catch-all) so agents/auditors can
+            // recognise a precondition breach and its counterexample.
+            assert_eq!(
+                classify_vm_error(&VmError::ContractViolation {
+                    message: "precondition 1 failed in `check`".into(),
+                    counterexample: vec!["0".into()],
+                }),
+                error_class::CONTRACT_VIOLATION
             );
         }
 

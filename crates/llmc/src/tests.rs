@@ -201,6 +201,53 @@ mod tests {
     }
 
     #[test]
+    fn test_requires_emits_assert_opcode() {
+        use boruna_bytecode::Op;
+        let module = compile("m", "fn main() -> Int requires true { 0 }").unwrap();
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main.code.iter().any(|op| matches!(op, Op::Assert(_))),
+            "expected an Assert opcode from the requires clause"
+        );
+    }
+
+    #[test]
+    fn test_no_requires_emits_no_assert() {
+        use boruna_bytecode::Op;
+        let module = compile("m", "fn main() -> Int { 0 }").unwrap();
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            !main.code.iter().any(|op| matches!(op, Op::Assert(_))),
+            "a function without a contract must not emit Assert"
+        );
+    }
+
+    #[test]
+    fn test_requires_violation_produces_counterexample() {
+        use boruna_vm::VmError;
+        let src = "fn check(x: Int) -> Int requires x > 0 { x }\nfn main() -> Int { check(0) }";
+        let module = compile("test", src).expect("compile");
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        match vm.run() {
+            Err(VmError::ContractViolation {
+                message,
+                counterexample,
+            }) => {
+                assert!(message.contains("precondition"), "message: {message}");
+                assert_eq!(counterexample, vec!["0".to_string()]);
+            }
+            other => panic!("expected ContractViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_requires_satisfied_runs_normally() {
+        let src = "fn check(x: Int) -> Int requires x > 0 { x }\nfn main() -> Int { check(7) }";
+        assert_eq!(run_source(src), boruna_bytecode::Value::Int(7));
+    }
+
+    #[test]
     fn test_parse_type_def() {
         let tokens = lexer::lex("type User { name: String, age: Int }").unwrap();
         let program = parser::parse(tokens).unwrap();
