@@ -165,6 +165,21 @@ impl EvidenceBundleBuilder {
         self.write_file("intents.json", &json)
     }
 
+    /// Store the sorted list of step ids that transitively invoke an LLM
+    /// (an `llm.*` capability reachable through the step's call graph) as
+    /// `model_invoking_steps.json`. Lets an auditor see which steps touched
+    /// a model — the effect having propagated up the call graph — without
+    /// re-analyzing sources. Checksummed + hash-covered like every other
+    /// component. No-op when the list is empty. Callers pass an
+    /// already-sorted, de-duplicated list for deterministic bytes.
+    pub fn add_model_invocations(&mut self, step_ids: &[String]) -> std::io::Result<()> {
+        if step_ids.is_empty() {
+            return Ok(());
+        }
+        let json = serde_json::to_string_pretty(step_ids).map_err(std::io::Error::other)?;
+        self.write_file("model_invoking_steps.json", &json)
+    }
+
     /// Finalize the bundle: write audit log, env fingerprint, and manifest.
     pub fn finalize(mut self, audit_log: &AuditLog) -> std::io::Result<BundleManifest> {
         let completed_at = chrono::Utc::now().to_rfc3339();
@@ -240,6 +255,9 @@ impl EvidenceBundleBuilder {
         }
         if self.bundle_dir.join("intents.json").exists() {
             components.push("intents.json".to_string());
+        }
+        if self.bundle_dir.join("model_invoking_steps.json").exists() {
+            components.push("model_invoking_steps.json".to_string());
         }
         components.sort();
 
@@ -426,6 +444,37 @@ mod tests {
         .unwrap();
         let bad = verify_bundle(&bundle_path);
         assert!(!bad.valid, "tampered intents.json must fail verification");
+    }
+
+    #[test]
+    fn test_bundle_captures_model_invocations_and_is_covered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = EvidenceBundleBuilder::new(dir.path(), "run-model-001", "wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+        builder
+            .add_model_invocations(&["stepA".to_string(), "stepC".to_string()])
+            .unwrap();
+        let audit = AuditLog::new();
+        let manifest = builder.finalize(&audit).unwrap();
+        let bundle_path = dir.path().join("run-model-001");
+        assert!(bundle_path.join("model_invoking_steps.json").exists());
+        assert!(manifest
+            .file_checksums
+            .contains_key("model_invoking_steps.json"));
+    }
+
+    #[test]
+    fn test_bundle_no_model_invocations_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = EvidenceBundleBuilder::new(dir.path(), "run-model-002", "wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+        builder.add_model_invocations(&[]).unwrap();
+        builder.finalize(&AuditLog::new()).unwrap();
+        assert!(!dir
+            .path()
+            .join("run-model-002")
+            .join("model_invoking_steps.json")
+            .exists());
     }
 
     #[test]

@@ -114,6 +114,69 @@ mod tests {
     }
 
     #[test]
+    fn test_transitively_invokes_model() {
+        let mut module = Module::new("t");
+        // idx 0: helper declaring llm.call
+        module.add_function(Function {
+            name: "helper".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Ret],
+            capabilities: vec![Capability::LlmCall],
+            intent: None,
+            match_tables: vec![],
+        });
+        // idx 1: main calls helper (transitively reaches the model)
+        module.add_function(Function {
+            name: "main".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Call(0, 0), Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        // idx 2: pure function, neither declares nor reaches llm.call
+        module.add_function(Function {
+            name: "pure".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        assert!(module.transitively_invokes(1, Capability::LlmCall));
+        assert!(module.transitively_invokes(0, Capability::LlmCall));
+        assert!(!module.transitively_invokes(2, Capability::LlmCall));
+    }
+
+    #[test]
+    fn test_transitively_invokes_is_cycle_safe() {
+        // Mutually recursive functions must not loop forever.
+        let mut module = Module::new("t");
+        module.add_function(Function {
+            name: "a".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Call(1, 0), Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        module.add_function(Function {
+            name: "b".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Call(0, 0), Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        assert!(!module.transitively_invokes(0, Capability::LlmCall));
+    }
+
+    #[test]
     fn test_module_legacy_json_without_intent_defaults_to_none() {
         // A module serialized before Sprint 1 has no `intent` key on its
         // functions. `#[serde(default)]` must load it cleanly as `None`.
