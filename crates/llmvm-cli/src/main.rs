@@ -625,6 +625,15 @@ enum LangCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Report each function's declared vs. inferred-needed capabilities and
+    /// flag over-declarations (capabilities granted but never used).
+    Caps {
+        /// Source file (.ax)
+        file: PathBuf,
+        /// Output the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2056,6 +2065,82 @@ fn run_lang(cmd: LangCommand) -> Result<(), Box<dyn std::error::Error>> {
                         c.code, c.name, c.category, c.summary
                     );
                 }
+            }
+        }
+        LangCommand::Caps { file, json } => {
+            let source = fs::read_to_string(&file)?;
+            let module = match boruna_compiler::compile(&file.display().to_string(), &source) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("compile error: {e}");
+                    process::exit(1);
+                }
+            };
+            let mut any_over = false;
+            // (function, declared, needed, over_declared) — capability names.
+            type CapRow = (
+                String,
+                Vec<&'static str>,
+                Vec<&'static str>,
+                Vec<&'static str>,
+            );
+            let mut report: Vec<CapRow> = Vec::new();
+            for (idx, f) in module.functions.iter().enumerate() {
+                let declared: Vec<&str> = f.capabilities.iter().map(|c| c.name()).collect();
+                let needed: Vec<&str> = module
+                    .needed_capabilities(idx as u32)
+                    .iter()
+                    .map(|c| c.name())
+                    .collect();
+                let over: Vec<&str> = module
+                    .over_declared_capabilities(idx as u32)
+                    .iter()
+                    .map(|c| c.name())
+                    .collect();
+                if !over.is_empty() {
+                    any_over = true;
+                }
+                report.push((f.name.clone(), declared, needed, over));
+            }
+            if json {
+                let functions: Vec<_> = report
+                    .iter()
+                    .map(|(name, declared, needed, over)| {
+                        serde_json::json!({
+                            "function": name,
+                            "declared": declared,
+                            "needed": needed,
+                            "over_declared": over,
+                        })
+                    })
+                    .collect();
+                let payload = serde_json::json!({ "version": 1, "functions": functions });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                for (name, declared, needed, over) in &report {
+                    println!("fn {name}");
+                    let fmt = |v: &[&str]| {
+                        if v.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            v.join(", ")
+                        }
+                    };
+                    println!("  declared: {}", fmt(declared));
+                    println!("  needed:   {}", fmt(needed));
+                    if !over.is_empty() {
+                        println!("  over-declared: {}", over.join(", "));
+                    }
+                }
+                println!();
+                if any_over {
+                    println!("over-declared capabilities found (granted but never used)");
+                } else {
+                    println!("all capability declarations are minimal");
+                }
+            }
+            if any_over {
+                process::exit(1);
             }
         }
     }

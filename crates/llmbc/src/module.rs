@@ -183,4 +183,71 @@ impl Module {
             _ => false,
         })
     }
+
+    /// The *inferred minimal* capability set `func_idx` actually needs: the
+    /// capabilities it invokes directly (via `CapCall`) plus everything its
+    /// transitive callees need. Sorted by capability id, deterministic,
+    /// cycle-safe. Compare against the function's declared `capabilities` to
+    /// find over-grants (see [`Self::over_declared_capabilities`]).
+    pub fn needed_capabilities(&self, func_idx: u32) -> Vec<Capability> {
+        let mut cap_ids = std::collections::BTreeSet::new();
+        let mut visited = std::collections::BTreeSet::new();
+        self.collect_needed(func_idx, &mut cap_ids, &mut visited);
+        cap_ids
+            .into_iter()
+            .filter_map(Capability::from_id)
+            .collect()
+    }
+
+    fn collect_needed(
+        &self,
+        idx: u32,
+        out: &mut std::collections::BTreeSet<u32>,
+        visited: &mut std::collections::BTreeSet<u32>,
+    ) {
+        if !visited.insert(idx) {
+            return;
+        }
+        let Some(f) = self.functions.get(idx as usize) else {
+            return;
+        };
+        for op in &f.code {
+            match op {
+                Op::CapCall(cap_id, _) => {
+                    out.insert(*cap_id);
+                }
+                Op::Call(callee, _) | Op::SpawnActor(callee) => {
+                    self.collect_needed(*callee, out, visited);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Capabilities `func_idx` declares but does not (transitively) need — an
+    /// over-grant of authority (a least-privilege smell, not a correctness
+    /// bug: the VM still gates at runtime). Sorted by capability id,
+    /// deterministic. Empty when the declared set is exactly minimal.
+    pub fn over_declared_capabilities(&self, func_idx: u32) -> Vec<Capability> {
+        let Some(f) = self.functions.get(func_idx as usize) else {
+            return Vec::new();
+        };
+        let needed: std::collections::BTreeSet<u32> = self
+            .needed_capabilities(func_idx)
+            .iter()
+            .map(|c| c.id())
+            .collect();
+        let mut over_ids: Vec<u32> = f
+            .capabilities
+            .iter()
+            .map(|c| c.id())
+            .filter(|id| !needed.contains(id))
+            .collect();
+        over_ids.sort_unstable();
+        over_ids.dedup();
+        over_ids
+            .into_iter()
+            .filter_map(Capability::from_id)
+            .collect()
+    }
 }

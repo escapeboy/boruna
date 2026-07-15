@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-07-15
+
+Ninth feature minor on the 1.x LTS line. Fourth and final sprint of the
+agentlanguages.dev competitive-borrow program (Theme D-lite): capability-row
+inference — the compiler now infers each function's minimal capability set and
+flags over-declarations.
+
+### Added
+
+- **Capability-row inference + over-declaration check (`boruna lang caps`).** Theme D-lite — borrowed from **AILANG** (effect-row inference: the compiler computes the minimal capability set and flags over-declaration). New `Module::needed_capabilities(func_idx)` infers the capabilities a function actually needs — those it invokes directly via `CapCall` plus everything its transitive callees need (cycle-safe, deterministic). `Module::over_declared_capabilities(func_idx)` returns the capabilities a function *declares* (`!{...}`) but never (transitively) uses — an over-grant of authority (a least-privilege smell; not a correctness bug, since the VM still gates at runtime). The new `boruna lang caps <file.ax> [--json]` command reports each function's declared vs. inferred-needed capabilities and exits non-zero when any over-declaration is found, so it can gate least-privilege in CI. Deliberately **no information-flow / data-visibility typing** (a large type-system addition; deferred). See `docs/design-capability-inference.md`.
+
 ## [1.8.0] — 2026-07-15
 
 Eighth feature minor on the 1.x LTS line. Third sprint of the agentlanguages.dev
