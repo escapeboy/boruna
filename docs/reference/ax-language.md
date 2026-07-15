@@ -91,6 +91,28 @@ did. It is covered by the bundle checksums, so tampering with a captured intent 
 `boruna evidence verify` fail. A function may declare at most one `intent`; a second
 is a compile error.
 
+## Contracts (`requires`)
+
+A function may declare one or more `requires <expr>` preconditions, checked at
+runtime against its arguments on entry:
+
+```ax
+fn transfer(amount: Int) -> Int !{db.write} requires amount > 0 {
+    // runs only if amount > 0
+}
+```
+
+If a precondition is false when the function is called, execution traps with a
+contract violation carrying a **counterexample** — the concrete arguments that
+triggered it (e.g. `[0]`) — so the failing input is reproducible. In a workflow,
+the violation surfaces with the stable `error_kind` `contract_violation` and the
+counterexample is recorded in the run's hash-chained audit log (tamper-evident
+evidence). A violation is deterministic in the inputs, so it is not retry-eligible.
+
+Contracts are enforced purely at runtime (concrete-trace checking) — Boruna does
+not use SMT/symbolic proving. `ensures` postconditions are parsed but not yet
+enforced.
+
 ## Records
 
 Define named record types:

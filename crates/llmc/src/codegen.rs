@@ -113,6 +113,17 @@ impl Emitter {
             fe.next_local += 1;
         }
 
+        // Emit `requires` preconditions as runtime guards (Theme A-lite).
+        // Each is evaluated against the arguments at entry; a violation
+        // traps with a ContractViolation carrying the offending args as a
+        // replayable counterexample. `Op::Assert` is emitted only here.
+        for (i, req) in f.requires.iter().enumerate() {
+            self.emit_expr(req, &mut fe)?;
+            let msg = format!("precondition {} failed in `{}`", i + 1, f.name);
+            let msg_idx = self.module.add_const(Value::String(msg));
+            fe.code.push(Op::Assert(msg_idx));
+        }
+
         // Emit body
         self.emit_block(&f.body, &mut fe)?;
 
