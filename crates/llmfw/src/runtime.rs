@@ -267,6 +267,7 @@ impl AppRuntime {
                 locals: 0,
                 code: wrapper_code,
                 capabilities: Vec::new(),
+                intent: None,
                 match_tables: Vec::new(),
             };
             let wrapper_idx = wrapper.add_function(wrapper_fn);

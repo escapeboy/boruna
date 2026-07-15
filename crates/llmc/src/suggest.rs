@@ -14,8 +14,8 @@ use strsim::levenshtein;
 /// canonical spelling here.
 pub const KEYWORDS: &[&str] = &[
     "fn", "let", "mut", "if", "else", "match", "return", "type", "enum", "module", "import",
-    "export", "true", "false", "None", "Some", "Ok", "Err", "requires", "ensures", "spawn", "send",
-    "receive", "emit", "while", "for", "in",
+    "export", "true", "false", "None", "Some", "Ok", "Err", "requires", "ensures", "intent",
+    "spawn", "send", "receive", "emit", "while", "for", "in",
 ];
 
 /// Returns the unique keyword within Levenshtein distance ≤ 1 of

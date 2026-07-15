@@ -30,6 +30,10 @@ pub struct FnDef {
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub capabilities: Vec<String>,
+    /// Machine-read declared purpose (`intent "..."`), captured into the
+    /// evidence bundle so an auditor sees what a step was *meant* to do.
+    #[serde(default)]
+    pub intent: Option<String>,
     pub requires: Vec<Expr>,
     pub ensures: Vec<Expr>,
     pub body: Block,

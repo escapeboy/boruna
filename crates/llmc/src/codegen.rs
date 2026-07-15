@@ -127,6 +127,7 @@ impl Emitter {
             locals: fe.next_local as u16,
             code: fe.code,
             capabilities: fe.capabilities,
+            intent: f.intent.clone(),
             match_tables: fe.match_tables,
         };
         self.module.add_function(func);

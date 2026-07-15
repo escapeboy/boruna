@@ -64,6 +64,8 @@ pub enum TokenKind {
     Requires,
     #[token("ensures")]
     Ensures,
+    #[token("intent")]
+    Intent,
     #[token("spawn")]
     Spawn,
     #[token("send")]

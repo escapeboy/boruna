@@ -491,7 +491,7 @@ fn render_detail(
         html_escape(&run.run_id)
     ));
 
-    wrap_page(&format!("Run {}", &run.run_id), &banner, &body)
+    wrap_page(&format!("Run {}", run.run_id), &banner, &body)
 }
 
 /// Render a single step's Output cell. Sprint 0.5-S7b.

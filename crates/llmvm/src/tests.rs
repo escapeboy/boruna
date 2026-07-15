@@ -20,6 +20,7 @@ mod tests {
                 Capability::NetFetch,
                 Capability::FsRead,
             ],
+            intent: None,
             match_tables: vec![],
         });
         module
@@ -172,6 +173,7 @@ mod tests {
             locals: 0,
             code: vec![Op::PushConst(0), Op::PushConst(1), Op::Call(1, 2), Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
 
@@ -182,6 +184,7 @@ mod tests {
             locals: 2,
             code: vec![Op::LoadLocal(0), Op::LoadLocal(1), Op::Add, Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
 
@@ -1189,6 +1192,7 @@ mod tests {
             locals: 0,
             code: vec![Op::PushConst(0), Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(0));
@@ -1208,6 +1212,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1; // main is at index 1
@@ -1233,6 +1238,7 @@ mod tests {
             locals: 0,
             code: vec![Op::PushConst(0), Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(0));
@@ -1245,6 +1251,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1; // main is at index 1
@@ -1405,6 +1412,7 @@ mod tests {
             locals: 0,
             code: vec![Op::PushConst(0), Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(99));
@@ -1420,6 +1428,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(42));
@@ -1447,6 +1456,7 @@ mod tests {
                 Op::Ret,        // return payload
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         // Function 1: main — spawns worker, sends Int(77), returns 0
@@ -1464,6 +1474,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(77));
@@ -1494,6 +1505,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::ActorId(0));
@@ -1511,6 +1523,7 @@ mod tests {
                 Op::Ret,           // return received payload
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1;
@@ -1533,6 +1546,7 @@ mod tests {
             locals: 0,
             code: vec![Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         // Function 1: main — spawns worker, then blocks on receive
@@ -1542,6 +1556,7 @@ mod tests {
             locals: 0,
             code: vec![Op::SpawnActor(0), Op::Pop, Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1;
@@ -1574,6 +1589,7 @@ mod tests {
                 Op::Jmp(0),       // 4: loop back
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::ActorId(0));
@@ -1596,6 +1612,7 @@ mod tests {
                 Op::Jmp(5),        // 9: loop back to receive
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1;
@@ -1658,6 +1675,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         // Function 1: worker_b — sends Int(2) to parent
@@ -1673,6 +1691,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::ActorId(0)); // 0: parent id
@@ -1700,6 +1719,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 2;
@@ -1825,6 +1845,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::ActorId(0));
@@ -1837,6 +1858,7 @@ mod tests {
             locals: 0,
             code: vec![Op::SpawnActor(0), Op::Pop, Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1;
@@ -1882,6 +1904,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(1));
@@ -1898,6 +1921,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 1;
@@ -1932,6 +1956,7 @@ mod tests {
             locals: 0,
             code: vec![Op::ReceiveMsg, Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         // Function 1: child — spawns grandchild, then crashes (div by zero)
@@ -1948,6 +1973,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.constants.push(Value::Int(1));
@@ -1964,6 +1990,7 @@ mod tests {
                 Op::Ret,
             ],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
         module.entry = 2;

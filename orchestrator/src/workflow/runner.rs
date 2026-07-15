@@ -4589,6 +4589,32 @@ pub fn create_bundle(
         }
     }
 
+    // Per-step declared intents (Theme B): extract each source-kind step's
+    // `intent "..."` clause and record it in the bundle so an auditor sees
+    // what each step was *authorized* to do next to what it did. The intent
+    // is already transitively covered by `workflow_hash` (source is hashed);
+    // `intents.json` surfaces it without forcing a recompile. Compilation
+    // here is deterministic and every source already compiled during
+    // execution, so a compile error (should not occur) or a step with no
+    // intent simply contributes nothing rather than failing the bundle —
+    // intent is additive audit metadata, never load-bearing for the run.
+    let mut intents: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (step_id, source) in &metadata.step_sources {
+        if let Ok(module) = boruna_compiler::compile(step_id, source) {
+            if let Some(intent) = module
+                .functions
+                .iter()
+                .find(|f| f.name == "main")
+                .and_then(|f| f.intent.clone())
+            {
+                intents.insert(step_id.clone(), intent);
+            }
+        }
+    }
+    builder
+        .add_intents(&intents)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle add_intents: {e}")))?;
+
     // Hash-chained audit log from metadata. We verify the chain at
     // bundle-creation time so that direct sqlite3 tamper of
     // `metadata.audit_log` surfaces *here* (operator gets a clear

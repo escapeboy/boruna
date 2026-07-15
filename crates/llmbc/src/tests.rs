@@ -62,6 +62,7 @@ mod tests {
             locals: 1,
             code: vec![Op::PushConst(0), Op::Ret],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
 
@@ -81,6 +82,7 @@ mod tests {
             locals: 0,
             code: vec![Op::PushConst(0), Op::PushConst(1), Op::Halt],
             capabilities: vec![],
+            intent: None,
             match_tables: vec![],
         });
 
@@ -88,6 +90,54 @@ mod tests {
         assert_eq!(&bytes[0..4], &MAGIC);
         let restored = Module::from_bytes(&bytes).unwrap();
         assert_eq!(module, restored);
+    }
+
+    #[test]
+    fn test_module_intent_json_roundtrip() {
+        let mut module = Module::new("test");
+        module.add_function(Function {
+            name: "main".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Ret],
+            capabilities: vec![],
+            intent: Some("Declared purpose of this step".into()),
+            match_tables: vec![],
+        });
+        let json = module.to_json().unwrap();
+        let restored = Module::from_json(&json).unwrap();
+        assert_eq!(module, restored);
+        assert_eq!(
+            restored.functions[0].intent.as_deref(),
+            Some("Declared purpose of this step")
+        );
+    }
+
+    #[test]
+    fn test_module_legacy_json_without_intent_defaults_to_none() {
+        // A module serialized before Sprint 1 has no `intent` key on its
+        // functions. `#[serde(default)]` must load it cleanly as `None`.
+        let mut module = Module::new("test");
+        module.add_function(Function {
+            name: "main".into(),
+            arity: 0,
+            locals: 0,
+            code: vec![Op::Ret],
+            capabilities: vec![],
+            intent: None,
+            match_tables: vec![],
+        });
+        let json = module.to_json().unwrap();
+        // Strip the `intent` key from every function object to simulate a
+        // pre-Sprint-1 serialized module.
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for func in value["functions"].as_array_mut().unwrap() {
+            func.as_object_mut().unwrap().remove("intent");
+        }
+        let legacy_json = serde_json::to_string(&value).unwrap();
+        assert!(!legacy_json.contains("intent"));
+        let restored = Module::from_json(&legacy_json).unwrap();
+        assert_eq!(restored.functions[0].intent, None);
     }
 
     #[test]

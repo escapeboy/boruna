@@ -145,6 +145,26 @@ impl EvidenceBundleBuilder {
         self.write_file(name, content)
     }
 
+    /// Store per-step declared intents (`intent "..."` clauses) as
+    /// `intents.json`, mapping step_id → declared purpose. Only steps
+    /// that declared an intent appear. Written via `write_file`, so the
+    /// component is checksummed, covered by `bundle_hash`, and checked by
+    /// `evidence verify` like every other component. Intent is
+    /// replay-verified evidence: it records what each step was *authorized*
+    /// to do, alongside the outputs recording what it actually did.
+    /// No-op when the map is empty (no `intents.json` is written).
+    pub fn add_intents(
+        &mut self,
+        intents: &std::collections::BTreeMap<String, String>,
+    ) -> std::io::Result<()> {
+        if intents.is_empty() {
+            return Ok(());
+        }
+        // BTreeMap serializes with sorted keys → deterministic bytes.
+        let json = serde_json::to_string_pretty(intents).map_err(std::io::Error::other)?;
+        self.write_file("intents.json", &json)
+    }
+
     /// Finalize the bundle: write audit log, env fingerprint, and manifest.
     pub fn finalize(mut self, audit_log: &AuditLog) -> std::io::Result<BundleManifest> {
         let completed_at = chrono::Utc::now().to_rfc3339();
@@ -217,6 +237,9 @@ impl EvidenceBundleBuilder {
         }
         if self.bundle_dir.join("outputs").exists() {
             components.push("outputs/".to_string());
+        }
+        if self.bundle_dir.join("intents.json").exists() {
+            components.push("intents.json".to_string());
         }
         components.sort();
 
@@ -355,6 +378,73 @@ mod tests {
         assert!(bundle_path.join("audit_log.json").exists());
         assert!(bundle_path.join("env_fingerprint.json").exists());
         assert!(bundle_path.join("outputs/step1/result.json").exists());
+    }
+
+    #[test]
+    fn test_bundle_captures_intents_and_is_tamper_evident() {
+        use crate::audit::verify::verify_bundle;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-intent-001", "intent-wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+
+        let mut intents = std::collections::BTreeMap::new();
+        intents.insert(
+            "step1".to_string(),
+            "Move funds between accounts".to_string(),
+        );
+        builder.add_intents(&intents).unwrap();
+
+        let mut audit = AuditLog::new();
+        audit.append(AuditEvent::WorkflowStarted {
+            workflow_hash: "abc".into(),
+            policy_hash: "def".into(),
+        });
+        audit.append(AuditEvent::WorkflowCompleted {
+            result_hash: "res".into(),
+            total_duration_ms: 10,
+        });
+        let manifest = builder.finalize(&audit).unwrap();
+
+        let bundle_path = dir.path().join("run-intent-001");
+        // intents.json written and covered by the manifest checksums.
+        assert!(bundle_path.join("intents.json").exists());
+        assert!(manifest.file_checksums.contains_key("intents.json"));
+
+        // A pristine bundle verifies.
+        let ok = verify_bundle(&bundle_path);
+        assert!(ok.valid, "expected valid bundle, errors: {:?}", ok.errors);
+
+        // Tampering the captured intent breaks verification — intent is
+        // inside the hash chain, not decorative.
+        std::fs::write(
+            bundle_path.join("intents.json"),
+            r#"{"step1":"tampered purpose"}"#,
+        )
+        .unwrap();
+        let bad = verify_bundle(&bundle_path);
+        assert!(!bad.valid, "tampered intents.json must fail verification");
+    }
+
+    #[test]
+    fn test_bundle_no_intents_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-intent-002", "intent-wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+        // Empty intent map → no intents.json component.
+        builder
+            .add_intents(&std::collections::BTreeMap::new())
+            .unwrap();
+        let audit = AuditLog::new();
+        builder.finalize(&audit).unwrap();
+        assert!(!dir
+            .path()
+            .join("run-intent-002")
+            .join("intents.json")
+            .exists());
     }
 
     #[test]

@@ -56,6 +56,12 @@ pub struct Function {
     pub code: Vec<Op>,
     /// Capabilities this function is allowed to use.
     pub capabilities: Vec<Capability>,
+    /// Machine-read declared purpose (from the source `intent "..."` clause),
+    /// surfaced in evidence bundles. Replay-verified: it is part of what was
+    /// authorized, so changing it changes the step's evidence identity.
+    /// `#[serde(default)]` keeps pre-Sprint-1 modules loading with `None`.
+    #[serde(default)]
+    pub intent: Option<String>,
     /// Match tables referenced by Match instructions.
     pub match_tables: Vec<Vec<MatchArm>>,
 }

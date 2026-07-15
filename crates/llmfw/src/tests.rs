@@ -945,6 +945,7 @@ fn view(state: State) -> UINode {
                 Op::Ret,
             ],
             capabilities: Vec::new(),
+            intent: None,
             match_tables: Vec::new(),
         };
 
@@ -965,6 +966,7 @@ fn view(state: State) -> UINode {
                 Op::Ret,
             ],
             capabilities: vec![Capability::TimeNow], // Function declares cap
+            intent: None,
             match_tables: Vec::new(),
         };
 
@@ -980,6 +982,7 @@ fn view(state: State) -> UINode {
                 Op::Ret,
             ],
             capabilities: Vec::new(),
+            intent: None,
             match_tables: Vec::new(),
         };
 
@@ -1014,6 +1017,7 @@ fn view(state: State) -> UINode {
             locals: 0,
             code: vec![Op::PushConst(0), Op::MakeRecord(0, 1), Op::Ret],
             capabilities: Vec::new(),
+            intent: None,
             match_tables: Vec::new(),
         };
 
@@ -1029,6 +1033,7 @@ fn view(state: State) -> UINode {
                 Op::Ret,
             ],
             capabilities: Vec::new(),
+            intent: None,
             match_tables: Vec::new(),
         };
 
@@ -1039,6 +1044,7 @@ fn view(state: State) -> UINode {
             locals: 1,
             code: vec![Op::CapCall(Capability::TimeNow.id(), 0), Op::Ret],
             capabilities: vec![Capability::TimeNow],
+            intent: None,
             match_tables: Vec::new(),
         };
 
