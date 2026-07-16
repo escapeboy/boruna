@@ -38,6 +38,7 @@ These components are complete, tested, and behave as documented. Every 1.0 progr
 - **Coord/worker HTTP protocol** — `protocol_version: 1` responses, locked `coord.*` and `evidence.*` `error_kind` taxonomy
 - **MCP tool response shapes** — `protocol_version: 1` carried on every response (success and failure)
 - **HA + mTLS surfaces** — multi-coord deployments, worker URL failover, X.509 client certs
+- **Standard libraries** — all 13 `std-*` packages are 1.0-stable (11 as of v1.2.0, plus `std-llm` and `std-json` as of v1.3.0); see [`docs/stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md)
 
 ### Experimental (may change in minor versions)
 
@@ -46,7 +47,6 @@ These components work but may change based on usage feedback:
 - **Actor system** — spawning, message passing, supervision semantics
 - **Multi-agent orchestration** — `boruna-orch` binary and its API
 - **Package system** — `boruna-pkg` manifest format and registry protocol
-- **Standard libraries** — all 13 `std-*` packages are 1.0-stable as of v1.3.0; see [`docs/stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md)
 - **App templates** — template variable names and generated code structure
 - **`trace2tests`** — test generation format and minimization behavior
 - **Migration tooling** — `boruna migrate` is currently in beta; covered migrators are stable, additional migrators may ship in 1.x

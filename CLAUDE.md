@@ -12,7 +12,7 @@ Boruna: a deterministic execution platform for enterprise AI workflows. Everythi
 # Build everything
 cargo build --workspace
 
-# Run all tests (557+ tests across 9 crates)
+# Run all tests (1600+ tests across 11 crates)
 cargo test --workspace
 
 # Run tests for a single crate
@@ -107,7 +107,7 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 - **boruna-framework** (dir: crates/llmfw) — Framework layer enforcing the App protocol (Elm architecture: init/update/view). `AppValidator`, `AppRuntime`, `TestHarness`, `PolicySet`, state machine diffing.
 - **boruna-effect** (dir: crates/llm-effect) — Token-optimized LLM integration: prompt building, context management, caching, normalization, capability gating for LLM calls.
 - **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template, workflow, evidence.
-- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 10 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
+- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 12 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
 
 ### Supporting Crates
 
@@ -123,7 +123,7 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 ### Standard Libraries (libs/)
 
 13 deterministic libraries, each with `package.ax.json` and `src/core.ax`:
-std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing (all 1.0-stable as of v1.2.0), plus std-llm and std-json (0.1.0, Experimental).
+std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing (all 1.0-stable as of v1.2.0), plus std-llm and std-json (1.0-stable as of v1.3.0). All 13 are 1.0-stable.
 
 All are pure-functional (no hidden side effects). Libraries needing capabilities declare them in their manifest (e.g., std-http requires `net.fetch`, std-db requires `db.query`).
 
@@ -149,6 +149,8 @@ MCP (Model Context Protocol) server that exposes Boruna's toolchain to AI coding
 | `boruna_workflow_validate` | Validate workflow DAG structure + topological order |
 | `boruna_template_list` | List available app templates |
 | `boruna_template_apply` | Apply a template with variable substitution |
+| `boruna_capability_list` | Report the capability-set identity hash for `.ax` source |
+| `boruna_policy_validate` | Validate a policy definition (strict validator) |
 
 ### IDE Configuration
 
