@@ -65,8 +65,25 @@ pub fn list_templates(templates_dir: &Path) -> Result<Vec<TemplateManifest>, Str
     Ok(templates)
 }
 
+/// Reject template names that could escape `templates_dir`. A name is a single
+/// directory segment; anything with a path separator, `..`, or a NUL is a
+/// traversal attempt (e.g. via the `boruna_template_apply` MCP tool, whose
+/// `name` is caller-controlled).
+fn validate_template_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('\0')
+    {
+        return Err(format!("invalid template name '{name}'"));
+    }
+    Ok(())
+}
+
 /// Load a template manifest by name.
 pub fn load_template(templates_dir: &Path, name: &str) -> Result<TemplateManifest, String> {
+    validate_template_name(name)?;
     let manifest_path = templates_dir.join(name).join("template.json");
     if !manifest_path.exists() {
         return Err(format!("template '{name}' not found"));

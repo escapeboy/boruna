@@ -618,7 +618,10 @@ impl Vm {
                     self.push(result)?;
                 }
                 Op::Add => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x + y)),
+                    (Value::Int(x), Value::Int(y)) => x
+                        .checked_add(y)
+                        .map(Value::Int)
+                        .ok_or(VmError::ArithmeticOverflow("addition")),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Int(x), Value::Float(y)) => Ok(Value::Float(x as f64 + y)),
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x + y as f64)),
@@ -632,7 +635,10 @@ impl Vm {
                     }),
                 })?,
                 Op::Sub => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x - y)),
+                    (Value::Int(x), Value::Int(y)) => x
+                        .checked_sub(y)
+                        .map(Value::Int)
+                        .ok_or(VmError::ArithmeticOverflow("subtraction")),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x - y)),
                     (Value::Int(x), Value::Float(y)) => Ok(Value::Float(x as f64 - y)),
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x - y as f64)),
@@ -646,7 +652,10 @@ impl Vm {
                     }),
                 })?,
                 Op::Mul => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x * y)),
+                    (Value::Int(x), Value::Int(y)) => x
+                        .checked_mul(y)
+                        .map(Value::Int)
+                        .ok_or(VmError::ArithmeticOverflow("multiplication")),
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x * y)),
                     (Value::Int(x), Value::Float(y)) => Ok(Value::Float(x as f64 * y)),
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x * y as f64)),
@@ -666,7 +675,10 @@ impl Vm {
                         _ => {}
                     }
                     match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Ok(Value::Int(x / y)),
+                        (Value::Int(x), Value::Int(y)) => x
+                            .checked_div(y)
+                            .map(Value::Int)
+                            .ok_or(VmError::ArithmeticOverflow("division")),
                         (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x / y)),
                         (Value::Int(x), Value::Float(y)) => Ok(Value::Float(x as f64 / y)),
                         (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x / y as f64)),
@@ -685,7 +697,10 @@ impl Vm {
                         if y == 0 {
                             return Err(VmError::DivisionByZero);
                         }
-                        Ok(Value::Int(x % y))
+                        // checked_rem also guards i64::MIN % -1 (overflow panic).
+                        x.checked_rem(y)
+                            .map(Value::Int)
+                            .ok_or(VmError::ArithmeticOverflow("remainder"))
                     }
                     (a, b) => Err(VmError::TypeError {
                         expected: "Int",
@@ -699,7 +714,12 @@ impl Vm {
                 Op::Neg => {
                     let val = self.pop()?;
                     match val {
-                        Value::Int(n) => self.push(Value::Int(-n))?,
+                        Value::Int(n) => {
+                            let neg = n
+                                .checked_neg()
+                                .ok_or(VmError::ArithmeticOverflow("negation"))?;
+                            self.push(Value::Int(neg))?
+                        }
                         Value::Float(n) => self.push(Value::Float(-n))?,
                         _ => {
                             return Err(VmError::TypeError {

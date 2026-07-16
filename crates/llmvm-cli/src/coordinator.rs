@@ -271,12 +271,33 @@ pub async fn run_serve(
     };
     eprintln!("    auth: {auth_state}");
     if shared_secret.is_none() && !mtls_required && !bind.is_loopback() {
-        eprintln!(
-            "[WARNING] coordinator is bound to a non-loopback address with NO --shared-secret \
-             and NO --tls-cert/--tls-key/--tls-client-ca. \
-             Anyone with network access can SUBMIT and CONTROL distributed work. \
-             Pass --shared-secret <hex> (or BORUNA_COORD_SECRET env), or enable mTLS, to enable auth."
-        );
+        // Fail CLOSED: a non-loopback bind with no auth exposes SUBMIT/APPROVE/work
+        // control to any network peer. Previously this only warned and served
+        // anyway; now it refuses to start unless the operator explicitly
+        // acknowledges the risk via BORUNA_COORD_ALLOW_INSECURE=1 (intended for a
+        // trusted reverse-proxy front-end that supplies auth).
+        let allow_insecure = std::env::var("BORUNA_COORD_ALLOW_INSECURE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if allow_insecure {
+            eprintln!(
+                "[WARNING] coordinator bound to a non-loopback address with NO auth \
+                 (--shared-secret / mTLS) — running anyway because \
+                 BORUNA_COORD_ALLOW_INSECURE is set. Ensure a trusted reverse proxy \
+                 supplies authentication; otherwise any network peer can submit, \
+                 approve, and control distributed work."
+            );
+        } else {
+            return Err(format!(
+                "refusing to start: coordinator is bound to a non-loopback address ({bind}) \
+                 with NO --shared-secret (or BORUNA_COORD_SECRET) and NO mTLS \
+                 (--tls-cert/--tls-key/--tls-client-ca). Anyone with network access could \
+                 submit, approve, and control distributed work. Enable auth, bind to loopback, \
+                 or set BORUNA_COORD_ALLOW_INSECURE=1 to override (only behind a trusted \
+                 auth-terminating proxy)."
+            )
+            .into());
+        }
     }
 
     let state = CoordinatorState {
@@ -1571,6 +1592,23 @@ async fn handle_complete(
     if let Err(resp) = validate_session(&state, &req.worker_id, &req.session_token) {
         return resp;
     }
+    // Content-addressing integrity: the `output_hash` feeds the audit chain, so a
+    // worker must not be able to commit an output whose hash lies about its bytes.
+    // Recompute the worker's hash format (`sha256:` + lowercase hex) over the
+    // reported `output_json` and reject a mismatch before it reaches the store.
+    let expected_hash = worker_output_hash(&req.output_json);
+    if req.output_hash != expected_hash {
+        return respond_err(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::new(
+                "coord.output_hash_mismatch",
+                format!(
+                    "output_hash does not match SHA-256(output_json): claimed {}, computed {}",
+                    req.output_hash, expected_hash
+                ),
+            ),
+        );
+    }
     let store = match state.store.lock() {
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
@@ -1740,6 +1778,23 @@ fn validate_session(
             ),
         )),
     }
+}
+
+/// Recompute a worker's `output_hash` from its `output_json`, matching the exact
+/// format the worker produces (`sha256:` + lowercase hex of `SHA-256(bytes)` — see
+/// `worker::execute_step`). Used to reject content-addressing forgery at
+/// `handle_complete`.
+fn worker_output_hash(output_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(output_json.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(7 + 64);
+    hex.push_str("sha256:");
+    for b in digest {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    hex
 }
 
 fn internal_error(msg: &str) -> Response {
@@ -3301,7 +3356,7 @@ mod tests {
                 step_id: "s1".into(),
                 claim_id: 1, // stale; current is 2
                 output_json: r#""nope""#.into(),
-                output_hash: "h".into(),
+                output_hash: worker_output_hash(r#""nope""#),
                 attempt_count: 1,
             },
         )
@@ -3331,13 +3386,45 @@ mod tests {
                 step_id: "ghost".into(),
                 claim_id: 1,
                 output_json: "0".into(),
-                output_hash: "h".into(),
+                output_hash: worker_output_hash("0"),
                 attempt_count: 1,
             },
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(v["error_kind"], "coord.step_not_found");
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_output_hash_mismatch() {
+        // Content-addressing forgery: a worker reporting an output_hash that does
+        // not match SHA-256(output_json) is rejected before touching the store.
+        let state = fresh_state();
+        pending_step(&state, "run-h", "s1", "fn main() -> Int { 1 }\n");
+        let app = build_router(state.clone());
+        let (_, reg) = post_json(
+            &app,
+            "/api/workers/register",
+            &register_payload(state.capability_set_hash.clone()),
+        )
+        .await;
+        let (status, v) = post_json(
+            &app,
+            "/api/work/complete",
+            &CompleteRequest {
+                worker_id: reg["worker_id"].as_str().unwrap().into(),
+                session_token: reg["session_token"].as_str().unwrap().into(),
+                run_id: "run-h".into(),
+                step_id: "s1".into(),
+                claim_id: 1,
+                output_json: r#""real-output""#.into(),
+                output_hash: "sha256:deadbeef".into(), // lies about the bytes
+                attempt_count: 1,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.output_hash_mismatch");
     }
 
     #[tokio::test]

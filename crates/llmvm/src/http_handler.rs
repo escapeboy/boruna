@@ -5,8 +5,11 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
+
+/// Maximum redirect hops followed manually (each re-validated for SSRF).
+const MAX_REDIRECTS: usize = 10;
 
 use ureq::{Agent, AgentBuilder};
 use url::Url;
@@ -25,14 +28,17 @@ pub struct HttpHandler {
 
 impl HttpHandler {
     pub fn new(policy: NetPolicy) -> Self {
-        let mut builder = AgentBuilder::new().timeout(Duration::from_millis(policy.timeout_ms));
-
-        if !policy.allow_redirects {
-            builder = builder.redirects(0);
-        }
+        // Redirects are ALWAYS followed manually (see `handle_net_fetch`) so that
+        // every hop is re-validated against the SSRF guard + allowlist. Letting
+        // `ureq` auto-follow would let a public, allowlisted URL 302 into the
+        // internal network unchecked.
+        let agent = AgentBuilder::new()
+            .timeout(Duration::from_millis(policy.timeout_ms))
+            .redirects(0)
+            .build();
 
         HttpHandler {
-            agent: builder.build(),
+            agent,
             policy,
             fallback: MockHandler,
         }
@@ -41,56 +47,84 @@ impl HttpHandler {
     pub fn handle_net_fetch(&self, args: &[Value]) -> Result<Value, String> {
         let parsed_args = parse_net_fetch_args(args)
             .ok_or_else(|| "net.fetch requires at least a URL argument".to_string())?;
-        let url_str = parsed_args.url;
-        let method = parsed_args.method;
-        let body = parsed_args.body;
+        let mut method = parsed_args.method;
+        let mut body = parsed_args.body;
         let headers = parsed_args.headers;
 
-        // Parse and validate URL
-        let parsed = Url::parse(&url_str).map_err(|e| format!("invalid URL '{url_str}': {e}"))?;
-
-        validate_url_safety(&parsed)?;
-        check_domain_allowed(&parsed, &self.policy.allowed_domains)?;
-        check_method_allowed(&method, &self.policy.allowed_methods)?;
-
-        // Build request
-        let mut request = match method.as_str() {
-            "GET" => self.agent.get(parsed.as_str()),
-            "POST" => self.agent.post(parsed.as_str()),
-            "PUT" => self.agent.put(parsed.as_str()),
-            "PATCH" => self.agent.request("PATCH", parsed.as_str()),
-            "DELETE" => self.agent.delete(parsed.as_str()),
-            "HEAD" => self.agent.head(parsed.as_str()),
-            other => return Err(format!("unsupported HTTP method: {other}")),
-        };
-
-        for (k, v) in &headers {
-            request = request.set(k, v);
-        }
-
-        // Execute request
-        let response = if let Some(body_str) = body {
-            request
-                .send_string(&body_str)
-                .map_err(|e| format!("HTTP request failed: {e}"))?
+        let mut current = Url::parse(&parsed_args.url)
+            .map_err(|e| format!("invalid URL '{}': {e}", parsed_args.url))?;
+        let mut redirects_left = if self.policy.allow_redirects {
+            MAX_REDIRECTS
         } else {
-            request
-                .call()
-                .map_err(|e| format!("HTTP request failed: {e}"))?
+            0
         };
 
-        // Read response with size limit
-        let mut buf = Vec::new();
-        response
-            .into_reader()
-            .take(self.policy.max_response_bytes as u64)
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+        loop {
+            // Re-validate EVERY hop (initial URL and each redirect target).
+            validate_url_safety(&current)?;
+            check_domain_allowed(&current, &self.policy.allowed_domains)?;
+            check_method_allowed(&method, &self.policy.allowed_methods)?;
+            // DNS check last (only allowlisted, syntactically-safe hosts get resolved).
+            resolve_host_safety(&current)?;
 
-        let body_str =
-            String::from_utf8(buf).map_err(|e| format!("response body is not valid UTF-8: {e}"))?;
+            let mut request = match method.as_str() {
+                "GET" => self.agent.get(current.as_str()),
+                "POST" => self.agent.post(current.as_str()),
+                "PUT" => self.agent.put(current.as_str()),
+                "PATCH" => self.agent.request("PATCH", current.as_str()),
+                "DELETE" => self.agent.delete(current.as_str()),
+                "HEAD" => self.agent.head(current.as_str()),
+                other => return Err(format!("unsupported HTTP method: {other}")),
+            };
 
-        Ok(Value::String(body_str))
+            for (k, v) in &headers {
+                request = request.set(k, v);
+            }
+
+            let response = if let Some(ref body_str) = body {
+                request
+                    .send_string(body_str)
+                    .map_err(|e| format!("HTTP request failed: {e}"))?
+            } else {
+                request
+                    .call()
+                    .map_err(|e| format!("HTTP request failed: {e}"))?
+            };
+
+            let status = response.status();
+            if matches!(status, 301 | 302 | 303 | 307 | 308) && redirects_left > 0 {
+                let location = response
+                    .header("Location")
+                    .ok_or_else(|| format!("redirect {status} without a Location header"))?;
+                let next = current
+                    .join(location)
+                    .map_err(|e| format!("invalid redirect Location '{location}': {e}"))?;
+                // 303 always downgrades to GET; 301/302 conventionally downgrade a
+                // non-idempotent method to GET. 307/308 preserve method + body.
+                if status == 303
+                    || (matches!(status, 301 | 302) && method != "GET" && method != "HEAD")
+                {
+                    method = "GET".to_string();
+                    body = None;
+                }
+                current = next;
+                redirects_left -= 1;
+                continue;
+            }
+
+            // Terminal response (non-redirect, or redirects disabled/exhausted).
+            let mut buf = Vec::new();
+            response
+                .into_reader()
+                .take(self.policy.max_response_bytes as u64)
+                .read_to_end(&mut buf)
+                .map_err(|e| format!("failed to read response body: {e}"))?;
+
+            let body_str = String::from_utf8(buf)
+                .map_err(|e| format!("response body is not valid UTF-8: {e}"))?;
+
+            return Ok(Value::String(body_str));
+        }
     }
 }
 
@@ -163,7 +197,10 @@ pub fn parse_net_fetch_args(args: &[Value]) -> Option<ParsedNetFetchArgs> {
     })
 }
 
-/// Reject URLs that target private/internal networks (SSRF protection).
+/// Syntactic SSRF guard (no network): scheme allowlist, `localhost` by name, and
+/// literal private/reserved IP hosts (IPv4 and — via bracket-stripping — IPv6).
+/// A bare hostname passes here and is checked against DNS in
+/// [`resolve_host_safety`] on the live path.
 fn validate_url_safety(url: &Url) -> Result<(), String> {
     // Only allow http and https
     match url.scheme() {
@@ -179,22 +216,72 @@ fn validate_url_safety(url: &Url) -> Result<(), String> {
         .host_str()
         .ok_or_else(|| "URL has no host".to_string())?;
 
-    // Block localhost variants
-    if host == "localhost" || host == "[::1]" {
+    // Block localhost by name
+    if host.eq_ignore_ascii_case("localhost") {
         return Err(format!("blocked request to localhost ({host})"));
     }
 
-    // Try to parse as IP and check for private ranges
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    // `host_str()` returns IPv6 hosts bracketed (e.g. "[fc00::1]"); strip the
+    // brackets so the literal-IP parse below actually fires for IPv6.
+    let host_ip_str = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if let Ok(ip) = host_ip_str.parse::<IpAddr>() {
         if is_private_ip(&ip) {
-            return Err(format!("blocked request to private IP ({ip})"));
+            return Err(format!("blocked request to private/reserved IP ({ip})"));
         }
     }
 
-    // Also block numeric IPv4 encoded in decimal (e.g. 2130706433 = 127.0.0.1)
-    // and 0.0.0.0
-    if host == "0.0.0.0" || host == "[::0]" || host == "[::]" {
-        return Err(format!("blocked request to unspecified address ({host})"));
+    Ok(())
+}
+
+/// Live-path DNS guard: resolve a hostname and reject if ANY resolved address is
+/// private/reserved. Without this, a public hostname whose A record points at
+/// `169.254.169.254` / `127.0.0.1` / `10.x` (cloud-metadata theft, DNS
+/// rebinding) would bypass the literal-only [`validate_url_safety`] check.
+///
+/// Called from `handle_net_fetch` AFTER the allowlist, so only allowlisted hosts
+/// are ever resolved. No-ops for literal-IP hosts (already checked). DNS is not
+/// part of deterministic replay, so this only runs on the live path and does not
+/// affect replay determinism.
+///
+/// Residual limitation: this is a resolve-then-connect check, so a DNS entry that
+/// rebinds to a private IP *between* this check and `ureq`'s own connect
+/// resolution (classic TOCTOU rebinding) is not fully closed — that requires
+/// pinning the validated IP for the connection, tracked as a follow-up.
+fn resolve_host_safety(url: &Url) -> Result<(), String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
+
+    let host_ip_str = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    // Literal IP already checked syntactically — nothing to resolve.
+    if host_ip_str.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    let port = url.port_or_known_default().unwrap_or(0);
+    let mut resolved_any = false;
+    for addr in (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve host '{host}': {e}"))?
+    {
+        resolved_any = true;
+        if is_private_ip(&addr.ip()) {
+            return Err(format!(
+                "blocked request to '{host}' — it resolves to a private/reserved IP ({})",
+                addr.ip()
+            ));
+        }
+    }
+    if !resolved_any {
+        return Err(format!("host '{host}' did not resolve to any address"));
     }
 
     Ok(())
