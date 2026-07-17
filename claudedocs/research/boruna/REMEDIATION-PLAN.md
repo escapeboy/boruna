@@ -51,11 +51,27 @@ sprint + review rather than being rushed:
 - **F10 (key zeroize)** — DONE (parallel agent), commit `6d67670`.
 - **S1 (codegen count truncation) + G11 (while-body stack leak)** — DONE (parallel agent), commit `c784dc9`.
 
-### F — Coordinator principal/ownership model — S9 STILL TO DO
-- ~~`worker_id` in the terminal CAS (S6)~~ — done via the boundary check above.
-- **S9/N1 (approval-gate seizure) — REMAINING:** add an approver identity + per-gate token to
-  `/approve` (mirror the existing `/trigger` per-step token), record the run submitter. This is the
-  larger, still-open half of F.
+### ✅ F COMPLETE (2026-07-17)
+- **S6** — done (`2a8d2bb`).
+- **S9** — DONE (`f0826ff`). The ApprovalGate open path now mints a per-gate token
+  (`acquire_trigger_token`, previously only ExternalTrigger did); `handle_approve_run` requires it
+  (403 `coord.approval_token_invalid`); CLI `workflow approve|reject --token`. Boundary approach.
+
+### ✅ D — framework fail-closed (2026-07-17, parallel agent, cherry-picked `bcfb5f7`)
+Empty/malformed `policies()` now DENIES (was allow-all). No-`policies()` allow_all convenience
+preserved. Account-takeover self-review done. 96 framework tests green.
+
+### ✅ G-completeness — for-loops + Map/Fn types + ensures (2026-07-17, parallel agent, `e984cf8`)
+Additive `.ax` features. STILL OPEN in G: type checker (arity/type/exhaustiveness), higher-order/
+indirect calls (dispatch to fn #0), enum-variant match tags (all -1) — serial on codegen/vm, LTS-breaking.
+
+### ⏳ E-sign — ed25519 manifest signing — DONE BUT NEEDS RECONCILIATION
+Parallel agent built it on branch `worktree-agent-acbdc161d1119c689` (`f214b7c`): optional ed25519
+signature, `evidence verify --verify-key/--require-signature`, 6 tests green. BUT it branched from
+master (pre-E-verify) and re-created `verify_bundle_with_opts`/`VerifyOptions` with a DIFFERENT
+signature than this branch's `--expected-bundle-hash` version. **NEXT SESSION: hand-merge into one
+`VerifyOptions` { kek, expected_bundle_hash, require_encryption, trusted_pubkey, require_signature }**
+and one verify body + one set of CLI flags. The worktree is preserved for this.
 
 ### G — Language buildout (the "statically typed" gap)
 - **Type checker:** arity enforcement, type consistency, record-field validation, `requires`/`ensures`
