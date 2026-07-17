@@ -45,7 +45,7 @@ fn test_http_handler_ssrf_blocked_private_ip() {
     let handler = HttpHandler::new(NetPolicy::default());
     let result = handler.handle_net_fetch(&[Value::String("http://192.168.1.1/admin".into())]);
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("private IP"));
+    assert!(result.unwrap_err().contains("private/reserved IP"));
 }
 
 #[test]

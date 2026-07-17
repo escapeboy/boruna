@@ -497,7 +497,7 @@ mod tests {
         let handler = HttpHandler::new(NetPolicy::default());
         let result = handler.handle_net_fetch(&[Value::String("http://10.0.0.1/".into())]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("private IP"));
+        assert!(result.unwrap_err().contains("private/reserved IP"));
     }
 
     #[test]
