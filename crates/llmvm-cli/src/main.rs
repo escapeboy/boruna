@@ -1157,6 +1157,17 @@ enum EvidenceCommand {
         /// downgrade-to-plaintext strip of an encrypted bundle.
         #[arg(long)]
         require_encryption: bool,
+        /// verify-A: pin the trusted ed25519 signing key (32-byte
+        /// public key as 64 hex chars). The bundle's signature MUST be
+        /// made by this key, else verification fails
+        /// (`evidence.signature_untrusted_key`). This is what roots
+        /// trust — an unpinned signature only proves self-consistency.
+        #[arg(long, value_name = "HEX")]
+        verify_key: Option<String>,
+        /// verify-A: fail an unsigned bundle
+        /// (`evidence.signature_required`).
+        #[arg(long)]
+        require_signature: bool,
     },
     /// Inspect an evidence bundle's manifest.
     Inspect {
@@ -4401,7 +4412,7 @@ fn run_evidence(
     use boruna_orchestrator::audit::{
         evidence::{BundleJson, BundleManifest},
         parse_kek_hex, resolve_kek,
-        verify::verify_bundle_with_opts,
+        verify::{verify_bundle_with_opts, VerifyOptions},
         Envelope,
     };
 
@@ -4437,14 +4448,20 @@ fn run_evidence(
             bundle_encryption_key,
             expected_bundle_hash,
             require_encryption,
+            verify_key,
+            require_signature,
         } => {
             let kek = resolve_kek(bundle_encryption_key.as_deref())
                 .map_err(|e| format!("invalid KEK: {e}"))?;
             let result = verify_bundle_with_opts(
                 &dir,
-                kek.as_ref(),
-                expected_bundle_hash.as_deref(),
-                require_encryption,
+                &VerifyOptions {
+                    kek: kek.as_ref(),
+                    expected_bundle_hash: expected_bundle_hash.as_deref(),
+                    require_encryption,
+                    trusted_pubkey: verify_key.as_deref(),
+                    require_signature,
+                },
             );
             if result.valid {
                 println!("evidence bundle is VALID");

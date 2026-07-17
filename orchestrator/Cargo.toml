@@ -96,6 +96,11 @@ base64 = { workspace = true }
 # F10: wipe DEK/KEK material from memory on drop so freed heap/stack
 # pages don't retain key bytes. See encryption.rs `Envelope` Drop impl.
 zeroize = "1"
+# Optional ed25519 manifest signing for evidence bundles. See
+# verify-A: a signed manifest lets an operator prove bundle integrity
+# via their own key, removing the need to carry an out-of-band
+# bundle_hash anchor. Additive — unsigned 1.0 bundles are unaffected.
+ed25519-dalek = { workspace = true }
 boruna-effect = { path = "../crates/llm-effect" }
 boruna-compiler = { path = "../crates/llmc" }
 boruna-vm = { path = "../crates/llmvm" }

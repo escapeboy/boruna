@@ -212,6 +212,11 @@ pub fn rotate_dir(
 fn compute_bundle_hash(manifest: &BundleManifest) -> Result<String, RotationError> {
     let mut clone = manifest.clone();
     clone.bundle_hash = String::new();
+    // The signature is excluded from bundle_hash by construction
+    // (it is added AFTER the hash in finalize), so clear it here to
+    // match that convention. Rotating a signed bundle invalidates its
+    // signature — verify surfaces the mismatch.
+    clone.signature = None;
     let json = serde_json::to_string_pretty(&clone)
         .map_err(|e| RotationError::InvalidManifest(format!("hash-prep: {e}")))?;
     use sha2::{Digest, Sha256};

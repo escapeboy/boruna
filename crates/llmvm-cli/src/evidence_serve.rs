@@ -511,6 +511,7 @@ mod tests {
                 completed_at: String::from("2026-01-01T00:01:00Z"),
                 bundle_hash: String::from("bh"),
                 encryption: None,
+                signature: None,
             },
             bundle_meta: None,
             audit_entries: Vec::new(),
