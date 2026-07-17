@@ -93,6 +93,9 @@ tempfile = "3"
 aes-gcm = { workspace = true }
 rand_core = { workspace = true }
 base64 = { workspace = true }
+# F10: wipe DEK/KEK material from memory on drop so freed heap/stack
+# pages don't retain key bytes. See encryption.rs `Envelope` Drop impl.
+zeroize = "1"
 boruna-effect = { path = "../crates/llm-effect" }
 boruna-compiler = { path = "../crates/llmc" }
 boruna-vm = { path = "../crates/llmvm" }

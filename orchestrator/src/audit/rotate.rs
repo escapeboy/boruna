@@ -127,7 +127,9 @@ pub fn rotate_bundle(
     let envelope = Envelope::unwrap(&info, &opts.old_kek)?;
     // Re-wrap under new KEK.
     let rewrapped = envelope.rewrap(&opts.new_kek, &opts.kek_id_to)?;
-    let new_info = rewrapped.info;
+    // `Envelope` now implements `Drop` (F10 DEK zeroize), so `info`
+    // can't be moved out; clone the (non-secret) metadata.
+    let new_info = rewrapped.info.clone();
 
     if opts.dry_run {
         return Ok(RotationOutcome::PlannedDryRun {
