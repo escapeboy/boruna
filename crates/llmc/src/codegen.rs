@@ -132,9 +132,14 @@ impl Emitter {
             fe.code.push(Op::Ret);
         }
 
+        let arity = count_as_u8(
+            f.params.len(),
+            &format!("function `{}`", f.name),
+            "parameters",
+        )?;
         let func = Function {
             name: f.name.clone(),
-            arity: f.params.len() as u8,
+            arity,
             locals: fe.next_local as u16,
             code: fe.code,
             capabilities: fe.capabilities,
@@ -195,6 +200,13 @@ impl Emitter {
                 let exit_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
                 self.emit_block(body, fe)?;
+                // A while body's value is discarded each iteration. `emit_block`
+                // leaves the trailing statement's value on the stack when it is a
+                // bare expression, so pop it here — otherwise one value leaks per
+                // iteration and the operand stack grows unbounded.
+                if let Some(Stmt::Expr(_)) = body.stmts.last() {
+                    fe.code.push(Op::Pop);
+                }
                 fe.code.push(Op::Jmp(loop_start));
                 let exit_target = fe.code.len() as u32;
                 fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
@@ -518,20 +530,23 @@ impl Emitter {
                     }
                     // User-defined function call
                     if let Some(&func_idx) = self.fn_map.get(name) {
+                        let argc =
+                            count_as_u8(args.len(), &format!("call to `{name}`"), "arguments")?;
                         for arg in args {
                             self.emit_expr(arg, fe)?;
                         }
-                        fe.code.push(Op::Call(func_idx, args.len() as u8));
+                        fe.code.push(Op::Call(func_idx, argc));
                         return Ok(());
                     }
                 }
                 // Otherwise: push args, push func, call indirect (not supported yet; fallback)
+                let argc = count_as_u8(args.len(), "call", "arguments")?;
                 for arg in args {
                     self.emit_expr(arg, fe)?;
                 }
                 self.emit_expr(func, fe)?;
                 // For now, just emit a direct call (requires func to be a function reference)
-                fe.code.push(Op::Call(0, args.len() as u8));
+                fe.code.push(Op::Call(0, argc));
             }
             Expr::FieldAccess { object, field } => {
                 self.emit_expr(object, fe)?;
@@ -712,6 +727,7 @@ impl Emitter {
                     // 2) Get the full field list for this type
                     let type_fields = self.get_type_fields(type_name);
                     let total_fields = type_fields.len();
+                    let field_count = count_as_u8(total_fields, "record literal", "fields")?;
 
                     // 3) Build override set
                     let overrides: std::collections::HashMap<&str, &Expr> =
@@ -727,20 +743,22 @@ impl Emitter {
                         }
                     }
 
-                    fe.code.push(Op::MakeRecord(type_id, total_fields as u8));
+                    fe.code.push(Op::MakeRecord(type_id, field_count));
                 } else {
                     // Standard record literal (no spread)
+                    let field_count = count_as_u8(fields.len(), "record literal", "fields")?;
                     for (_, val) in fields {
                         self.emit_expr(val, fe)?;
                     }
-                    fe.code.push(Op::MakeRecord(type_id, fields.len() as u8));
+                    fe.code.push(Op::MakeRecord(type_id, field_count));
                 }
             }
             Expr::List(items) => {
+                let count = count_as_u8(items.len(), "list literal", "elements")?;
                 for item in items {
                     self.emit_expr(item, fe)?;
                 }
-                fe.code.push(Op::MakeList(items.len() as u8));
+                fe.code.push(Op::MakeList(count));
             }
             Expr::SomeExpr(inner) => {
                 self.emit_expr(inner, fe)?;
@@ -826,6 +844,19 @@ impl Emitter {
         }
 
         0 // fallback
+    }
+}
+
+/// Narrow a count to a `u8` for opcode operands (list/record sizes, call
+/// arity), returning a compile error instead of silently wrapping when the
+/// count exceeds `u8::MAX`. Wrapping would corrupt the operand stack at runtime.
+fn count_as_u8(n: usize, subject: &str, unit: &str) -> Result<u8, CompileError> {
+    if n > u8::MAX as usize {
+        Err(CompileError::Codegen(format!(
+            "{subject} has {n} {unit}; max 255"
+        )))
+    } else {
+        Ok(n as u8)
     }
 }
 

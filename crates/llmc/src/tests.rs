@@ -425,6 +425,30 @@ fn main() -> Int {
     }
 
     #[test]
+    fn test_e2e_while_body_trailing_expr_no_stack_leak() {
+        // The while body's final statement is a bare expression (`i`), whose
+        // value is discarded each iteration. Without balancing the operand
+        // stack per iteration, one value leaks per loop and overflows the VM's
+        // 4096-slot stack. 5000 iterations exceeds that, so this only passes
+        // if the trailing expression is popped.
+        assert_eq!(
+            run_source(
+                r#"
+fn main() -> Int {
+    let mut i: Int = 0
+    while i < 5000 {
+        i = i + 1
+        i
+    }
+    i
+}
+"#
+            ),
+            Value::Int(5000),
+        );
+    }
+
+    #[test]
     fn test_e2e_record() {
         assert_eq!(
             run_source(
