@@ -44,10 +44,18 @@ sprint + review rather than being rushed:
   verified with a trusted public key — removes the need for operators to carry the anchor
   out-of-band. New key-management surface, bundle-format version bump → `evidence-bundle 1.1`.
 
-### F — Coordinator principal/ownership model (verify-B N2, root of S6+S9)
-- Add `worker_id` to the terminal CAS predicate (kills cross-worker claim hijack S6).
-- Add an approver identity + per-gate token to `/approve` (kills gate seizure S9/N1), record the
-  run submitter. Wire-protocol change → `protocol_version: 2` + worker/coord version negotiation.
+### ✅ Landed after the checkpoint (2026-07-17, gated green)
+- **S6 (cross-worker claim hijack)** — DONE, commit `2a8d2bb`. `RunCheckpointStore::step_claimed_by`
+  + coordinator `reject_if_not_claim_owner` (403 `coord.claim_not_owned`) on complete/fail/extend, at
+  the trust boundary under the store lock. Boundary approach (like S12) — no CAS/test churn.
+- **F10 (key zeroize)** — DONE (parallel agent), commit `6d67670`.
+- **S1 (codegen count truncation) + G11 (while-body stack leak)** — DONE (parallel agent), commit `c784dc9`.
+
+### F — Coordinator principal/ownership model — S9 STILL TO DO
+- ~~`worker_id` in the terminal CAS (S6)~~ — done via the boundary check above.
+- **S9/N1 (approval-gate seizure) — REMAINING:** add an approver identity + per-gate token to
+  `/approve` (mirror the existing `/trigger` per-step token), record the run submitter. This is the
+  larger, still-open half of F.
 
 ### G — Language buildout (the "statically typed" gap)
 - **Type checker:** arity enforcement, type consistency, record-field validation, `requires`/`ensures`
