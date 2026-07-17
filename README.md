@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
-> **LTS — in force.** 1.x is the long-term-support line: through 2027-11-15 active and 2028-05-15 security. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
+> **v2.0.0 is the current release.** The 1.x line remains under long-term support — active through 2027-11-15, security through 2028-05-15. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 
@@ -33,7 +33,7 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - **`boruna new`** — interactive scaffold for new workflows from templates
 - **33 built-in functions** — string (12), list (7), and map (7) operations plus type conversions and debug builtins (`__builtin_string_*`, `__builtin_list_*`, `__builtin_map_*`, …) available in every `.ax` file without imports
 - **Import resolution** — `import "std-name"` inlines `libs/<name>/src/core.ax` at compile time; all 13 stdlib packages are 1.0-stable
-- **Three formal versioned specifications** — `.ax` language 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
+- **Four formal versioned specifications** — `.ax` language 1.0, bytecode 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
 - **MCP server** — exposes 12 tools for AI coding agent integration (Claude Code, Cursor, Codex)
 
 ## What Boruna is not
