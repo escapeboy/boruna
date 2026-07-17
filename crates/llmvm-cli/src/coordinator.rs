@@ -766,7 +766,14 @@ async fn auth_middleware(
     // verify a coord is up without holding the shared secret.
     // Health responses are non-sensitive — uptime, capability hash,
     // and version — so the bypass does not leak secret state.
-    if request.uri().path() == "/api/health" {
+    // The approval-console SHELL (`/console`) is exempt for the same reason as
+    // health: a browser navigation cannot carry an `Authorization: Bearer`
+    // header. The shell embeds no run data and no secret — all data reads and
+    // mutations happen via authed `fetch()` from its inline JS against the
+    // `/api/*` routes below, which stay behind this middleware — so serving the
+    // shell unauthenticated leaks nothing.
+    let path = request.uri().path();
+    if path == "/api/health" || path == "/console" {
         return next.run(request).await;
     }
     // Sprint W6-A: when mTLS is required, every other route MUST
@@ -792,6 +799,178 @@ async fn auth_middleware(
         }
     }
     next.run(request).await
+}
+
+/// The operator approval console — a static, data-free HTML shell.
+///
+/// Security model (audited): the shell embeds ZERO run state and ZERO secrets.
+/// It is a token-entry form plus inline JS that calls the AUTHED `/api/runs`,
+/// `/api/runs/{id}` and `/api/runs/{id}/approve` endpoints. The operator's
+/// bearer token is held only in an in-memory input (cleared on unload) and sent
+/// ONLY in the request `Authorization` header — never in a URL, never in
+/// storage. All dynamic content is built with `textContent`/`createElement`
+/// (never `innerHTML`), so a hostile `run_id`/`step_id` cannot inject markup or
+/// script. Approvals additionally require the per-gate S9 token, typed by the
+/// human. No external/CDN assets — fully self-contained for offline operation.
+const CONSOLE_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approval Console — Boruna</title>
+<style>
+  :root{color-scheme:light dark}
+  body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:1.5rem;line-height:1.5}
+  h1{font-size:1.4rem;margin:0 0 .25rem}
+  .lead{color:#666;margin:.25rem 0 1.25rem}
+  fieldset{border:1px solid #ccc;border-radius:8px;margin:0 0 1rem;padding:1rem}
+  legend{font-weight:600;padding:0 .4rem}
+  label{display:block;font-size:.85rem;font-weight:600;margin:.5rem 0 .2rem}
+  input[type=password],input[type=text]{width:100%;box-sizing:border-box;padding:.5rem;border:1px solid #bbb;border-radius:6px;font:inherit}
+  button{font:inherit;padding:.5rem .9rem;border:1px solid #888;border-radius:6px;background:#f2f2f2;cursor:pointer}
+  button.primary{background:#158a4a;color:#fff;border-color:#158a4a}
+  button.danger{background:#c0392b;color:#fff;border-color:#c0392b}
+  button:disabled{opacity:.5;cursor:default}
+  .card{border:1px solid #ccc;border-radius:8px;padding:1rem;margin:.75rem 0}
+  .row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.6rem}
+  .k{color:#666;font-size:.8rem}
+  .mono{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.85rem}
+  .muted{color:#888;font-size:.85rem}
+  #status{margin:.6rem 0;min-height:1.2rem;font-weight:600}
+  .err{color:#c0392b}.ok{color:#158a4a}
+  footer{margin-top:2rem;color:#888;font-size:.8rem;border-top:1px solid #ddd;padding-top:.75rem}
+</style>
+</head>
+<body>
+<h1>Boruna Approval Console</h1>
+<p class="lead">Approve or reject workflow runs paused at a human approval gate. This page holds no data of its own — it reads the coordinator's authenticated API and submits your decision. It cannot start, cancel, or edit runs.</p>
+
+<fieldset>
+  <legend>1 &middot; Connect</legend>
+  <label for="tok">Coordinator bearer token</label>
+  <input id="tok" type="password" autocomplete="off" spellcheck="false" placeholder="the coordinator's --coord-token">
+  <div class="row">
+    <button class="primary" id="load">Load pending approvals</button>
+    <span class="muted">Kept in memory only; sent solely in the request Authorization header — never stored or placed in the URL.</span>
+  </div>
+</fieldset>
+
+<div id="status" role="status" aria-live="polite"></div>
+<div id="list"></div>
+
+<footer>Read-only shell over the coordinator's authenticated API. Every action requires your bearer token plus the per-gate approval token issued when the gate paused. Keep the coordinator on a trusted network — it ships no built-in login.</footer>
+
+<script>
+(function(){
+  var tokEl=document.getElementById('tok');
+  var statusEl=document.getElementById('status');
+  var listEl=document.getElementById('list');
+  function setStatus(msg,cls){statusEl.textContent=msg;statusEl.className=cls||'';}
+  function authHeaders(extra){
+    var h={'Authorization':'Bearer '+tokEl.value};
+    if(extra){for(var k in extra){h[k]=extra[k];}}
+    return h;
+  }
+  function clearList(){while(listEl.firstChild){listEl.removeChild(listEl.firstChild);}}
+  async function api(path){
+    var r=await fetch(path,{headers:authHeaders(),cache:'no-store'});
+    if(r.status===401){throw new Error('Unauthorized — check the bearer token.');}
+    if(!r.ok){throw new Error(path+' returned HTTP '+r.status);}
+    return r.json();
+  }
+  function field(label,value){
+    var wrap=document.createElement('div');
+    var k=document.createElement('span');k.className='k';k.textContent=label+': ';
+    var v=document.createElement('span');v.className='mono';v.textContent=value;
+    wrap.appendChild(k);wrap.appendChild(v);return wrap;
+  }
+  function labelled(text,input){
+    var l=document.createElement('label');l.textContent=text;
+    return [l,input];
+  }
+  function gateCard(run,step){
+    var card=document.createElement('div');card.className='card';
+    card.appendChild(field('run',run.run_id));
+    card.appendChild(field('workflow',run.workflow_name));
+    card.appendChild(field('step',step.step_id));
+    var tokInput=document.createElement('input');tokInput.type='text';tokInput.autocomplete='off';tokInput.spellcheck=false;
+    var reasonInput=document.createElement('input');reasonInput.type='text';reasonInput.autocomplete='off';
+    labelled('Per-gate approval token (issued when the gate paused)',tokInput).forEach(function(n){card.appendChild(n);});
+    labelled('Reason (optional)',reasonInput).forEach(function(n){card.appendChild(n);});
+    var row=document.createElement('div');row.className='row';
+    var res=document.createElement('span');
+    function decide(decision,btn){
+      btn.disabled=true;res.textContent='';res.className='';
+      fetch('/api/runs/'+encodeURIComponent(run.run_id)+'/approve',{
+        method:'POST',cache:'no-store',
+        headers:authHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({step_id:step.step_id,decision:decision,token:tokInput.value,reason:reasonInput.value||null})
+      }).then(function(r){return r.json().then(function(j){return {s:r.status,j:j};},function(){return {s:r.status,j:null};});})
+        .then(function(o){
+          if(o.s>=200&&o.s<300){res.textContent='✓ '+decision;res.className='ok';}
+          else{res.textContent='✗ '+((o.j&&o.j.message)?o.j.message:('HTTP '+o.s));res.className='err';btn.disabled=false;}
+        }).catch(function(e){res.textContent='✗ '+e.message;res.className='err';btn.disabled=false;});
+    }
+    var ap=document.createElement('button');ap.className='primary';ap.textContent='Approve';
+    var rj=document.createElement('button');rj.className='danger';rj.textContent='Reject';
+    ap.addEventListener('click',function(){decide('approved',ap);});
+    rj.addEventListener('click',function(){decide('rejected',rj);});
+    row.appendChild(ap);row.appendChild(rj);row.appendChild(res);
+    card.appendChild(row);return card;
+  }
+  async function load(){
+    clearList();
+    if(!tokEl.value){setStatus('Enter the coordinator bearer token first.','err');return;}
+    setStatus('Loading…');
+    try{
+      var data=await api('/api/runs');
+      var runs=(data&&data.runs)||[];
+      var paused=runs.filter(function(r){return r.status==='paused';});
+      var found=0;
+      for(var i=0;i<paused.length;i++){
+        var detail=await api('/api/runs/'+encodeURIComponent(paused[i].run_id));
+        var steps=(detail&&detail.steps)||[];
+        for(var s=0;s<steps.length;s++){
+          if(steps[s].status==='awaiting_approval'){listEl.appendChild(gateCard(paused[i],steps[s]));found++;}
+        }
+      }
+      setStatus(found?(found+' gate(s) awaiting approval.'):'No runs are waiting for approval.','ok');
+    }catch(e){setStatus(e.message,'err');}
+  }
+  document.getElementById('load').addEventListener('click',load);
+  window.addEventListener('beforeunload',function(){tokEl.value='';});
+})();
+</script>
+</body>
+</html>"##;
+
+/// GET `/console` — serve the approval-console shell (see [`CONSOLE_HTML`]).
+///
+/// EXEMPT from [`auth_middleware`] (like `/api/health`): a browser navigation
+/// carries no `Authorization` header, so the shell must load without one. It
+/// leaks nothing — no run data, no secret — and the `/api/*` endpoints its JS
+/// calls stay behind the middleware. The response denies framing (clickjacking)
+/// and forbids caching.
+async fn handle_console() -> Response {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::header::X_FRAME_OPTIONS, "DENY"),
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                // Fully self-contained, same-origin: allow only inline
+                // style/script and same-origin fetch; deny everything else,
+                // framing, and <base> injection (defense-in-depth beyond the
+                // X-Frame-Options above).
+                "default-src 'none'; style-src 'unsafe-inline'; \
+                 script-src 'unsafe-inline'; connect-src 'self'; \
+                 frame-ancestors 'none'; base-uri 'none'",
+            ),
+        ],
+        CONSOLE_HTML,
+    )
+        .into_response()
 }
 
 pub fn build_router(state: CoordinatorState) -> Router {
@@ -847,6 +1026,12 @@ pub fn build_router(state: CoordinatorState) -> Router {
         // (PRAGMA quick_check would be too expensive; we just take
         // and release the mutex guard).
         .route("/api/health", get(handle_health))
+        // Sprint W6-B: operator approval console (HTML shell). Exempted from
+        // auth in `auth_middleware` because a browser navigation carries no
+        // bearer header; it holds no data and drives the authed `/api/*` routes
+        // above via fetch(). Added to `coord_router` (not the dashboard router)
+        // so it is served wherever the coordinator runs.
+        .route("/console", get(handle_console))
         // The 8 MiB DefaultBodyLimit applies to coord routes
         // ONLY (not dashboard routes) because Axum's per-
         // router layer scoping means layers attached pre-merge
@@ -4064,6 +4249,68 @@ mod tests {
             .unwrap()
             .to_vec();
         (status, bytes)
+    }
+
+    #[tokio::test]
+    async fn console_shell_served_without_bearer_and_carries_no_data() {
+        // The console SHELL must load without a bearer header (a browser
+        // navigation carries none) EVEN when a shared secret is set, must embed
+        // no run data (data is fetched client-side), and must deny framing +
+        // caching.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("s3cret".into());
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .insert_run(&RunRow {
+                    run_id: "leaky-run-id-xyz".into(),
+                    workflow_name: "wf".into(),
+                    workflow_hash: "h".into(),
+                    status: RunStatus::Paused,
+                    started_at_ms: 0,
+                    updated_at_ms: 0,
+                    policy_json: r#"{"default_allow":true}"#.into(),
+                    metadata_json: "{}".into(),
+                })
+                .unwrap();
+        }
+        let app = build_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/console")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-store");
+        assert!(resp
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&bytes);
+        assert!(html.contains("Boruna Approval Console"));
+        assert!(
+            !html.contains("leaky-run-id-xyz"),
+            "the shell must embed no run data"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_runs_still_requires_bearer_when_secret_set() {
+        // Only the shell is exempt — the data endpoint the console reads stays
+        // behind auth.
+        let mut state = fresh_state();
+        state.config.shared_secret = Some("s3cret".into());
+        let app = build_router(state);
+        let (status, _) = get_request(&app, "/api/runs").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
