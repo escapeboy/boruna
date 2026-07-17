@@ -544,6 +544,26 @@ fn main() -> Int { area(Shape::Square(5)) }
     }
 
     #[test]
+    fn test_arity_mismatch_is_rejected() {
+        // A direct call with the wrong number of arguments is a static error.
+        // (Calls through a local/param callee are intentionally not arity-checked
+        // — see test_e2e_higher_order_indirect_call, which must still compile.)
+        let err = compile(
+            "test",
+            r#"
+fn add(a: Int, b: Int) -> Int { a + b }
+fn main() -> Int { add(1) }
+"#,
+        )
+        .expect_err("wrong-arity call should fail type checking");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("expects 2 argument") && msg.contains("got 1"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
     fn test_e2e_while_body_trailing_expr_no_stack_leak() {
         // The while body's final statement is a bare expression (`i`), whose
         // value is discarded each iteration. Without balancing the operand

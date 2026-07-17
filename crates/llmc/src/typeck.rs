@@ -196,6 +196,22 @@ impl TypeChecker {
                 for arg in args {
                     self.check_expr(arg, locals)?;
                 }
+                // Arity check for direct calls to a named function. Skipped when
+                // the callee name is a local binding (a first-class function
+                // value / higher-order parameter), whose arity isn't known here.
+                if let Expr::Ident(name) = func.as_ref() {
+                    if !locals.contains(name) {
+                        if let Some(&arity) = self.functions.get(name) {
+                            if args.len() != arity {
+                                return Err(CompileError::Type(format!(
+                                    "function '{name}' expects {arity} argument{}, got {}",
+                                    if arity == 1 { "" } else { "s" },
+                                    args.len()
+                                )));
+                            }
+                        }
+                    }
+                }
             }
             Expr::FieldAccess { object, .. } => self.check_expr(object, locals)?,
             Expr::If {
