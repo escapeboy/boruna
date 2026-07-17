@@ -99,6 +99,10 @@ impl<'a> Analyzer<'a> {
                 self.check_match_in_expr(condition, param_types, diags);
                 self.check_match_in_block(body, param_types, diags);
             }
+            Stmt::For { iter, body, .. } => {
+                self.check_match_in_expr(iter, param_types, diags);
+                self.check_match_in_block(body, param_types, diags);
+            }
         }
     }
 

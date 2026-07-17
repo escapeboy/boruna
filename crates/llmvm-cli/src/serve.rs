@@ -378,6 +378,10 @@ fn collect_tags_from_block(block: &Block, tags: &mut Vec<String>) {
                 collect_tags_from_expr(condition, tags);
                 collect_tags_from_block(body, tags);
             }
+            Stmt::For { iter, body, .. } => {
+                collect_tags_from_expr(iter, tags);
+                collect_tags_from_block(body, tags);
+            }
         }
     }
 }

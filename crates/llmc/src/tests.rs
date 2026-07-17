@@ -248,6 +248,60 @@ mod tests {
     }
 
     #[test]
+    fn test_ensures_violation_traps() {
+        use boruna_vm::VmError;
+        let src =
+            "fn positive(n: Int) -> Int ensures result > 0 { n }\nfn main() -> Int { positive(0) }";
+        let module = compile("test", src).expect("compile");
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        match vm.run() {
+            Err(VmError::ContractViolation { message, .. }) => {
+                assert!(message.contains("postcondition"), "message: {message}");
+            }
+            other => panic!("expected ContractViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ensures_satisfied_runs_normally() {
+        let src =
+            "fn positive(n: Int) -> Int ensures result > 0 { n }\nfn main() -> Int { positive(7) }";
+        assert_eq!(run_source(src), Value::Int(7));
+    }
+
+    #[test]
+    fn test_e2e_for_loop_sums_list() {
+        let src = "fn main() -> Int {\n    let mut total = 0\n    for x in [1, 2, 3, 4, 5] {\n        total = total + x\n    }\n    total\n}";
+        assert_eq!(run_source(src), Value::Int(15));
+    }
+
+    #[test]
+    fn test_parse_map_and_fn_type_annotations() {
+        let source = "fn main() -> Int {\n    let m: Map<String, Int> = default_map()\n    let f: Fn(Int) -> Int = identity\n    0\n}";
+        let tokens = lexer::lex(source).unwrap();
+        let program = parser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        let Item::Function(f) = &program.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            ty: Some(map_ty), ..
+        } = &f.body.stmts[0]
+        else {
+            panic!("expected typed let");
+        };
+        assert!(matches!(map_ty, TypeExpr::Map(_, _)));
+        let Stmt::Let {
+            ty: Some(fn_ty), ..
+        } = &f.body.stmts[1]
+        else {
+            panic!("expected typed let");
+        };
+        assert!(matches!(fn_ty, TypeExpr::Fn(_, _)));
+    }
+
+    #[test]
     fn test_parse_type_def() {
         let tokens = lexer::lex("type User { name: String, age: Int }").unwrap();
         let program = parser::parse(tokens).unwrap();

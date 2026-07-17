@@ -601,6 +601,14 @@ impl Printer {
                 self.write(" ");
                 self.print_block(body);
             }
+            Stmt::For { var, iter, body } => {
+                self.write("for ");
+                self.write(var);
+                self.write(" in ");
+                self.print_expr(iter);
+                self.write(" ");
+                self.print_block(body);
+            }
         }
     }
 

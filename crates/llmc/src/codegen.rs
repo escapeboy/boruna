@@ -127,8 +127,33 @@ impl Emitter {
         // Emit body
         self.emit_block(&f.body, &mut fe)?;
 
-        // Implicit return
-        if fe.code.last() != Some(&Op::Ret) {
+        if f.ensures.is_empty() {
+            // Implicit return
+            if fe.code.last() != Some(&Op::Ret) {
+                fe.code.push(Op::Ret);
+            }
+        } else {
+            // Emit `ensures` postconditions as runtime guards. Bind the
+            // computed return value to a local named `result` so each
+            // postcondition can reference it, assert every clause, then
+            // return the captured value. A trailing explicit `return`
+            // leaves its value on the stack once its `Op::Ret` is dropped.
+            if fe.code.last() == Some(&Op::Ret) {
+                fe.code.pop();
+            }
+            let result_local = fe.next_local;
+            fe.next_local += 1;
+            fe.locals.insert("result".to_string(), result_local);
+            fe.code.push(Op::StoreLocal(result_local));
+
+            for (i, ens) in f.ensures.iter().enumerate() {
+                self.emit_expr(ens, &mut fe)?;
+                let msg = format!("postcondition {} failed in `{}`", i + 1, f.name);
+                let msg_idx = self.module.add_const(Value::String(msg));
+                fe.code.push(Op::Assert(msg_idx));
+            }
+
+            fe.code.push(Op::LoadLocal(result_local));
             fe.code.push(Op::Ret);
         }
 
@@ -207,6 +232,55 @@ impl Emitter {
                 if let Some(Stmt::Expr(_)) = body.stmts.last() {
                     fe.code.push(Op::Pop);
                 }
+                fe.code.push(Op::Jmp(loop_start));
+                let exit_target = fe.code.len() as u32;
+                fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
+            }
+            Stmt::For { var, iter, body } => {
+                // Desugar `for v in list { body }` into an index loop over a
+                // List: evaluate the iterable once into a temp local, walk an
+                // index from 0 while `idx < len(list)`, binding `v = list[idx]`
+                // each iteration.
+                self.emit_expr(iter, fe)?;
+                let list_local = fe.next_local;
+                fe.next_local += 1;
+                fe.code.push(Op::StoreLocal(list_local));
+
+                let idx_local = fe.next_local;
+                fe.next_local += 1;
+                let zero_idx = self.module.add_const(Value::Int(0));
+                fe.code.push(Op::PushConst(zero_idx));
+                fe.code.push(Op::StoreLocal(idx_local));
+
+                // Loop variable local, reused across iterations.
+                let var_local = fe.next_local;
+                fe.next_local += 1;
+                fe.locals.insert(var.clone(), var_local);
+
+                let loop_start = fe.code.len() as u32;
+                // Condition: idx < len(list)
+                fe.code.push(Op::LoadLocal(idx_local));
+                fe.code.push(Op::LoadLocal(list_local));
+                fe.code.push(Op::ListLen);
+                fe.code.push(Op::Lt);
+                let exit_jmp = fe.code.len();
+                fe.code.push(Op::JmpIfNot(0)); // placeholder
+
+                // Bind loop variable: var = list[idx]
+                fe.code.push(Op::LoadLocal(list_local));
+                fe.code.push(Op::LoadLocal(idx_local));
+                fe.code.push(Op::ListGet);
+                fe.code.push(Op::StoreLocal(var_local));
+
+                self.emit_block(body, fe)?;
+
+                // idx = idx + 1
+                fe.code.push(Op::LoadLocal(idx_local));
+                let one_idx = self.module.add_const(Value::Int(1));
+                fe.code.push(Op::PushConst(one_idx));
+                fe.code.push(Op::Add);
+                fe.code.push(Op::StoreLocal(idx_local));
+
                 fe.code.push(Op::Jmp(loop_start));
                 let exit_target = fe.code.len() as u32;
                 fe.code[exit_jmp] = Op::JmpIfNot(exit_target);

@@ -167,6 +167,12 @@ impl TypeChecker {
                 let mut inner = locals.clone();
                 self.check_block(body, &mut inner)?;
             }
+            Stmt::For { var, iter, body } => {
+                self.check_expr(iter, locals)?;
+                let mut inner = locals.clone();
+                inner.insert(var.clone());
+                self.check_block(body, &mut inner)?;
+            }
         }
         Ok(())
     }

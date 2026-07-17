@@ -96,6 +96,11 @@ pub enum Stmt {
         condition: Expr,
         body: Block,
     },
+    For {
+        var: String,
+        iter: Expr,
+        body: Block,
+    },
 }
 
 /// Expressions.
