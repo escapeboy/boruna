@@ -1700,6 +1700,28 @@ impl RunCheckpointStore {
         )
     }
 
+    /// Return the `worker_id` currently recorded on a step row (the worker
+    /// holding its lease while `Running`), or `None` if the row is absent or
+    /// the column is NULL. Used by the coordinator to reject cross-worker
+    /// complete/fail/extend before the CAS (finding S6): `claim_id` alone is a
+    /// predictable per-step counter, so it cannot prove the caller owns the claim.
+    pub fn step_claimed_by(
+        &self,
+        run_id: &str,
+        step_id: &str,
+    ) -> Result<Option<String>, PersistenceError> {
+        let row: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT worker_id FROM step_checkpoints \
+                 WHERE run_id = ?1 AND step_id = ?2",
+                params![run_id, step_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        Ok(row.flatten())
+    }
+
     /// Returns `true` if any step checkpoint under `run_id` references
     /// the given `blob_hash` via its `output_blob_ref` column. Used by
     /// the coordinator's blob-fetch HTTP handler (sprint 0.5-S7) to

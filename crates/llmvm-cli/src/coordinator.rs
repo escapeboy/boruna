@@ -1585,6 +1585,33 @@ fn extract_step_source(metadata_json: &str, step_id: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// S6 (cross-worker claim ownership): reject a complete/fail/extend whose caller
+/// is not the worker holding the step's claim. `claim_id` is a predictable
+/// per-step counter, so it cannot prove ownership; the row's `worker_id` can.
+/// Called under the store lock so the read + CAS are atomic within this process.
+/// Returns `Some(rejection)` to short-circuit, `None` to proceed.
+fn reject_if_not_claim_owner(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    caller_worker_id: &str,
+) -> Option<Response> {
+    match store.step_claimed_by(run_id, step_id) {
+        Ok(Some(holder)) if holder != caller_worker_id => Some(respond_err(
+            StatusCode::FORBIDDEN,
+            ErrorBody::new(
+                "coord.claim_not_owned",
+                format!(
+                    "step {run_id}/{step_id} is claimed by another worker; caller \
+                     '{caller_worker_id}' does not own the claim"
+                ),
+            ),
+        )),
+        Ok(_) => None,
+        Err(e) => Some(internal_error(&format!("step_claimed_by: {e}"))),
+    }
+}
+
 async fn handle_complete(
     State(state): State<CoordinatorState>,
     Json(req): Json<CompleteRequest>,
@@ -1613,6 +1640,9 @@ async fn handle_complete(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+        return resp;
+    }
     let now_ms = now_unix_ms();
     let outcome = match store.complete_step_cas(
         &req.run_id,
@@ -1641,6 +1671,9 @@ async fn handle_fail(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+        return resp;
+    }
     let now_ms = now_unix_ms();
     let outcome = match store.fail_step_cas(
         &req.run_id,
@@ -1688,6 +1721,9 @@ async fn handle_extend_lease(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+        return resp;
+    }
     let outcome = match store.extend_lease_cas(
         &req.run_id,
         &req.step_id,
@@ -3323,38 +3359,38 @@ mod tests {
     async fn complete_with_stale_claim_returns_409() {
         let state = fresh_state();
         pending_step(&state, "run-c", "s1", "fn main() -> Int { 1 }\n");
-        // Manually claim and then simulate expiry+reclaim. The lock
-        // is scoped to a block so the MutexGuard drops before any
-        // .await — clippy::await_holding_lock would flag a guard
-        // bound at the function level even with an explicit drop().
-        {
-            let store = state.store.lock().unwrap();
-            store
-                .claim_step("run-c", "s1", "A", 5_000_000_000_000, 0)
-                .unwrap();
-            store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
-            store
-                .claim_step("run-c", "s1", "B", 5_000_000_000_002, 0)
-                .unwrap();
-        }
         let app = build_router(state.clone());
-        // Register a worker so we have a session token.
+        // Register a worker up front so the SAME worker holds both claims —
+        // otherwise the S6 ownership guard (reject_if_not_claim_owner) fires
+        // first. Here the same worker's lease expires and it reclaims (new
+        // claim_id), then submits a stale complete → lease-expiry CAS → 409.
         let (_, reg) = post_json(
             &app,
             "/api/workers/register",
             &register_payload(state.capability_set_hash.clone()),
         )
         .await;
-        // Late completion with stale claim_id=1.
+        let wid = reg["worker_id"].as_str().unwrap().to_string();
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .claim_step("run-c", "s1", &wid, 5_000_000_000_000, 0)
+                .unwrap();
+            store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
+            store
+                .claim_step("run-c", "s1", &wid, 5_000_000_000_002, 0)
+                .unwrap();
+        }
+        // Late completion with stale claim_id=1 (current is 2).
         let (status, v) = post_json(
             &app,
             "/api/work/complete",
             &CompleteRequest {
-                worker_id: reg["worker_id"].as_str().unwrap().into(),
+                worker_id: wid,
                 session_token: reg["session_token"].as_str().unwrap().into(),
                 run_id: "run-c".into(),
                 step_id: "s1".into(),
-                claim_id: 1, // stale; current is 2
+                claim_id: 1,
                 output_json: r#""nope""#.into(),
                 output_hash: worker_output_hash(r#""nope""#),
                 attempt_count: 1,
@@ -3364,6 +3400,44 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(v["error_kind"], "coord.lease_expired");
         assert_eq!(v["current_claim_id"], 2);
+    }
+
+    #[tokio::test]
+    async fn complete_by_non_owner_returns_403() {
+        // S6: a registered worker that does NOT hold the claim cannot complete
+        // another worker's in-flight step, even with the correct claim_id.
+        let state = fresh_state();
+        pending_step(&state, "run-own", "s1", "fn main() -> Int { 1 }\n");
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .claim_step("run-own", "s1", "victim-worker", 5_000_000_000_000, 0)
+                .unwrap();
+        }
+        let app = build_router(state.clone());
+        let (_, reg) = post_json(
+            &app,
+            "/api/workers/register",
+            &register_payload(state.capability_set_hash.clone()),
+        )
+        .await;
+        let (status, v) = post_json(
+            &app,
+            "/api/work/complete",
+            &CompleteRequest {
+                worker_id: reg["worker_id"].as_str().unwrap().into(), // NOT victim-worker
+                session_token: reg["session_token"].as_str().unwrap().into(),
+                run_id: "run-own".into(),
+                step_id: "s1".into(),
+                claim_id: 1, // correct, predictable claim_id
+                output_json: r#""forged""#.into(),
+                output_hash: worker_output_hash(r#""forged""#),
+                attempt_count: 1,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(v["error_kind"], "coord.claim_not_owned");
     }
 
     #[tokio::test]
