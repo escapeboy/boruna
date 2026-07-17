@@ -734,6 +734,20 @@ impl Printer {
                 }
                 self.write("}");
             }
+            Expr::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                self.write(enum_name);
+                self.write("::");
+                self.write(variant);
+                if let Some(p) = payload {
+                    self.write("(");
+                    self.print_expr(p);
+                    self.write(")");
+                }
+            }
             Expr::List(items) => {
                 self.write("[");
                 for (i, it) in items.iter().enumerate() {

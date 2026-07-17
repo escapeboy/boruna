@@ -247,6 +247,9 @@ impl TypeChecker {
                 let mut inner = locals.clone();
                 self.check_block(b, &mut inner)?;
             }
+            Expr::EnumVariant {
+                payload: Some(p), ..
+            } => self.check_expr(p, locals)?,
             _ => {}
         }
         Ok(())

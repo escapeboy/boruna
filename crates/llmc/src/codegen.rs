@@ -776,7 +776,7 @@ impl Emitter {
                     }
 
                     for (i, arm) in arms.iter().enumerate() {
-                        let tag = pattern_to_tag(&arm.pattern);
+                        let tag = self.pattern_to_tag(&arm.pattern);
                         bc_arms.push(BcMatchArm {
                             tag,
                             target: arm_starts[i],
@@ -827,6 +827,21 @@ impl Emitter {
                     }
                     fe.code.push(Op::MakeRecord(type_id, field_count));
                 }
+            }
+            Expr::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                let (type_id, variant_idx) = self.resolve_enum_variant(enum_name, variant)?;
+                // MakeEnum always pops a payload; nullary variants carry Unit.
+                if let Some(p) = payload {
+                    self.emit_expr(p, fe)?;
+                } else {
+                    let idx = self.module.add_const(Value::Unit);
+                    fe.code.push(Op::PushConst(idx));
+                }
+                fe.code.push(Op::MakeEnum(type_id, variant_idx));
             }
             Expr::List(items) => {
                 let count = count_as_u8(items.len(), "list literal", "elements")?;
@@ -920,6 +935,66 @@ impl Emitter {
 
         0 // fallback
     }
+
+    /// Resolve a qualified enum variant (`Enum::Variant`) to its
+    /// `(type_id, variant_index)`. The type_id is the enum's position in
+    /// `module.types`; the variant index is its declaration order within the
+    /// enum — the same numbering the VM's `Op::Match` compares against.
+    fn resolve_enum_variant(
+        &self,
+        enum_name: &str,
+        variant: &str,
+    ) -> Result<(u32, u8), CompileError> {
+        for (ti, typedef) in self.module.types.iter().enumerate() {
+            if typedef.name != enum_name {
+                continue;
+            }
+            let BcTypeKind::Enum { variants } = &typedef.kind else {
+                return Err(CompileError::Codegen(format!(
+                    "'{enum_name}' is not an enum"
+                )));
+            };
+            for (vi, (vname, _)) in variants.iter().enumerate() {
+                if vname == variant {
+                    return Ok((ti as u32, count_as_u8(vi, "enum", "variants")?));
+                }
+            }
+            return Err(CompileError::Codegen(format!(
+                "enum '{enum_name}' has no variant '{variant}'"
+            )));
+        }
+        Err(CompileError::Codegen(format!("unknown enum: {enum_name}")))
+    }
+
+    /// Match-arm tag for a pattern. Enum-variant patterns resolve to the
+    /// variant's declaration index (searched across all declared enums, since
+    /// patterns carry only the bare variant name); everything else uses the
+    /// fixed built-in tags. `-1` means "wildcard / no discriminant".
+    fn pattern_to_tag(&self, pattern: &Pattern) -> i32 {
+        match pattern {
+            Pattern::Wildcard | Pattern::Ident(_) => -1,
+            Pattern::BoolLit(true) => 1,
+            Pattern::BoolLit(false) => 0,
+            Pattern::NonePat => -2,
+            Pattern::SomePat(_) => -3,
+            Pattern::OkPat(_) => -4,
+            Pattern::ErrPat(_) => -5,
+            Pattern::IntLit(n) => *n as i32,
+            Pattern::EnumVariant(name, _) => {
+                for typedef in &self.module.types {
+                    if let BcTypeKind::Enum { variants } = &typedef.kind {
+                        for (vi, (vname, _)) in variants.iter().enumerate() {
+                            if vname == name {
+                                return vi as i32;
+                            }
+                        }
+                    }
+                }
+                -1
+            }
+            Pattern::StringLit(_) => -1,
+        }
+    }
 }
 
 /// Narrow a count to a `u8` for opcode operands (list/record sizes, call
@@ -932,21 +1007,6 @@ fn count_as_u8(n: usize, subject: &str, unit: &str) -> Result<u8, CompileError> 
         )))
     } else {
         Ok(n as u8)
-    }
-}
-
-fn pattern_to_tag(pattern: &Pattern) -> i32 {
-    match pattern {
-        Pattern::Wildcard | Pattern::Ident(_) => -1,
-        Pattern::BoolLit(true) => 1,
-        Pattern::BoolLit(false) => 0,
-        Pattern::NonePat => -2,
-        Pattern::SomePat(_) => -3,
-        Pattern::OkPat(_) => -4,
-        Pattern::ErrPat(_) => -5,
-        Pattern::IntLit(n) => *n as i32,
-        Pattern::EnumVariant(_, _) => -1, // simplified
-        Pattern::StringLit(_) => -1,
     }
 }
 

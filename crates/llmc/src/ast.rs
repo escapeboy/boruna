@@ -143,6 +143,14 @@ pub enum Expr {
         fields: Vec<(String, Expr)>,
         spread: Option<Box<Expr>>,
     },
+    /// Enum variant construction: `Color::Red` or `Shape::Circle(radius)`.
+    /// The `enum_name` is carried so codegen can resolve the exact type_id
+    /// without cross-enum variant-name ambiguity.
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        payload: Option<Box<Expr>>,
+    },
     List(Vec<Expr>),
     SomeExpr(Box<Expr>),
     OkExpr(Box<Expr>),

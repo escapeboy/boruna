@@ -178,6 +178,9 @@ impl<'a> Analyzer<'a> {
                 self.check_match_in_expr(message, param_types, diags);
             }
             Expr::Block(b) => self.check_match_in_block(b, param_types, diags),
+            Expr::EnumVariant {
+                payload: Some(e), ..
+            } => self.check_match_in_expr(e, param_types, diags),
             _ => {}
         }
     }
@@ -396,6 +399,9 @@ impl<'a> Analyzer<'a> {
                 self.check_fields_in_expr(message, diags);
             }
             Expr::Block(b) => self.check_fields_in_block(b, diags),
+            Expr::EnumVariant {
+                payload: Some(e), ..
+            } => self.check_fields_in_expr(e, diags),
             _ => {}
         }
     }

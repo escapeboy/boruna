@@ -880,6 +880,24 @@ impl Parser {
             }
             Some(TokenKind::Ident(name)) => {
                 self.advance();
+                // Enum variant construction: TypeName::Variant or TypeName::Variant(payload)
+                if self.check(&TokenKind::ColonColon) {
+                    self.advance(); // ::
+                    let variant = self.expect_ident()?;
+                    let payload = if self.check(&TokenKind::LParen) {
+                        self.advance(); // (
+                        let inner = self.parse_expr()?;
+                        self.expect(&TokenKind::RParen)?;
+                        Some(Box::new(inner))
+                    } else {
+                        None
+                    };
+                    return Ok(Expr::EnumVariant {
+                        enum_name: name,
+                        variant,
+                        payload,
+                    });
+                }
                 // Check for record literal: TypeName { field: value, ... }
                 if name.chars().next().is_some_and(|c| c.is_uppercase())
                     && self.check(&TokenKind::LBrace)

@@ -497,6 +497,53 @@ fn main() -> Int { apply(double, 21) }
     }
 
     #[test]
+    fn test_e2e_enum_variant_construct_and_match() {
+        // Construct a user enum value (`Color::Green`) and match on it.
+        // Before per-variant tags, `pattern_to_tag` returned -1 for every
+        // enum arm, so every arm behaved as a wildcard and the FIRST arm
+        // (Red => 1) always matched. A result of 2 proves the Green arm
+        // (variant index 1) is selected by its real discriminant.
+        assert_eq!(
+            run_source(
+                r#"
+enum Color { Red, Green, Blue }
+fn describe(c: Color) -> Int {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+}
+fn main() -> Int { describe(Color::Green) }
+"#
+            ),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn test_e2e_enum_variant_payload_construct_and_destructure() {
+        // Payload-carrying construction (`Shape::Square(5)`) plus destructuring
+        // in the match arm. Exercises MakeEnum with a real payload and confirms
+        // the Square arm (index 1), not Circle (index 0), is chosen.
+        assert_eq!(
+            run_source(
+                r#"
+enum Shape { Circle(Int), Square(Int) }
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r * r * 3,
+        Square(side) => side * side,
+    }
+}
+fn main() -> Int { area(Shape::Square(5)) }
+"#
+            ),
+            Value::Int(25),
+        );
+    }
+
+    #[test]
     fn test_e2e_while_body_trailing_expr_no_stack_leak() {
         // The while body's final statement is a bare expression (`i`), whose
         // value is discarded each iteration. Without balancing the operand
