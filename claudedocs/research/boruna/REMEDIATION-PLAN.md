@@ -75,13 +75,29 @@ trusted_pubkey, require_signature }` + one verify body + all 4 CLI flags. 10 ver
 New `Op::CallIndirect` — a function passed as a value now dispatches correctly (was hardcoded to
 fn #0). `apply(double, 21) == 42` test.
 
-### ⏳ G REMAINING (hard, serial on codegen/vm, LTS-breaking)
-- **Enum-variant match tags:** `pattern_to_tag` returns -1 for all enum variants; the VM `Match`
-  dispatches on `Value::Enum.variant`. Needs codegen to resolve variant NAME → id, which requires
-  type info codegen currently lacks (which enum owns the variant). Harder than higher-order.
-- **Type checker:** real arity/type/record/exhaustiveness checking. LTS-breaking — will reject
-  existing loose `.ax` programs across the whole workspace's test corpus; needs full-workspace
-  gating + judgment on strictness. Biggest remaining item.
+### ✅ Enum construction + per-variant match tags — DONE (2026-07-17, `e7a3fac`)
+Root cause was bigger than "codegen one-liner": `EnumVariant` existed only as a *Pattern*, never as
+an *Expr*, and the lexer had no `::` token — user enums could be DECLARED and MATCHED but never
+CONSTRUCTED, so `pattern_to_tag`→-1 was dead code (every enum arm collapsed to the first). Built the
+whole feature end to end: lexer `::` token; `Expr::EnumVariant { enum_name, variant, payload }`;
+parser `Enum::Variant`/`Enum::Variant(payload)`; codegen `MakeEnum(type_id, variant_idx)` +
+`resolve_enum_variant()`; `pattern_to_tag` now a method resolving variant name→declaration index (VM
+`Op::Match` already dispatches on `Value::Enum.variant`, so NO vm change). Propagated the new Expr to
+the exhaustive matches: tooling format printer, diagnostics walkers, `serve.rs` cap-tag collector,
+typeck. Additive/non-breaking (`::` was never a valid token). +2 e2e tests. Known limit: duplicate
+variant names across enums resolve to first-match in patterns (VM matches on index, ignores type_id).
+
+### ✅ Arity checking — DONE (2026-07-17, `5110a0b`)
+Type checker now rejects a direct call to a named function with the wrong argument count. Local/param
+callees (first-class fn values) are skipped — `Op::CallIndirect` covers them. Non-breaking: verified
+green across compiler/vm/tooling/framework/orchestrator — the corpus carries no arity mismatches.
+
+### ⏳ REMAINING — full strict type inference (LTS-breaking, needs a user decision)
+The additive, non-breaking checks are done. What's LEFT is the genuinely LTS-breaking part: type
+inference, match exhaustiveness, record-field typing, `requires`/`ensures` typed to Bool. This REJECTS
+existing loose `.ax` across the corpus (stdlib libs, examples, framework apps) → needs a corpus
+migration + a strictness-policy decision (warn-only first? `--strict` flag? hard-break at 2.0?). Do
+NOT fire-and-forget; surface the strictness decision to the user first.
 
 ### G — Language buildout (the "statically typed" gap)
 - **Type checker:** arity enforcement, type consistency, record-field validation, `requires`/`ensures`
