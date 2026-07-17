@@ -1135,6 +1135,17 @@ enum EvidenceCommand {
         /// Plaintext bundles ignore this flag.
         #[arg(long, value_name = "HEX")]
         bundle_encryption_key: Option<String>,
+        /// Operator-supplied, out-of-band expected `bundle_hash` (64 hex
+        /// chars). This is the ANCHOR that makes a bundle genuinely
+        /// tamper-evident: the manifest is rewritable, so verification
+        /// against a hash you stored elsewhere is what detects a forged
+        /// bundle. Verification fails if the recomputed hash differs.
+        #[arg(long, value_name = "HEX")]
+        expected_bundle_hash: Option<String>,
+        /// Fail verification if the bundle is NOT encrypted. Blocks a
+        /// downgrade-to-plaintext strip of an encrypted bundle.
+        #[arg(long)]
+        require_encryption: bool,
     },
     /// Inspect an evidence bundle's manifest.
     Inspect {
@@ -4373,7 +4384,7 @@ fn run_evidence(
     use boruna_orchestrator::audit::{
         evidence::{BundleJson, BundleManifest},
         parse_kek_hex, resolve_kek,
-        verify::verify_bundle_with_kek,
+        verify::verify_bundle_with_opts,
         Envelope,
     };
 
@@ -4407,10 +4418,17 @@ fn run_evidence(
         EvidenceCommand::Verify {
             dir,
             bundle_encryption_key,
+            expected_bundle_hash,
+            require_encryption,
         } => {
             let kek = resolve_kek(bundle_encryption_key.as_deref())
                 .map_err(|e| format!("invalid KEK: {e}"))?;
-            let result = verify_bundle_with_kek(&dir, kek.as_ref());
+            let result = verify_bundle_with_opts(
+                &dir,
+                kek.as_ref(),
+                expected_bundle_hash.as_deref(),
+                require_encryption,
+            );
             if result.valid {
                 println!("evidence bundle is VALID");
             } else {

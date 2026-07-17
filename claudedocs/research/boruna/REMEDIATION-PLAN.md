@@ -34,11 +34,15 @@ These are large, cross-cutting, and each carries contract implications that dese
 sprint + review rather than being rushed:
 
 ### E — Evidence tamper-evidence (the #1 High)
-- **Verify-side (tractable, high value):** make `verify_bundle` recompute+check `manifest.bundle_hash`,
-  reject an `encryption`-block strip (downgrade), and add an `--expected-bundle-hash` anchor param +
-  require-encryption flag. Closes the *detection* half without new crypto deps.
-- **Sign-side (architectural):** ed25519 manifest signature under an operator key, verified with a
-  trusted public key. New key-management surface, bundle-format version bump → `evidence-bundle 1.1`.
+- **Verify-side — ✅ DONE this pass.** `verify_bundle_with_opts` recomputes + checks
+  `manifest.bundle_hash` (internal consistency), adds `evidence verify --expected-bundle-hash <hex>`
+  (the out-of-band ANCHOR that gives real tamper-evidence — proven by
+  `test_verify_anchor_detects_forged_manifest`, which forges a fully self-consistent manifest that
+  plain verify accepts but the anchor rejects), and `--require-encryption` to block a
+  downgrade-to-plaintext strip. No new crypto deps.
+- **Sign-side (architectural, STILL STAGED):** ed25519 manifest signature under an operator key,
+  verified with a trusted public key — removes the need for operators to carry the anchor
+  out-of-band. New key-management surface, bundle-format version bump → `evidence-bundle 1.1`.
 
 ### F — Coordinator principal/ownership model (verify-B N2, root of S6+S9)
 - Add `worker_id` to the terminal CAS predicate (kills cross-worker claim hijack S6).

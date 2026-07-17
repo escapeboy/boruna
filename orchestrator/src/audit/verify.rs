@@ -87,13 +87,31 @@ pub fn check_bundle_format(bundle_dir: &Path) -> Result<BundleJson, EvidenceErro
 /// `BORUNA_BUNDLE_KEK` env var; if absent the result includes an
 /// `evidence.encryption_key_required` error and verification stops.
 pub fn verify_bundle(bundle_dir: &Path) -> VerifyResult {
-    verify_bundle_with_kek(bundle_dir, None)
+    verify_bundle_with_opts(bundle_dir, None, None, false)
 }
 
 /// Verify an evidence bundle, optionally with an explicit KEK
 /// supplied by the caller (CLI flag path). Falls back to env var
 /// when `kek` is `None`.
 pub fn verify_bundle_with_kek(bundle_dir: &Path, kek: Option<&[u8; KEY_LEN]>) -> VerifyResult {
+    verify_bundle_with_opts(bundle_dir, kek, None, false)
+}
+
+/// Verify an evidence bundle with optional tamper-evidence hardening.
+///
+/// - `expected_bundle_hash`: an operator-supplied, out-of-band `bundle_hash`.
+///   The manifest (and thus its self-`bundle_hash`) is rewritable by anyone with
+///   bundle write access, so internal recomputation alone proves nothing against
+///   a motivated attacker — the **external anchor** is what makes a plaintext
+///   bundle genuinely tamper-evident. When set, the recomputed hash must equal it.
+/// - `require_encryption`: when true, a bundle whose manifest has no `encryption`
+///   block fails — blocking a downgrade-to-plaintext strip of an encrypted bundle.
+pub fn verify_bundle_with_opts(
+    bundle_dir: &Path,
+    kek: Option<&[u8; KEY_LEN]>,
+    expected_bundle_hash: Option<&str>,
+    require_encryption: bool,
+) -> VerifyResult {
     let mut errors = Vec::new();
 
     // 0. Format-version gate: reject pre-1.0 legacy bundles and any
@@ -127,6 +145,39 @@ pub fn verify_bundle_with_kek(bundle_dir: &Path, kek: Option<&[u8; KEY_LEN]>) ->
             };
         }
     };
+
+    // 1b. Encryption-required + bundle_hash consistency / external anchor.
+    if require_encryption && manifest.encryption.is_none() {
+        errors.push(
+            "evidence.encryption_required: --require-encryption is set but the manifest has no \
+             encryption block (possible downgrade-to-plaintext strip)"
+                .to_string(),
+        );
+    }
+    match recompute_bundle_hash(&manifest) {
+        Ok(recomputed) => {
+            // Internal consistency: catches a naive edit that forgot to
+            // recompute bundle_hash. Not tamper-proof on its own (a motivated
+            // attacker recomputes it too) — that is what the anchor below is for.
+            if recomputed != manifest.bundle_hash {
+                errors.push(format!(
+                    "evidence.bundle_hash_inconsistent: manifest.bundle_hash {} does not match \
+                     the recomputed {} (manifest was edited)",
+                    manifest.bundle_hash, recomputed
+                ));
+            }
+            // External anchor: the real tamper-evidence check.
+            if let Some(anchor) = expected_bundle_hash {
+                if recomputed != anchor {
+                    errors.push(format!(
+                        "evidence.bundle_hash_anchor_mismatch: recomputed bundle_hash {recomputed} \
+                         does not match the expected anchor {anchor}"
+                    ));
+                }
+            }
+        }
+        Err(e) => errors.push(format!("cannot recompute bundle_hash: {e}")),
+    }
 
     // 2. Resolve envelope when the bundle is encrypted.
     let envelope = match &manifest.encryption {
@@ -289,6 +340,15 @@ fn sha256_bytes(b: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Recompute a manifest's `bundle_hash` the same way `finalize`/`rotate` do:
+/// blank the field, pretty-print, SHA-256.
+fn recompute_bundle_hash(manifest: &BundleManifest) -> Result<String, String> {
+    let mut clone = manifest.clone();
+    clone.bundle_hash = String::new();
+    let json = serde_json::to_string_pretty(&clone).map_err(|e| e.to_string())?;
+    Ok(sha256_bytes(json.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +393,77 @@ mod tests {
 
         let result = verify_bundle(&bundle_dir);
         assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_verify_correct_anchor_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        let result = verify_bundle_with_opts(&bundle_dir, None, Some(&manifest.bundle_hash), false);
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn test_verify_wrong_anchor_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        let result = verify_bundle_with_opts(&bundle_dir, None, Some(&"a".repeat(64)), false);
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("bundle_hash_anchor_mismatch")));
+    }
+
+    #[test]
+    fn test_verify_anchor_detects_forged_manifest() {
+        // Motivated-attacker scenario: edit an output AND rewrite every checksum
+        // + bundle_hash so the manifest is internally consistent. Without an
+        // anchor this verifies; WITH the operator's out-of-band anchor it fails.
+        let dir = tempfile::tempdir().unwrap();
+        let good = build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+
+        // Forge: rewrite a step output and re-hash it into the manifest, then
+        // recompute bundle_hash so the bundle is self-consistent.
+        let forged_output = r#"{"value":999}"#;
+        let out_rel = "outputs/s1/result.json";
+        std::fs::write(bundle_dir.join(out_rel), forged_output).unwrap();
+        let mut manifest = good.clone();
+        manifest
+            .file_checksums
+            .insert(out_rel.to_string(), sha256_bytes(forged_output.as_bytes()));
+        manifest.bundle_hash = recompute_bundle_hash(&manifest).unwrap();
+        std::fs::write(
+            bundle_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Self-consistent → plain verify passes (the F1 weakness).
+        assert!(verify_bundle(&bundle_dir).valid);
+        // But the out-of-band anchor from the ORIGINAL bundle catches it.
+        let anchored = verify_bundle_with_opts(&bundle_dir, None, Some(&good.bundle_hash), false);
+        assert!(!anchored.valid);
+        assert!(anchored
+            .errors
+            .iter()
+            .any(|e| e.contains("bundle_hash_anchor_mismatch")));
+    }
+
+    #[test]
+    fn test_verify_require_encryption_fails_on_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        build_valid_bundle(dir.path());
+        let bundle_dir = dir.path().join("run-verify-001");
+        let result = verify_bundle_with_opts(&bundle_dir, None, None, true);
+        assert!(!result.valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("encryption_required")));
     }
 
     #[test]
