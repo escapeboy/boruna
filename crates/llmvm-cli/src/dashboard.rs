@@ -323,26 +323,85 @@ fn html_escape(s: &str) -> String {
 
 const PAGE_STYLE: &str = r#"
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-       max-width: 1200px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-h1, h2 { font-weight: 600; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; }
-th { background: #f7f7f7; font-weight: 600; }
-tr:hover { background: #fafafa; }
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+       max-width: 1100px; margin: 0 auto; padding: 0 1rem 2rem; color: #1a1a2e;
+       background: #fff; line-height: 1.5; }
+h1 { font-size: 1.3rem; font-weight: 600; margin: 0.2rem 0 0.4rem; }
+h2 { font-size: 1.05rem; font-weight: 600; margin: 1.6rem 0 0.6rem; }
+.topbar { display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: baseline;
+          padding: 14px 0 10px; margin-bottom: 1rem; border-bottom: 2px solid #1a1a2e; }
+.topbar .brand { font-size: 1.05rem; font-weight: 700; color: #1a1a2e; }
+.topbar nav { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.9rem; }
+.topbar nav a { padding: 2px 6px; border-radius: 3px; }
+.topbar nav a[aria-current="page"] { background: #eef2ff; color: #1e3a8a; font-weight: 600; }
+p.lead { color: #444; font-size: 0.9rem; max-width: 78ch; margin: 0 0 1rem; }
+.hint { color: #6b7280; font-size: 0.8rem; max-width: 82ch; margin: -0.4rem 0 0.8rem; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+caption { text-align: left; color: #6b7280; font-size: 0.8rem; padding: 0 0 0.6rem; }
+th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; vertical-align: top; }
+th { background: #f7f7f7; font-weight: 600; white-space: nowrap; }
+tr:hover td { background: #fafafa; }
 a { color: #2563eb; text-decoration: none; }
 a:hover { text-decoration: underline; }
-.status-running { color: #2563eb; }
-.status-paused { color: #d97706; }
-.status-completed { color: #16a34a; }
-.status-failed { color: #dc2626; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 12px;
+         font-size: 0.78rem; font-weight: 600; }
+.status-running { background: #dbeafe; color: #1e40af; }
+.status-paused { background: #fef3c7; color: #92400e; }
+.status-completed { background: #dcfce7; color: #166534; }
+.status-failed { background: #fee2e2; color: #991b1b; }
+.status-pending { background: #f3f4f6; color: #374151; }
 .banner { padding: 0.75rem 1rem; background: #fee; color: #991b1b;
           border: 1px solid #fca5a5; border-radius: 4px; margin-bottom: 1rem; }
 code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px;
-       font-family: ui-monospace, SFMono-Regular, monospace; }
+       font-family: ui-monospace, SFMono-Regular, monospace; overflow-wrap: anywhere; }
 .muted { color: #6b7280; font-size: 0.9rem; }
+footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e5e5e5;
+         color: #888; font-size: 0.75rem; }
+@media (prefers-color-scheme: dark) {
+ body { background: #14141f; color: #e5e7eb; }
+ h1, .topbar .brand { color: #e5e7eb; }
+ .topbar { border-color: #3a3a55; }
+ .topbar nav a { color: #93c5fd; }
+ .topbar nav a[aria-current="page"] { background: #26263a; color: #c7d2fe; }
+ p.lead { color: #c9cbd1; }
+ .hint, .muted { color: #9aa0ad; }
+ a { color: #93c5fd; }
+ th { background: #26263a; }
+ th, td { border-color: #2a2a3d; }
+ tr:hover td { background: #242438; }
+ code { background: #26263a; }
+ caption { color: #9aa0ad; }
+ footer { color: #7b7f8c; border-color: #2a2a3d; }
+}
 </style>
 "#;
+
+/// Top navigation bar shared by both dashboard pages. `active` is the
+/// nav key of the current page ("runs" for the list; detail pages are
+/// also under "runs") so the matching link gets an `aria-current` cue.
+fn render_header(active: &str) -> String {
+    let cur = |k: &str| {
+        if k == active {
+            r#" aria-current="page""#
+        } else {
+            ""
+        }
+    };
+    format!(
+        r#"<header class="topbar">
+  <span class="brand">Boruna Workflow Dashboard</span>
+  <nav aria-label="Dashboard sections">
+    <a href="/"{r}>Runs</a>
+    <a href="/api/runs"{j}>JSON API</a>
+  </nav>
+</header>"#,
+        r = cur("runs"),
+        j = cur("api"),
+    )
+}
 
 fn render_banner(bind_warning: Option<&str>) -> String {
     match bind_warning {
@@ -358,7 +417,11 @@ fn render_banner(bind_warning: Option<&str>) -> String {
 fn render_index(runs: &[RunRow], bind_warning: Option<&str>) -> String {
     let banner = render_banner(bind_warning);
     let mut body = String::new();
-    body.push_str("<h1>Boruna runs</h1>");
+    body.push_str("<h1>Workflow runs</h1>");
+    body.push_str(
+        r#"<p class="lead">Every workflow execution recorded in this Boruna instance. Each row is one
+run; click its <strong>Run ID</strong> to see per-step progress, outputs, and errors. Times are UTC.</p>"#,
+    );
     body.push_str(&format!(
         r#"<p class="muted">{} run{} total</p>"#,
         runs.len(),
@@ -366,17 +429,24 @@ fn render_index(runs: &[RunRow], bind_warning: Option<&str>) -> String {
     ));
 
     if runs.is_empty() {
-        body.push_str(r#"<p class="muted">No runs yet. Start one with <code>boruna workflow run ...</code>.</p>"#);
+        body.push_str(r#"<p class="muted">No runs yet. Start one with <code>boruna workflow run ...</code>, then reload this page.</p>"#);
     } else {
-        body.push_str("<table><thead><tr>");
+        body.push_str(r#"<div class="table-wrap"><table>"#);
         body.push_str(
-            "<th>Run ID</th><th>Workflow</th><th>Status</th><th>Started</th><th>Updated</th>",
+            r#"<caption>Status: <span class="badge status-running">running</span>
+            <span class="badge status-paused">paused</span>
+            <span class="badge status-completed">completed</span>
+            <span class="badge status-failed">failed</span></caption>"#,
+        );
+        body.push_str("<thead><tr>");
+        body.push_str(
+            r#"<th scope="col">Run ID</th><th scope="col">Workflow</th><th scope="col">Status</th><th scope="col">Started</th><th scope="col">Updated</th>"#,
         );
         body.push_str("</tr></thead><tbody>");
         for run in runs {
             let status_class = format!("status-{}", run.status.as_str());
             body.push_str(&format!(
-                r#"<tr><td><a href="/runs/{}">{}</a></td><td>{}</td><td class="{}">{}</td><td>{}</td><td>{}</td></tr>"#,
+                r#"<tr><td><a href="/runs/{}"><code>{}</code></a></td><td>{}</td><td><span class="badge {}">{}</span></td><td>{}</td><td>{}</td></tr>"#,
                 html_escape(&run.run_id),
                 html_escape(&run.run_id),
                 html_escape(&run.workflow_name),
@@ -386,12 +456,12 @@ fn render_index(runs: &[RunRow], bind_warning: Option<&str>) -> String {
                 format_ms(run.updated_at_ms),
             ));
         }
-        body.push_str("</tbody></table>");
+        body.push_str("</tbody></table></div>");
     }
 
-    body.push_str(r#"<p class="muted">JSON: <code>GET /api/runs</code></p>"#);
+    body.push_str(r#"<p class="muted">Machine-readable list: <code>GET /api/runs</code></p>"#);
 
-    wrap_page("Boruna runs", &banner, &body)
+    wrap_page("Boruna runs", &render_header("runs"), &banner, &body)
 }
 
 /// Maximum chars of inline output rendered in the HTML detail
@@ -418,47 +488,59 @@ fn render_detail(
     let mut body = String::new();
     body.push_str(r#"<p class="muted"><a href="/">&larr; All runs</a></p>"#);
     body.push_str(&format!("<h1>Run {}</h1>", html_escape(&run.run_id)));
+    body.push_str(
+        r#"<p class="lead">One workflow run. The summary below identifies which workflow ran and its
+current state; the steps table shows each step's progress, retry count, output, and any error.</p>"#,
+    );
 
-    body.push_str("<table>");
+    body.push_str(r#"<div class="table-wrap"><table>"#);
     body.push_str(&format!(
-        "<tr><th>Workflow</th><td>{}</td></tr>",
+        r#"<tr><th scope="row">Workflow</th><td>{}</td></tr>"#,
         html_escape(&run.workflow_name)
     ));
     body.push_str(&format!(
-        "<tr><th>Workflow hash</th><td><code>{}</code></td></tr>",
-        html_escape(&run.workflow_hash)
+        r#"<tr><th scope="row">Workflow hash</th><td><code title="{h}">{h}</code></td></tr>"#,
+        h = html_escape(&run.workflow_hash)
     ));
     if let Some(op) = operational {
         let status_class = format!("status-{}", op.transient_status.as_str());
         body.push_str(&format!(
-            r#"<tr><th>Status</th><td class="{}">{}</td></tr>"#,
+            r#"<tr><th scope="row">Status</th><td><span class="badge {}">{}</span></td></tr>"#,
             status_class,
             op.transient_status.as_str()
         ));
         body.push_str(&format!(
-            "<tr><th>Started</th><td>{}</td></tr>",
+            r#"<tr><th scope="row">Started</th><td>{}</td></tr>"#,
             format_ms(op.started_at_ms)
         ));
         body.push_str(&format!(
-            "<tr><th>Updated</th><td>{}</td></tr>",
+            r#"<tr><th scope="row">Updated</th><td>{}</td></tr>"#,
             format_ms(op.updated_at_ms)
         ));
     }
     if let Some(t) = &run.terminal_status {
         body.push_str(&format!(
-            "<tr><th>Terminal</th><td>{}</td></tr>",
-            t.as_str()
+            r#"<tr><th scope="row">Terminal</th><td><span class="badge status-{c}">{c}</span></td></tr>"#,
+            c = t.as_str()
         ));
     }
-    body.push_str("</table>");
+    body.push_str("</table></div>");
 
     body.push_str(&format!("<h2>Steps ({})</h2>", steps.len()));
     if steps.is_empty() {
-        body.push_str(r#"<p class="muted">No step checkpoints recorded.</p>"#);
-    } else {
-        body.push_str("<table><thead><tr>");
         body.push_str(
-            "<th>Step</th><th>Status</th><th>Attempts</th><th>Started</th><th>Ended</th><th>Output</th><th>Error</th>",
+            r#"<p class="muted">No step checkpoints recorded — the run may not have started
+        any steps yet, or it ran in a mode that does not persist per-step checkpoints.</p>"#,
+        );
+    } else {
+        body.push_str(r#"<div class="table-wrap"><table>"#);
+        body.push_str(
+            r#"<caption>Output shows the recorded JSON result (long values are truncated with … and
+            large ones link out as a blob). Attempts counts retries. Times are UTC.</caption>"#,
+        );
+        body.push_str("<thead><tr>");
+        body.push_str(
+            r#"<th scope="col">Step</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Started</th><th scope="col">Ended</th><th scope="col">Output</th><th scope="col">Error</th>"#,
         );
         body.push_str("</tr></thead><tbody>");
         for (step, output) in steps.iter().zip(outputs.iter()) {
@@ -472,7 +554,7 @@ fn render_detail(
                 .unwrap_or_default();
             let output_cell = render_output_cell(&run.run_id, output);
             body.push_str(&format!(
-                r#"<tr><td><code>{}</code></td><td class="{}">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
+                r#"<tr><td><code>{}</code></td><td><span class="badge {}">{}</span></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"#,
                 html_escape(&step.step_id),
                 status_class,
                 step.status.as_str(),
@@ -483,15 +565,20 @@ fn render_detail(
                 error,
             ));
         }
-        body.push_str("</tbody></table>");
+        body.push_str("</tbody></table></div>");
     }
 
     body.push_str(&format!(
-        r#"<p class="muted">JSON: <code>GET /api/runs/{}</code></p>"#,
+        r#"<p class="muted">Machine-readable detail: <code>GET /api/runs/{}</code></p>"#,
         html_escape(&run.run_id)
     ));
 
-    wrap_page(&format!("Run {}", run.run_id), &banner, &body)
+    wrap_page(
+        &format!("Run {}", run.run_id),
+        &render_header("runs"),
+        &banner,
+        &body,
+    )
 }
 
 /// Render a single step's Output cell. Sprint 0.5-S7b.
@@ -553,15 +640,20 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
     &s[..end]
 }
 
-fn wrap_page(title: &str, banner: &str, body: &str) -> String {
+fn wrap_page(title: &str, header: &str, banner: &str, body: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>{}</title>{}</head>
-<body>{}{}</body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{}</title>{}</head>
+<body>{}{}<main>{}</main>
+<footer>Read-only view over <span class="muted">runs.db</span>. This dashboard cannot start, stop, or
+change runs — manage workflows with the <code>boruna</code> CLI. It ships no authentication; keep it on
+<code>127.0.0.1</code> unless fronted by an auth-enforcing proxy.</footer>
+</body>
 </html>"#,
         html_escape(title),
         PAGE_STYLE,
+        header,
         banner,
         body
     )
@@ -835,7 +927,7 @@ mod tests {
             .unwrap()
             .0;
         // Output column header present.
-        assert!(html.contains("<th>Output</th>"));
+        assert!(html.contains(r#"<th scope="col">Output</th>"#));
         // Inline value rendered (with HTML-escaped quotes).
         assert!(
             html.contains("&quot;hello world&quot;"),
