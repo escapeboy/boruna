@@ -92,12 +92,21 @@ Type checker now rejects a direct call to a named function with the wrong argume
 callees (first-class fn values) are skipped — `Op::CallIndirect` covers them. Non-breaking: verified
 green across compiler/vm/tooling/framework/orchestrator — the corpus carries no arity mismatches.
 
-### ⏳ REMAINING — full strict type inference (LTS-breaking, needs a user decision)
-The additive, non-breaking checks are done. What's LEFT is the genuinely LTS-breaking part: type
-inference, match exhaustiveness, record-field typing, `requires`/`ensures` typed to Bool. This REJECTS
-existing loose `.ax` across the corpus (stdlib libs, examples, framework apps) → needs a corpus
-migration + a strictness-policy decision (warn-only first? `--strict` flag? hard-break at 2.0?). Do
-NOT fire-and-forget; surface the strictness decision to the user first.
+### ✅ Warn-only static type checking — DONE (2026-07-17, `3b71261`, user chose warn-only)
+New analyzer pass `check_type_consistency` emits type mismatches as `Severity::Warning` (E009) via
+`lang check` / `boruna_check` — never blocks compilation or run (the chosen warn-only rollout). Two
+inference-free checks: (1) `let x: T = <expr>` where the initializer's concrete type ≠ T; (2) direct
+call args vs declared param types. Conservative local type env (literals, annotated bindings,
+record/enum constructors, user-fn return types); generics/builtins/binary-ops stay untyped, so it
+warns only when both sides resolve to differing concrete names. **Zero false positives across all 64
+corpus .ax files.** +3 tests. Match-exhaustiveness (E005) and record-field (E006) checks already
+existed in the analyzer.
+
+### ⏳ DEFERRED — hard-error strict typing at 2.0 (opt-in, not urgent)
+The remaining LTS-breaking escalation: promote the E009 warnings to hard errors, add inference through
+binary ops, and enforce at compile time. This REJECTS existing loose `.ax` and needs a corpus
+migration — a separate, deliberate 2.0 step. The warn-only layer already surfaces the problems today;
+escalation is a policy flip, not new detection. Not blocking; do when 2.0 is cut.
 
 ### G — Language buildout (the "statically typed" gap)
 - **Type checker:** arity enforcement, type consistency, record-field validation, `requires`/`ensures`
