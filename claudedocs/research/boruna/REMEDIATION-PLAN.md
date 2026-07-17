@@ -65,13 +65,23 @@ preserved. Account-takeover self-review done. 96 framework tests green.
 Additive `.ax` features. STILL OPEN in G: type checker (arity/type/exhaustiveness), higher-order/
 indirect calls (dispatch to fn #0), enum-variant match tags (all -1) — serial on codegen/vm, LTS-breaking.
 
-### ⏳ E-sign — ed25519 manifest signing — DONE BUT NEEDS RECONCILIATION
-Parallel agent built it on branch `worktree-agent-acbdc161d1119c689` (`f214b7c`): optional ed25519
-signature, `evidence verify --verify-key/--require-signature`, 6 tests green. BUT it branched from
-master (pre-E-verify) and re-created `verify_bundle_with_opts`/`VerifyOptions` with a DIFFERENT
-signature than this branch's `--expected-bundle-hash` version. **NEXT SESSION: hand-merge into one
-`VerifyOptions` { kek, expected_bundle_hash, require_encryption, trusted_pubkey, require_signature }**
-and one verify body + one set of CLI flags. The worktree is preserved for this.
+### ✅ E-sign — ed25519 manifest signing — DONE + RECONCILED (2026-07-17, `01ca774`)
+Reconciliation agent reset to the branch tip, cherry-picked the ed25519 work, and unified both
+verify features into ONE `VerifyOptions { kek, expected_bundle_hash, require_encryption,
+trusted_pubkey, require_signature }` + one verify body + all 4 CLI flags. 10 verify tests
+(anchor + signature) green. The #1 High now has BOTH an external-anchor AND a signature path.
+
+### ✅ G higher-order/indirect calls — DONE (2026-07-17, `9e7e25d`)
+New `Op::CallIndirect` — a function passed as a value now dispatches correctly (was hardcoded to
+fn #0). `apply(double, 21) == 42` test.
+
+### ⏳ G REMAINING (hard, serial on codegen/vm, LTS-breaking)
+- **Enum-variant match tags:** `pattern_to_tag` returns -1 for all enum variants; the VM `Match`
+  dispatches on `Value::Enum.variant`. Needs codegen to resolve variant NAME → id, which requires
+  type info codegen currently lacks (which enum owns the variant). Harder than higher-order.
+- **Type checker:** real arity/type/record/exhaustiveness checking. LTS-breaking — will reject
+  existing loose `.ax` programs across the whole workspace's test corpus; needs full-workspace
+  gating + judgment on strictness. Biggest remaining item.
 
 ### G — Language buildout (the "statically typed" gap)
 - **Type checker:** arity enforcement, type consistency, record-field validation, `requires`/`ensures`
