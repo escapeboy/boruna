@@ -959,7 +959,13 @@ async fn handle_console() -> Response {
             (axum::http::header::X_FRAME_OPTIONS, "DENY"),
             (
                 axum::http::header::CONTENT_SECURITY_POLICY,
-                "frame-ancestors 'none'",
+                // Fully self-contained, same-origin: allow only inline
+                // style/script and same-origin fetch; deny everything else,
+                // framing, and <base> injection (defense-in-depth beyond the
+                // X-Frame-Options above).
+                "default-src 'none'; style-src 'unsafe-inline'; \
+                 script-src 'unsafe-inline'; connect-src 'self'; \
+                 frame-ancestors 'none'; base-uri 'none'",
             ),
         ],
         CONSOLE_HTML,
