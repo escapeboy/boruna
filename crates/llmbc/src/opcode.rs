@@ -22,6 +22,12 @@ pub enum Op {
     /// Pop N args, call function by index. Pushes return value.
     Call(u32, u8),
 
+    /// Indirect call: the callee `Value::FnRef(func_idx)` is on top of the
+    /// stack, with the N args below it. Pops the FnRef and the N args, calls
+    /// the referenced function, pushes the return value. Used for higher-order
+    /// / computed call targets (a function passed as a value).
+    CallIndirect(u8),
+
     /// Return from the current function. Pops return value from stack.
     Ret,
 
@@ -244,6 +250,7 @@ impl Op {
             Op::LoadGlobal(_) => 0x04,
             Op::StoreGlobal(_) => 0x05,
             Op::Call(_, _) => 0x06,
+            Op::CallIndirect(_) => 0x14,
             Op::Ret => 0x07,
             Op::Jmp(_) => 0x08,
             Op::JmpIf(_) => 0x09,

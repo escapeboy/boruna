@@ -425,6 +425,25 @@ impl Vm {
                     args.reverse();
                     self.call_function(target, args)?;
                 }
+                Op::CallIndirect(arity) => {
+                    // Callee FnRef is on top; the N args are below it.
+                    let callee = self.pop()?;
+                    let target = match callee {
+                        Value::FnRef(idx) => idx,
+                        other => {
+                            return Err(VmError::TypeError {
+                                expected: "function reference",
+                                got: other.type_name(),
+                            })
+                        }
+                    };
+                    let mut args = Vec::with_capacity(arity as usize);
+                    for _ in 0..arity {
+                        args.push(self.pop()?);
+                    }
+                    args.reverse();
+                    self.call_function(target, args)?;
+                }
                 Op::Ret => {
                     let result = self.pop().unwrap_or(Value::Unit);
                     let frame = self.call_stack.pop().unwrap();

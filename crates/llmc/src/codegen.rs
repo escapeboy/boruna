@@ -613,14 +613,15 @@ impl Emitter {
                         return Ok(());
                     }
                 }
-                // Otherwise: push args, push func, call indirect (not supported yet; fallback)
+                // Indirect / higher-order call: push args, then push the callee
+                // (which must evaluate to a `Value::FnRef`), then `CallIndirect`
+                // dispatches to the referenced function at runtime.
                 let argc = count_as_u8(args.len(), "call", "arguments")?;
                 for arg in args {
                     self.emit_expr(arg, fe)?;
                 }
                 self.emit_expr(func, fe)?;
-                // For now, just emit a direct call (requires func to be a function reference)
-                fe.code.push(Op::Call(0, argc));
+                fe.code.push(Op::CallIndirect(argc));
             }
             Expr::FieldAccess { object, field } => {
                 self.emit_expr(object, fe)?;

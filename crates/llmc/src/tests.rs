@@ -479,6 +479,24 @@ fn main() -> Int {
     }
 
     #[test]
+    fn test_e2e_higher_order_indirect_call() {
+        // A function passed as a value and invoked indirectly through a
+        // parameter — exercises `Op::CallIndirect` (previously the codegen
+        // hardcoded the target to function #0, so any higher-order call was
+        // silently wrong).
+        assert_eq!(
+            run_source(
+                r#"
+fn double(n: Int) -> Int { n * 2 }
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int { apply(double, 21) }
+"#
+            ),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
     fn test_e2e_while_body_trailing_expr_no_stack_leak() {
         // The while body's final statement is a bare expression (`i`), whose
         // value is discarded each iteration. Without balancing the operand
