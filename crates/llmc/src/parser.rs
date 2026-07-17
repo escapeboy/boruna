@@ -480,6 +480,28 @@ impl Parser {
                 self.expect(&TokenKind::Gt)?;
                 Ok(TypeExpr::List(Box::new(inner)))
             }
+            "Map" => {
+                self.expect(&TokenKind::Lt)?;
+                let key = self.parse_type_expr()?;
+                self.expect(&TokenKind::Comma)?;
+                let value = self.parse_type_expr()?;
+                self.expect(&TokenKind::Gt)?;
+                Ok(TypeExpr::Map(Box::new(key), Box::new(value)))
+            }
+            "Fn" => {
+                self.expect(&TokenKind::LParen)?;
+                let mut params = Vec::new();
+                while !self.check(&TokenKind::RParen) {
+                    if !params.is_empty() {
+                        self.expect(&TokenKind::Comma)?;
+                    }
+                    params.push(self.parse_type_expr()?);
+                }
+                self.expect(&TokenKind::RParen)?;
+                self.expect(&TokenKind::Arrow)?;
+                let ret = self.parse_type_expr()?;
+                Ok(TypeExpr::Fn(params, Box::new(ret)))
+            }
             _ => Ok(TypeExpr::Named(name)),
         }
     }
@@ -541,6 +563,14 @@ impl Parser {
                 let condition = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Ok(Stmt::While { condition, body })
+            }
+            Some(TokenKind::For) => {
+                self.advance();
+                let var = self.expect_ident()?;
+                self.expect(&TokenKind::In)?;
+                let iter = self.parse_expr()?;
+                let body = self.parse_block()?;
+                Ok(Stmt::For { var, iter, body })
             }
             _ => {
                 let expr = self.parse_expr()?;
@@ -850,6 +880,24 @@ impl Parser {
             }
             Some(TokenKind::Ident(name)) => {
                 self.advance();
+                // Enum variant construction: TypeName::Variant or TypeName::Variant(payload)
+                if self.check(&TokenKind::ColonColon) {
+                    self.advance(); // ::
+                    let variant = self.expect_ident()?;
+                    let payload = if self.check(&TokenKind::LParen) {
+                        self.advance(); // (
+                        let inner = self.parse_expr()?;
+                        self.expect(&TokenKind::RParen)?;
+                        Some(Box::new(inner))
+                    } else {
+                        None
+                    };
+                    return Ok(Expr::EnumVariant {
+                        enum_name: name,
+                        variant,
+                        payload,
+                    });
+                }
                 // Check for record literal: TypeName { field: value, ... }
                 if name.chars().next().is_some_and(|c| c.is_uppercase())
                     && self.check(&TokenKind::LBrace)

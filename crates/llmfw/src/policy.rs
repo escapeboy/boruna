@@ -101,9 +101,14 @@ impl PolicySet {
     }
 
     /// Check if an effect is allowed by this policy.
+    ///
+    /// Fail-closed: an effect whose capability is not in the declared set is
+    /// DENIED, even when the set is empty. An explicit empty (or malformed →
+    /// `PolicySet::default()`) `policies()` therefore denies every effect,
+    /// rather than silently allowing all of them.
     pub fn check_effect(&self, effect: &Effect) -> Result<(), FrameworkError> {
         let cap_name = effect.kind.capability_name();
-        if !self.capabilities.is_empty() && !self.capabilities.iter().any(|c| c == cap_name) {
+        if !self.capabilities.iter().any(|c| c == cap_name) {
             return Err(FrameworkError::PolicyViolation(format!(
                 "effect {:?} requires capability '{}' which is not in the policy",
                 effect.kind, cap_name

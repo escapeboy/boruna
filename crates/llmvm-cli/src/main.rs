@@ -916,6 +916,12 @@ enum WorkflowCommand {
         /// `--coordinator`.
         #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
         coord_token: Option<String>,
+        /// Per-gate approval token stashed at pause-time (finding S9). Required
+        /// by a remote coordinator's `/approve` — without it the gate cannot be
+        /// approved. Distinct from `--coord-token` (the auth bearer). Retrieve
+        /// it from the paused run's status. Only meaningful with `--coordinator`.
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
     },
     /// Reject a paused approval-gate step. Records a rejection sentinel;
     /// `boruna workflow resume <run-id>` will then halt the run as
@@ -935,6 +941,11 @@ enum WorkflowCommand {
         coordinator: Option<String>,
         #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
         coord_token: Option<String>,
+        /// Per-gate approval token stashed at pause-time (finding S9), required
+        /// by a remote coordinator's `/approve`. Only meaningful with
+        /// `--coordinator`.
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
     },
     /// Trigger a paused external_trigger step (sprint 0.3-S15). Records
     /// the supplied payload as the step's output and primes resume to
@@ -1135,6 +1146,28 @@ enum EvidenceCommand {
         /// Plaintext bundles ignore this flag.
         #[arg(long, value_name = "HEX")]
         bundle_encryption_key: Option<String>,
+        /// Operator-supplied, out-of-band expected `bundle_hash` (64 hex
+        /// chars). This is the ANCHOR that makes a bundle genuinely
+        /// tamper-evident: the manifest is rewritable, so verification
+        /// against a hash you stored elsewhere is what detects a forged
+        /// bundle. Verification fails if the recomputed hash differs.
+        #[arg(long, value_name = "HEX")]
+        expected_bundle_hash: Option<String>,
+        /// Fail verification if the bundle is NOT encrypted. Blocks a
+        /// downgrade-to-plaintext strip of an encrypted bundle.
+        #[arg(long)]
+        require_encryption: bool,
+        /// verify-A: pin the trusted ed25519 signing key (32-byte
+        /// public key as 64 hex chars). The bundle's signature MUST be
+        /// made by this key, else verification fails
+        /// (`evidence.signature_untrusted_key`). This is what roots
+        /// trust — an unpinned signature only proves self-consistency.
+        #[arg(long, value_name = "HEX")]
+        verify_key: Option<String>,
+        /// verify-A: fail an unsigned bundle
+        /// (`evidence.signature_required`).
+        #[arg(long)]
+        require_signature: bool,
     },
     /// Inspect an evidence bundle's manifest.
     Inspect {
@@ -3462,6 +3495,7 @@ fn run_workflow(
             data_dir,
             coordinator,
             coord_token,
+            token,
         } => {
             if let Some(url) = coordinator {
                 #[cfg(feature = "serve")]
@@ -3473,6 +3507,7 @@ fn run_workflow(
                         &step_id,
                         "approved",
                         None,
+                        token.as_deref().unwrap_or_default(),
                     )?;
                     println!(
                         "approval recorded for step '{step_id}' in run '{run_id}' \
@@ -3481,12 +3516,13 @@ fn run_workflow(
                 }
                 #[cfg(not(feature = "serve"))]
                 {
-                    let _ = (url, coord_token);
+                    let _ = (url, coord_token, token);
                     return Err(
                         "`workflow approve --coordinator` requires the `serve` feature".into(),
                     );
                 }
             } else {
+                let _ = token; // local approve is operator-trusted; no gate token
                 #[cfg(feature = "persist-sqlite")]
                 {
                     use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
@@ -3519,6 +3555,7 @@ fn run_workflow(
             data_dir,
             coordinator,
             coord_token,
+            token,
         } => {
             if let Some(url) = coordinator {
                 #[cfg(feature = "serve")]
@@ -3530,6 +3567,7 @@ fn run_workflow(
                         &step_id,
                         "rejected",
                         reason.as_deref(),
+                        token.as_deref().unwrap_or_default(),
                     )?;
                     println!(
                         "rejection recorded for step '{step_id}' in run '{run_id}' \
@@ -3538,12 +3576,13 @@ fn run_workflow(
                 }
                 #[cfg(not(feature = "serve"))]
                 {
-                    let _ = (url, coord_token, reason);
+                    let _ = (url, coord_token, reason, token);
                     return Err(
                         "`workflow reject --coordinator` requires the `serve` feature".into(),
                     );
                 }
             } else {
+                let _ = token; // local reject is operator-trusted; no gate token
                 #[cfg(feature = "persist-sqlite")]
                 {
                     use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
@@ -4373,7 +4412,7 @@ fn run_evidence(
     use boruna_orchestrator::audit::{
         evidence::{BundleJson, BundleManifest},
         parse_kek_hex, resolve_kek,
-        verify::verify_bundle_with_kek,
+        verify::{verify_bundle_with_opts, VerifyOptions},
         Envelope,
     };
 
@@ -4407,10 +4446,23 @@ fn run_evidence(
         EvidenceCommand::Verify {
             dir,
             bundle_encryption_key,
+            expected_bundle_hash,
+            require_encryption,
+            verify_key,
+            require_signature,
         } => {
             let kek = resolve_kek(bundle_encryption_key.as_deref())
                 .map_err(|e| format!("invalid KEK: {e}"))?;
-            let result = verify_bundle_with_kek(&dir, kek.as_ref());
+            let result = verify_bundle_with_opts(
+                &dir,
+                &VerifyOptions {
+                    kek: kek.as_ref(),
+                    expected_bundle_hash: expected_bundle_hash.as_deref(),
+                    require_encryption,
+                    trusted_pubkey: verify_key.as_deref(),
+                    require_signature,
+                },
+            );
             if result.valid {
                 println!("evidence bundle is VALID");
             } else {

@@ -396,8 +396,8 @@ fn policies() -> PolicySet {
     }
 
     #[test]
-    fn test_policy_empty_capabilities_allows_all() {
-        // Empty capabilities list means no restrictions.
+    fn test_policy_empty_capabilities_denies_all() {
+        // Fail-closed: an empty capabilities list denies every effect.
         let policy = PolicySet {
             schema_version: 1,
             capabilities: Vec::new(),
@@ -409,14 +409,16 @@ fn policies() -> PolicySet {
             payload: Value::Unit,
             callback_tag: String::new(),
         };
-        assert!(policy.check_effect(&effect).is_ok());
+        assert!(policy.check_effect(&effect).is_err());
     }
 
     #[test]
     fn test_policy_batch_limit_exact_boundary() {
         let policy = PolicySet {
             schema_version: 1,
-            capabilities: Vec::new(),
+            // net.fetch declared so the HttpRequest effects pass the capability
+            // check; this test exercises the effect-count limit boundary only.
+            capabilities: vec!["net.fetch".into()],
             max_effects_per_cycle: 2,
             max_steps: 0,
         };
@@ -496,6 +498,18 @@ fn policies() -> PolicySet {
         assert_eq!(
             policy.max_effects_per_cycle, 0,
             "default should have unlimited effects"
+        );
+        // Fail-closed: the default (empty-capability) policy must DENY effects,
+        // not silently allow them. This is the account-takeover guardrail — a
+        // malformed or empty policies() lands on default() and must be safe.
+        let effect = crate::effect::Effect {
+            kind: EffectKind::HttpRequest,
+            payload: Value::Unit,
+            callback_tag: String::new(),
+        };
+        assert!(
+            policy.check_effect(&effect).is_err(),
+            "default policy must deny effects (fail-closed)"
         );
     }
 

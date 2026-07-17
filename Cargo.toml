@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.9.0"
+version = "2.0.0"
 edition = "2021"
 
 [workspace.dependencies]
@@ -32,6 +32,12 @@ axum = "0.8"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
+# Optional ed25519 manifest signing for evidence bundles (verify-A
+# "sign-side"). `default-features = false` per ADR 001 (musl static
+# link friendly); we keep only `std` (error types) + `zeroize` (wipe
+# secret key material). Signing is deterministic, so no RNG feature is
+# needed.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 
 # mTLS stack (sprint W6-A). `default-features = false` per ADR 001
 # (drops the optional `prefer-post-quantum`, `logging` features).

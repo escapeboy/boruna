@@ -207,22 +207,41 @@ impl ActorSystem {
                 let parent_id = self.actors[actor_idx].id;
                 for req in spawn_requests {
                     let child_id = self.next_id;
-                    self.next_id += 1;
                     let module = self.actors[actor_idx].vm.module().clone();
                     let func_name = module
                         .functions
                         .get(req.func_idx as usize)
-                        .map(|f| f.name.as_str())
-                        .unwrap_or("unknown");
-                    self.event_log.log_actor_spawn(child_id, func_name);
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
                     let policy = self.policy.clone().unwrap_or_default();
                     let gateway = CapabilityGateway::new(policy);
                     let mut child_vm = Vm::new(module, gateway);
                     child_vm.set_actor_id(child_id);
                     child_vm.set_in_actor_context(true);
-                    child_vm
-                        .set_entry_function(req.func_idx)
-                        .expect("invalid function index in spawn request");
+                    // A crafted `SpawnActor(func_idx)` with an out-of-range index
+                    // must FAIL the requesting actor (like any other crash), not
+                    // panic the whole scheduler process — the previous `.expect()`
+                    // was a DoS from untrusted bytecode.
+                    if child_vm.set_entry_function(req.func_idx).is_err() {
+                        self.actors[actor_idx].status = ActorStatus::Failed;
+                        let children = self.actors[actor_idx].children.clone();
+                        self.cascade_failure(&children);
+                        let err = VmError::InvalidFunction(req.func_idx);
+                        if let Some(pid) = self.actors[actor_idx].parent {
+                            let a_id = self.actors[actor_idx].id;
+                            self.pending_messages.push((
+                                a_id,
+                                pid,
+                                Value::Err(Box::new(Value::String(format!("{err}")))),
+                            ));
+                        }
+                        if actor_idx == 0 {
+                            return Err(err);
+                        }
+                        break;
+                    }
+                    self.next_id += 1;
+                    self.event_log.log_actor_spawn(child_id, &func_name);
                     self.actors.push(Actor {
                         id: child_id,
                         vm: child_vm,

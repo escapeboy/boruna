@@ -442,7 +442,7 @@ fn ref_to_run_id(uri: &GsUri, r: &StorageRef) -> Result<String, StorageError> {
         .ok_or_else(|| {
             StorageError::InvalidUri(format!("ref {} does not match adapter root {}", r.0, root))
         })?;
-    if suffix.is_empty() || suffix.contains('/') {
+    if suffix.is_empty() || suffix.contains('/') || suffix == ".." || suffix == "." {
         return Err(StorageError::InvalidUri(format!(
             "ref {} is not a single run-id under {}",
             r.0, root

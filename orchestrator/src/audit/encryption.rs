@@ -30,6 +30,7 @@ use base64::Engine;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 /// AES-256 key length in bytes.
 pub const KEY_LEN: usize = 32;
@@ -118,6 +119,15 @@ impl std::fmt::Debug for Envelope {
     }
 }
 
+// F10: wipe the DEK from memory on drop so freed pages don't retain
+// key bytes. `info` holds no secret (only wrapped/ciphertext metadata)
+// so it is left untouched.
+impl Drop for Envelope {
+    fn drop(&mut self) {
+        self.dek.zeroize();
+    }
+}
+
 impl Envelope {
     /// Generate a fresh DEK and wrap it with `kek`. Used at bundle
     /// build time.
@@ -188,7 +198,7 @@ impl Envelope {
         }
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(kek));
-        let dek_bytes = cipher
+        let mut dek_bytes = cipher
             .decrypt(
                 Nonce::from_slice(&wrap_nonce_bytes),
                 Payload {
@@ -198,15 +208,20 @@ impl Envelope {
             )
             .map_err(|_| EncryptionError::EncryptionKeyMismatch)?;
         if dek_bytes.len() != KEY_LEN {
+            let got = dek_bytes.len();
+            dek_bytes.zeroize();
             return Err(EncryptionError::InvalidLength {
                 field: "dek".into(),
                 expected: KEY_LEN,
-                got: dek_bytes.len(),
+                got,
             });
         }
 
         let mut dek = [0u8; KEY_LEN];
         dek.copy_from_slice(&dek_bytes);
+        // F10: wipe the decrypted DEK copy the AEAD returned; the live
+        // copy now lives in `dek` (cleared on Envelope drop).
+        dek_bytes.zeroize();
         Ok(Envelope {
             dek,
             info: info.clone(),
@@ -323,7 +338,13 @@ pub fn resolve_kek(cli_hex: Option<&str>) -> Result<Option<[u8; KEY_LEN]>, Encry
         return Ok(Some(parse_kek_hex(hex)?));
     }
     match std::env::var("BORUNA_BUNDLE_KEK") {
-        Ok(hex) if !hex.is_empty() => Ok(Some(parse_kek_hex(&hex)?)),
+        Ok(mut hex) if !hex.is_empty() => {
+            // F10: wipe the KEK hex from the env-var copy regardless of
+            // parse outcome; the parsed key bytes flow to the caller.
+            let parsed = parse_kek_hex(&hex);
+            hex.zeroize();
+            Ok(Some(parsed?))
+        }
         _ => Ok(None),
     }
 }

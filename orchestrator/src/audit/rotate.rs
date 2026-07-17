@@ -127,7 +127,9 @@ pub fn rotate_bundle(
     let envelope = Envelope::unwrap(&info, &opts.old_kek)?;
     // Re-wrap under new KEK.
     let rewrapped = envelope.rewrap(&opts.new_kek, &opts.kek_id_to)?;
-    let new_info = rewrapped.info;
+    // `Envelope` now implements `Drop` (F10 DEK zeroize), so `info`
+    // can't be moved out; clone the (non-secret) metadata.
+    let new_info = rewrapped.info.clone();
 
     if opts.dry_run {
         return Ok(RotationOutcome::PlannedDryRun {
@@ -210,6 +212,11 @@ pub fn rotate_dir(
 fn compute_bundle_hash(manifest: &BundleManifest) -> Result<String, RotationError> {
     let mut clone = manifest.clone();
     clone.bundle_hash = String::new();
+    // The signature is excluded from bundle_hash by construction
+    // (it is added AFTER the hash in finalize), so clear it here to
+    // match that convention. Rotating a signed bundle invalidates its
+    // signature — verify surfaces the mismatch.
+    clone.signature = None;
     let json = serde_json::to_string_pretty(&clone)
         .map_err(|e| RotationError::InvalidManifest(format!("hash-prep: {e}")))?;
     use sha2::{Digest, Sha256};

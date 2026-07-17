@@ -378,6 +378,10 @@ fn collect_tags_from_block(block: &Block, tags: &mut Vec<String>) {
                 collect_tags_from_expr(condition, tags);
                 collect_tags_from_block(body, tags);
             }
+            Stmt::For { iter, body, .. } => {
+                collect_tags_from_expr(iter, tags);
+                collect_tags_from_block(body, tags);
+            }
         }
     }
 }
@@ -462,6 +466,9 @@ fn collect_tags_from_expr(expr: &Expr, tags: &mut Vec<String>) {
             collect_tags_from_expr(message, tags);
         }
         Expr::Block(b) => collect_tags_from_block(b, tags),
+        Expr::EnumVariant {
+            payload: Some(e), ..
+        } => collect_tags_from_expr(e, tags),
         _ => {}
     }
 }

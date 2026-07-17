@@ -149,6 +149,18 @@ pre{{background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:4px;overflow:au
     )
 }
 
+/// Minimal HTML escaper for untrusted bundle-derived text. Bundle content (step
+/// outputs, filenames, workflow names, error strings) can carry attacker-influenced
+/// text, so every interpolation of it into these pages MUST be escaped — otherwise
+/// inspecting a hostile bundle executes stored XSS against the `127.0.0.1` origin.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 pub(crate) fn render_bundle_page(data: &BundleData) -> String {
     let verify_badge = if data.verify_valid {
         r#"<span class="badge pass">✓ VALID</span>"#
@@ -162,7 +174,7 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
         let items: String = data
             .verify_errors
             .iter()
-            .map(|e| format!("<li>{e}</li>"))
+            .map(|e| format!("<li>{}</li>", esc(e)))
             .collect();
         format!(r#"<div class="warn"><strong>Verification errors:</strong><ul>{items}</ul></div>"#)
     };
@@ -170,16 +182,17 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
     let enc_row = match &data.manifest.encryption {
         Some(info) => format!(
             r#"<div class="k">encrypted</div><div class="v">yes (algorithm={}, kek_id={})</div>"#,
-            info.algorithm, info.kek_id
+            esc(&info.algorithm),
+            esc(&info.kek_id)
         ),
         None => String::from(r#"<div class="k">encrypted</div><div class="v">no</div>"#),
     };
 
-    let format_version = data
+    let format_version = esc(data
         .bundle_meta
         .as_ref()
         .map(|b| b.format_version.as_str())
-        .unwrap_or("(missing bundle.json)");
+        .unwrap_or("(missing bundle.json)"));
 
     let body = format!(
         r#"<h2>Bundle Overview</h2>
@@ -211,20 +224,26 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
     {file_rows}
   </table>
 </div>"#,
-        run_id = data.manifest.run_id,
-        workflow = data.manifest.workflow_name,
-        started = data.manifest.started_at,
-        completed = data.manifest.completed_at,
-        bundle_hash = data.manifest.bundle_hash,
-        workflow_hash = data.manifest.workflow_hash,
-        policy_hash = data.manifest.policy_hash,
-        audit_hash = data.manifest.audit_log_hash,
+        run_id = esc(&data.manifest.run_id),
+        workflow = esc(&data.manifest.workflow_name),
+        started = esc(&data.manifest.started_at),
+        completed = esc(&data.manifest.completed_at),
+        bundle_hash = esc(&data.manifest.bundle_hash),
+        workflow_hash = esc(&data.manifest.workflow_hash),
+        policy_hash = esc(&data.manifest.policy_hash),
+        audit_hash = esc(&data.manifest.audit_log_hash),
         file_count = data.manifest.file_checksums.len(),
         file_rows = data
             .manifest
             .file_checksums
             .iter()
-            .map(|(f, h)| format!(r#"<tr><td class="mono">{f}</td><td class="mono">{h}</td></tr>"#))
+            .map(|(f, h)| {
+                format!(
+                    r#"<tr><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
+                    esc(f),
+                    esc(h)
+                )
+            })
             .collect::<String>(),
     );
     page("Bundle", &body)
@@ -243,7 +262,9 @@ pub(crate) fn render_audit_page(data: &BundleData) -> String {
   <td>{event_type}</td>
   <td class="mono" style="font-size:.75rem">{detail}</td>
 </tr>"#,
-                entry.sequence
+                entry.sequence,
+                step = esc(&step),
+                detail = esc(&detail)
             )
         })
         .collect();
@@ -353,9 +374,11 @@ pub(crate) fn render_outputs_page(data: &BundleData) -> String {
             .map(|(step, json)| {
                 format!(
                     r#"<details>
-  <summary>{step}</summary>
-  <pre>{json}</pre>
-</details>"#
+  <summary>{}</summary>
+  <pre>{}</pre>
+</details>"#,
+                    esc(step),
+                    esc(json)
                 )
             })
             .collect()
@@ -488,6 +511,7 @@ mod tests {
                 completed_at: String::from("2026-01-01T00:01:00Z"),
                 bundle_hash: String::from("bh"),
                 encryption: None,
+                signature: None,
             },
             bundle_meta: None,
             audit_entries: Vec::new(),
@@ -551,7 +575,22 @@ mod tests {
         let html = render_outputs_page(&data);
         assert!(html.contains("1 steps"));
         assert!(html.contains("step_a"));
-        assert!(html.contains(r#"{"ok":true}"#));
+        // Output is HTML-escaped (XSS defense): the raw quotes become &quot;.
+        assert!(html.contains(r#"{&quot;ok&quot;:true}"#));
+        assert!(!html.contains(r#"{"ok":true}"#));
+    }
+
+    #[test]
+    fn render_outputs_page_escapes_script() {
+        // A hostile bundle output must not inject live markup.
+        let mut data = make_data(true);
+        data.outputs.insert(
+            String::from("evil"),
+            String::from("<script>alert(1)</script>"),
+        );
+        let html = render_outputs_page(&data);
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;"));
     }
 
     #[test]

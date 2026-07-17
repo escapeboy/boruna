@@ -31,6 +31,31 @@ pub struct BundleJson {
     pub components: Vec<String>,
 }
 
+/// Optional ed25519 signature over a manifest's `bundle_hash`
+/// (verify-A "sign-side").
+///
+/// When present, the operator (or their signing service) has signed
+/// the bundle's `bundle_hash` — the SHA-256 that already covers
+/// `file_checksums` + `audit_log_hash` — with an ed25519 key. A
+/// verifier that trusts the embedded `public_key` can then prove the
+/// bundle's integrity WITHOUT carrying an out-of-band `bundle_hash`
+/// anchor: the signature roots trust in the operator's key instead.
+///
+/// The signature covers `bundle_hash` and is NOT itself part of the
+/// hash (it is added AFTER `bundle_hash` is computed). Verifiers
+/// recompute `bundle_hash` with this field excluded — see
+/// [`crate::audit::verify::verify_bundle_with_opts`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestSignature {
+    /// Signature algorithm — currently always `"ed25519"`.
+    pub algorithm: String,
+    /// Hex-encoded 32-byte ed25519 public key.
+    pub public_key: String,
+    /// Hex-encoded 64-byte ed25519 signature over `bundle_hash`
+    /// (signed message is `bundle_hash.as_bytes()`).
+    pub signature: String,
+}
+
 /// Manifest describing an evidence bundle.
 ///
 /// Sprint W6-B added the optional `encryption` field. Plaintext
@@ -39,6 +64,11 @@ pub struct BundleJson {
 /// `encryption.algorithm`, `kek_id`, `wrapped_dek`, and
 /// `wrapped_dek_nonce` are REPLAY-VERIFIED (they participate in
 /// `bundle_hash`); `encryption.files` is OPERATIONAL.
+///
+/// verify-A added the optional `signature` field. It is written
+/// AFTER `bundle_hash` is computed and is skipped when absent, so
+/// unsigned manifests (and their `bundle_hash`) are byte-for-byte
+/// unchanged; existing readers ignore the unknown field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleManifest {
     #[serde(default = "default_schema_version")]
@@ -57,6 +87,11 @@ pub struct BundleManifest {
     /// AES-256-GCM. Absent → plaintext bundle (W1-C behavior).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<EncryptionInfo>,
+    /// verify-A: present iff the manifest's `bundle_hash` was signed
+    /// with an ed25519 key at build time. Absent → unsigned bundle
+    /// (unchanged manifest bytes). Not part of `bundle_hash`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<ManifestSignature>,
 }
 
 /// Builder for creating evidence bundles on disk.
@@ -76,6 +111,11 @@ pub struct EvidenceBundleBuilder {
     /// Tracks filenames written through the encrypted path; used to
     /// populate `EncryptionInfo.files` at finalize time.
     encrypted_files: Vec<String>,
+    /// verify-A: when present, `finalize` signs the manifest's
+    /// `bundle_hash` with this ed25519 key and records the signature
+    /// (+ public key) in `manifest.signature`. Absent → unsigned
+    /// bundle (unchanged behavior).
+    signing_key: Option<ed25519_dalek::SigningKey>,
 }
 
 impl EvidenceBundleBuilder {
@@ -94,7 +134,17 @@ impl EvidenceBundleBuilder {
             file_checksums: BTreeMap::new(),
             encryption: None,
             encrypted_files: Vec::new(),
+            signing_key: None,
         })
+    }
+
+    /// verify-A: sign the finalized manifest's `bundle_hash` with the
+    /// ed25519 key derived from `seed` (a 32-byte secret seed). When
+    /// set, `finalize` populates `manifest.signature`; when unset the
+    /// bundle is unsigned and byte-identical to today's output.
+    pub fn with_signing_key(mut self, seed: &[u8; 32]) -> Self {
+        self.signing_key = Some(ed25519_dalek::SigningKey::from_bytes(seed));
+        self
     }
 
     /// Sprint W6-B: enable AES-256-GCM envelope encryption for all
@@ -219,15 +269,32 @@ impl EvidenceBundleBuilder {
             completed_at: completed_at.clone(),
             bundle_hash: String::new(), // filled below
             encryption: encryption_info,
+            signature: None, // filled below iff a signing key was supplied
         };
 
-        // Compute bundle hash from manifest (excluding bundle_hash itself)
+        // Compute bundle hash from manifest (excluding bundle_hash and
+        // the not-yet-present signature — both are `skip_if_none`/empty
+        // here, so the serialized bytes match the verifier's recompute).
         let manifest_json =
             serde_json::to_string_pretty(&manifest).map_err(std::io::Error::other)?;
         let bundle_hash = sha256_str(&manifest_json);
 
+        // verify-A: sign the bundle_hash bytes iff a signing key was
+        // supplied. The signature is added AFTER bundle_hash is
+        // computed, so it never feeds the hash.
+        let signature = self.signing_key.as_ref().map(|sk| {
+            use ed25519_dalek::Signer;
+            let sig = sk.sign(bundle_hash.as_bytes());
+            ManifestSignature {
+                algorithm: "ed25519".to_string(),
+                public_key: to_hex(sk.verifying_key().as_bytes()),
+                signature: to_hex(&sig.to_bytes()),
+            }
+        });
+
         let final_manifest = BundleManifest {
             bundle_hash: bundle_hash.clone(),
+            signature,
             ..manifest
         };
 
@@ -315,6 +382,17 @@ fn sha256_str(s: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(s.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Lowercase-hex encode bytes (for ed25519 public key / signature in
+/// `ManifestSignature`).
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// Write `bytes` to `dir/name` atomically and fsync the parent directory

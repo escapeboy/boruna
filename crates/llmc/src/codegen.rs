@@ -127,14 +127,44 @@ impl Emitter {
         // Emit body
         self.emit_block(&f.body, &mut fe)?;
 
-        // Implicit return
-        if fe.code.last() != Some(&Op::Ret) {
+        if f.ensures.is_empty() {
+            // Implicit return
+            if fe.code.last() != Some(&Op::Ret) {
+                fe.code.push(Op::Ret);
+            }
+        } else {
+            // Emit `ensures` postconditions as runtime guards. Bind the
+            // computed return value to a local named `result` so each
+            // postcondition can reference it, assert every clause, then
+            // return the captured value. A trailing explicit `return`
+            // leaves its value on the stack once its `Op::Ret` is dropped.
+            if fe.code.last() == Some(&Op::Ret) {
+                fe.code.pop();
+            }
+            let result_local = fe.next_local;
+            fe.next_local += 1;
+            fe.locals.insert("result".to_string(), result_local);
+            fe.code.push(Op::StoreLocal(result_local));
+
+            for (i, ens) in f.ensures.iter().enumerate() {
+                self.emit_expr(ens, &mut fe)?;
+                let msg = format!("postcondition {} failed in `{}`", i + 1, f.name);
+                let msg_idx = self.module.add_const(Value::String(msg));
+                fe.code.push(Op::Assert(msg_idx));
+            }
+
+            fe.code.push(Op::LoadLocal(result_local));
             fe.code.push(Op::Ret);
         }
 
+        let arity = count_as_u8(
+            f.params.len(),
+            &format!("function `{}`", f.name),
+            "parameters",
+        )?;
         let func = Function {
             name: f.name.clone(),
-            arity: f.params.len() as u8,
+            arity,
             locals: fe.next_local as u16,
             code: fe.code,
             capabilities: fe.capabilities,
@@ -195,6 +225,62 @@ impl Emitter {
                 let exit_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
                 self.emit_block(body, fe)?;
+                // A while body's value is discarded each iteration. `emit_block`
+                // leaves the trailing statement's value on the stack when it is a
+                // bare expression, so pop it here — otherwise one value leaks per
+                // iteration and the operand stack grows unbounded.
+                if let Some(Stmt::Expr(_)) = body.stmts.last() {
+                    fe.code.push(Op::Pop);
+                }
+                fe.code.push(Op::Jmp(loop_start));
+                let exit_target = fe.code.len() as u32;
+                fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
+            }
+            Stmt::For { var, iter, body } => {
+                // Desugar `for v in list { body }` into an index loop over a
+                // List: evaluate the iterable once into a temp local, walk an
+                // index from 0 while `idx < len(list)`, binding `v = list[idx]`
+                // each iteration.
+                self.emit_expr(iter, fe)?;
+                let list_local = fe.next_local;
+                fe.next_local += 1;
+                fe.code.push(Op::StoreLocal(list_local));
+
+                let idx_local = fe.next_local;
+                fe.next_local += 1;
+                let zero_idx = self.module.add_const(Value::Int(0));
+                fe.code.push(Op::PushConst(zero_idx));
+                fe.code.push(Op::StoreLocal(idx_local));
+
+                // Loop variable local, reused across iterations.
+                let var_local = fe.next_local;
+                fe.next_local += 1;
+                fe.locals.insert(var.clone(), var_local);
+
+                let loop_start = fe.code.len() as u32;
+                // Condition: idx < len(list)
+                fe.code.push(Op::LoadLocal(idx_local));
+                fe.code.push(Op::LoadLocal(list_local));
+                fe.code.push(Op::ListLen);
+                fe.code.push(Op::Lt);
+                let exit_jmp = fe.code.len();
+                fe.code.push(Op::JmpIfNot(0)); // placeholder
+
+                // Bind loop variable: var = list[idx]
+                fe.code.push(Op::LoadLocal(list_local));
+                fe.code.push(Op::LoadLocal(idx_local));
+                fe.code.push(Op::ListGet);
+                fe.code.push(Op::StoreLocal(var_local));
+
+                self.emit_block(body, fe)?;
+
+                // idx = idx + 1
+                fe.code.push(Op::LoadLocal(idx_local));
+                let one_idx = self.module.add_const(Value::Int(1));
+                fe.code.push(Op::PushConst(one_idx));
+                fe.code.push(Op::Add);
+                fe.code.push(Op::StoreLocal(idx_local));
+
                 fe.code.push(Op::Jmp(loop_start));
                 let exit_target = fe.code.len() as u32;
                 fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
@@ -518,20 +604,24 @@ impl Emitter {
                     }
                     // User-defined function call
                     if let Some(&func_idx) = self.fn_map.get(name) {
+                        let argc =
+                            count_as_u8(args.len(), &format!("call to `{name}`"), "arguments")?;
                         for arg in args {
                             self.emit_expr(arg, fe)?;
                         }
-                        fe.code.push(Op::Call(func_idx, args.len() as u8));
+                        fe.code.push(Op::Call(func_idx, argc));
                         return Ok(());
                     }
                 }
-                // Otherwise: push args, push func, call indirect (not supported yet; fallback)
+                // Indirect / higher-order call: push args, then push the callee
+                // (which must evaluate to a `Value::FnRef`), then `CallIndirect`
+                // dispatches to the referenced function at runtime.
+                let argc = count_as_u8(args.len(), "call", "arguments")?;
                 for arg in args {
                     self.emit_expr(arg, fe)?;
                 }
                 self.emit_expr(func, fe)?;
-                // For now, just emit a direct call (requires func to be a function reference)
-                fe.code.push(Op::Call(0, args.len() as u8));
+                fe.code.push(Op::CallIndirect(argc));
             }
             Expr::FieldAccess { object, field } => {
                 self.emit_expr(object, fe)?;
@@ -686,7 +776,7 @@ impl Emitter {
                     }
 
                     for (i, arm) in arms.iter().enumerate() {
-                        let tag = pattern_to_tag(&arm.pattern);
+                        let tag = self.pattern_to_tag(&arm.pattern);
                         bc_arms.push(BcMatchArm {
                             tag,
                             target: arm_starts[i],
@@ -712,6 +802,7 @@ impl Emitter {
                     // 2) Get the full field list for this type
                     let type_fields = self.get_type_fields(type_name);
                     let total_fields = type_fields.len();
+                    let field_count = count_as_u8(total_fields, "record literal", "fields")?;
 
                     // 3) Build override set
                     let overrides: std::collections::HashMap<&str, &Expr> =
@@ -727,20 +818,37 @@ impl Emitter {
                         }
                     }
 
-                    fe.code.push(Op::MakeRecord(type_id, total_fields as u8));
+                    fe.code.push(Op::MakeRecord(type_id, field_count));
                 } else {
                     // Standard record literal (no spread)
+                    let field_count = count_as_u8(fields.len(), "record literal", "fields")?;
                     for (_, val) in fields {
                         self.emit_expr(val, fe)?;
                     }
-                    fe.code.push(Op::MakeRecord(type_id, fields.len() as u8));
+                    fe.code.push(Op::MakeRecord(type_id, field_count));
                 }
             }
+            Expr::EnumVariant {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                let (type_id, variant_idx) = self.resolve_enum_variant(enum_name, variant)?;
+                // MakeEnum always pops a payload; nullary variants carry Unit.
+                if let Some(p) = payload {
+                    self.emit_expr(p, fe)?;
+                } else {
+                    let idx = self.module.add_const(Value::Unit);
+                    fe.code.push(Op::PushConst(idx));
+                }
+                fe.code.push(Op::MakeEnum(type_id, variant_idx));
+            }
             Expr::List(items) => {
+                let count = count_as_u8(items.len(), "list literal", "elements")?;
                 for item in items {
                     self.emit_expr(item, fe)?;
                 }
-                fe.code.push(Op::MakeList(items.len() as u8));
+                fe.code.push(Op::MakeList(count));
             }
             Expr::SomeExpr(inner) => {
                 self.emit_expr(inner, fe)?;
@@ -827,20 +935,78 @@ impl Emitter {
 
         0 // fallback
     }
+
+    /// Resolve a qualified enum variant (`Enum::Variant`) to its
+    /// `(type_id, variant_index)`. The type_id is the enum's position in
+    /// `module.types`; the variant index is its declaration order within the
+    /// enum — the same numbering the VM's `Op::Match` compares against.
+    fn resolve_enum_variant(
+        &self,
+        enum_name: &str,
+        variant: &str,
+    ) -> Result<(u32, u8), CompileError> {
+        for (ti, typedef) in self.module.types.iter().enumerate() {
+            if typedef.name != enum_name {
+                continue;
+            }
+            let BcTypeKind::Enum { variants } = &typedef.kind else {
+                return Err(CompileError::Codegen(format!(
+                    "'{enum_name}' is not an enum"
+                )));
+            };
+            for (vi, (vname, _)) in variants.iter().enumerate() {
+                if vname == variant {
+                    return Ok((ti as u32, count_as_u8(vi, "enum", "variants")?));
+                }
+            }
+            return Err(CompileError::Codegen(format!(
+                "enum '{enum_name}' has no variant '{variant}'"
+            )));
+        }
+        Err(CompileError::Codegen(format!("unknown enum: {enum_name}")))
+    }
+
+    /// Match-arm tag for a pattern. Enum-variant patterns resolve to the
+    /// variant's declaration index (searched across all declared enums, since
+    /// patterns carry only the bare variant name); everything else uses the
+    /// fixed built-in tags. `-1` means "wildcard / no discriminant".
+    fn pattern_to_tag(&self, pattern: &Pattern) -> i32 {
+        match pattern {
+            Pattern::Wildcard | Pattern::Ident(_) => -1,
+            Pattern::BoolLit(true) => 1,
+            Pattern::BoolLit(false) => 0,
+            Pattern::NonePat => -2,
+            Pattern::SomePat(_) => -3,
+            Pattern::OkPat(_) => -4,
+            Pattern::ErrPat(_) => -5,
+            Pattern::IntLit(n) => *n as i32,
+            Pattern::EnumVariant(name, _) => {
+                for typedef in &self.module.types {
+                    if let BcTypeKind::Enum { variants } = &typedef.kind {
+                        for (vi, (vname, _)) in variants.iter().enumerate() {
+                            if vname == name {
+                                return vi as i32;
+                            }
+                        }
+                    }
+                }
+                -1
+            }
+            Pattern::StringLit(_) => -1,
+        }
+    }
 }
 
-fn pattern_to_tag(pattern: &Pattern) -> i32 {
-    match pattern {
-        Pattern::Wildcard | Pattern::Ident(_) => -1,
-        Pattern::BoolLit(true) => 1,
-        Pattern::BoolLit(false) => 0,
-        Pattern::NonePat => -2,
-        Pattern::SomePat(_) => -3,
-        Pattern::OkPat(_) => -4,
-        Pattern::ErrPat(_) => -5,
-        Pattern::IntLit(n) => *n as i32,
-        Pattern::EnumVariant(_, _) => -1, // simplified
-        Pattern::StringLit(_) => -1,
+/// Narrow a count to a `u8` for opcode operands (list/record sizes, call
+/// arity), returning a compile error instead of silently wrapping when the
+/// count exceeds `u8::MAX`. Wrapping would corrupt the operand stack at runtime.
+fn count_as_u8(n: usize, subject: &str, unit: &str) -> Result<u8, CompileError> {
+    if n > u8::MAX as usize {
+        Err(CompileError::Codegen(format!(
+            "{subject} has {n} {unit}; max 255"
+        )))
+    } else {
+        Ok(n as u8)
     }
 }
 

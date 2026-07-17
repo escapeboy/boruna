@@ -271,12 +271,33 @@ pub async fn run_serve(
     };
     eprintln!("    auth: {auth_state}");
     if shared_secret.is_none() && !mtls_required && !bind.is_loopback() {
-        eprintln!(
-            "[WARNING] coordinator is bound to a non-loopback address with NO --shared-secret \
-             and NO --tls-cert/--tls-key/--tls-client-ca. \
-             Anyone with network access can SUBMIT and CONTROL distributed work. \
-             Pass --shared-secret <hex> (or BORUNA_COORD_SECRET env), or enable mTLS, to enable auth."
-        );
+        // Fail CLOSED: a non-loopback bind with no auth exposes SUBMIT/APPROVE/work
+        // control to any network peer. Previously this only warned and served
+        // anyway; now it refuses to start unless the operator explicitly
+        // acknowledges the risk via BORUNA_COORD_ALLOW_INSECURE=1 (intended for a
+        // trusted reverse-proxy front-end that supplies auth).
+        let allow_insecure = std::env::var("BORUNA_COORD_ALLOW_INSECURE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if allow_insecure {
+            eprintln!(
+                "[WARNING] coordinator bound to a non-loopback address with NO auth \
+                 (--shared-secret / mTLS) — running anyway because \
+                 BORUNA_COORD_ALLOW_INSECURE is set. Ensure a trusted reverse proxy \
+                 supplies authentication; otherwise any network peer can submit, \
+                 approve, and control distributed work."
+            );
+        } else {
+            return Err(format!(
+                "refusing to start: coordinator is bound to a non-loopback address ({bind}) \
+                 with NO --shared-secret (or BORUNA_COORD_SECRET) and NO mTLS \
+                 (--tls-cert/--tls-key/--tls-client-ca). Anyone with network access could \
+                 submit, approve, and control distributed work. Enable auth, bind to loopback, \
+                 or set BORUNA_COORD_ALLOW_INSECURE=1 to override (only behind a trusted \
+                 auth-terminating proxy)."
+            )
+            .into());
+        }
     }
 
     let state = CoordinatorState {
@@ -1015,6 +1036,13 @@ pub struct ApproveRequest {
     pub decision: String,
     #[serde(default)]
     pub reason: Option<String>,
+    /// Per-gate approval token stashed at pause-time (finding S9). Required:
+    /// without it any bearer/worker-cert holder could seize the gate. Mirrors
+    /// `TriggerRequest.token`. Defaults to empty so a token-less legacy body
+    /// deserializes — but an empty token never matches a stashed token, so it
+    /// is rejected (fail-closed).
+    #[serde(default)]
+    pub token: String,
 }
 
 /// Sprint `0.5-S6` — `POST /api/runs/{run_id}/trigger` body. The
@@ -1564,6 +1592,33 @@ fn extract_step_source(metadata_json: &str, step_id: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// S6 (cross-worker claim ownership): reject a complete/fail/extend whose caller
+/// is not the worker holding the step's claim. `claim_id` is a predictable
+/// per-step counter, so it cannot prove ownership; the row's `worker_id` can.
+/// Called under the store lock so the read + CAS are atomic within this process.
+/// Returns `Some(rejection)` to short-circuit, `None` to proceed.
+fn reject_if_not_claim_owner(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    caller_worker_id: &str,
+) -> Option<Response> {
+    match store.step_claimed_by(run_id, step_id) {
+        Ok(Some(holder)) if holder != caller_worker_id => Some(respond_err(
+            StatusCode::FORBIDDEN,
+            ErrorBody::new(
+                "coord.claim_not_owned",
+                format!(
+                    "step {run_id}/{step_id} is claimed by another worker; caller \
+                     '{caller_worker_id}' does not own the claim"
+                ),
+            ),
+        )),
+        Ok(_) => None,
+        Err(e) => Some(internal_error(&format!("step_claimed_by: {e}"))),
+    }
+}
+
 async fn handle_complete(
     State(state): State<CoordinatorState>,
     Json(req): Json<CompleteRequest>,
@@ -1571,10 +1626,31 @@ async fn handle_complete(
     if let Err(resp) = validate_session(&state, &req.worker_id, &req.session_token) {
         return resp;
     }
+    // Content-addressing integrity: the `output_hash` feeds the audit chain, so a
+    // worker must not be able to commit an output whose hash lies about its bytes.
+    // Recompute the worker's hash format (`sha256:` + lowercase hex) over the
+    // reported `output_json` and reject a mismatch before it reaches the store.
+    let expected_hash = worker_output_hash(&req.output_json);
+    if req.output_hash != expected_hash {
+        return respond_err(
+            StatusCode::BAD_REQUEST,
+            ErrorBody::new(
+                "coord.output_hash_mismatch",
+                format!(
+                    "output_hash does not match SHA-256(output_json): claimed {}, computed {}",
+                    req.output_hash, expected_hash
+                ),
+            ),
+        );
+    }
     let store = match state.store.lock() {
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
+        return resp;
+    }
     let now_ms = now_unix_ms();
     let outcome = match store.complete_step_cas(
         &req.run_id,
@@ -1603,6 +1679,10 @@ async fn handle_fail(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
+        return resp;
+    }
     let now_ms = now_unix_ms();
     let outcome = match store.fail_step_cas(
         &req.run_id,
@@ -1650,6 +1730,10 @@ async fn handle_extend_lease(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
+        return resp;
+    }
     let outcome = match store.extend_lease_cas(
         &req.run_id,
         &req.step_id,
@@ -1740,6 +1824,23 @@ fn validate_session(
             ),
         )),
     }
+}
+
+/// Recompute a worker's `output_hash` from its `output_json`, matching the exact
+/// format the worker produces (`sha256:` + lowercase hex of `SHA-256(bytes)` — see
+/// `worker::execute_step`). Used to reject content-addressing forgery at
+/// `handle_complete`.
+fn worker_output_hash(output_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(output_json.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(7 + 64);
+    hex.push_str("sha256:");
+    for b in digest {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    hex
 }
 
 fn internal_error(msg: &str) -> Response {
@@ -1963,6 +2064,29 @@ async fn handle_approve_run(
         Ok(g) => g,
         Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
     };
+    // S9: require the per-gate token before recording a decision, so a holder of
+    // the bearer/worker credential cannot seize (or pre-empt) an approval gate.
+    // Constant-time compare against the token stashed at pause-time. When no token
+    // is stashed (unknown run, or the gate was never reached) fall through so
+    // record_approval_decision_in_store returns the precise 404/gate-state error
+    // rather than masking it as a token failure.
+    match boruna_orchestrator::workflow::approval_gate_token(&store_guard, &run_id, &req.step_id) {
+        Ok(Some(stashed)) => {
+            if !constant_time_bytes_eq(req.token.as_bytes(), stashed.as_bytes()) {
+                return respond_err(
+                    StatusCode::FORBIDDEN,
+                    ErrorBody::new(
+                        "coord.approval_token_invalid",
+                        "approval requires the per-gate token stashed at pause-time; \
+                         supplied token is missing or does not match"
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return internal_error(&format!("approval_gate_token: {e}")),
+    }
     let result = boruna_orchestrator::workflow::record_approval_decision_in_store(
         &store_guard,
         &run_id,
@@ -2467,6 +2591,7 @@ pub fn run_remote(
 /// `boruna workflow reject --coordinator <url>`. Returns `Ok(())` on
 /// success, an error with the coordinator's `error_kind` and
 /// message verbatim on a non-2xx response.
+#[allow(clippy::too_many_arguments)]
 pub fn send_approve_remote(
     coord_url: &str,
     coord_token: Option<&str>,
@@ -2474,6 +2599,7 @@ pub fn send_approve_remote(
     step_id: &str,
     decision: &str,
     reason: Option<&str>,
+    token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base = coord_url.trim_end_matches('/');
     let url = format!("{base}/api/runs/{run_id}/approve");
@@ -2481,6 +2607,7 @@ pub fn send_approve_remote(
         step_id: step_id.to_string(),
         decision: decision.to_string(),
         reason: reason.map(|s| s.to_string()),
+        token: token.to_string(),
     };
     post_operator_command(&url, coord_token, &body)
 }
@@ -3268,40 +3395,40 @@ mod tests {
     async fn complete_with_stale_claim_returns_409() {
         let state = fresh_state();
         pending_step(&state, "run-c", "s1", "fn main() -> Int { 1 }\n");
-        // Manually claim and then simulate expiry+reclaim. The lock
-        // is scoped to a block so the MutexGuard drops before any
-        // .await — clippy::await_holding_lock would flag a guard
-        // bound at the function level even with an explicit drop().
-        {
-            let store = state.store.lock().unwrap();
-            store
-                .claim_step("run-c", "s1", "A", 5_000_000_000_000, 0)
-                .unwrap();
-            store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
-            store
-                .claim_step("run-c", "s1", "B", 5_000_000_000_002, 0)
-                .unwrap();
-        }
         let app = build_router(state.clone());
-        // Register a worker so we have a session token.
+        // Register a worker up front so the SAME worker holds both claims —
+        // otherwise the S6 ownership guard (reject_if_not_claim_owner) fires
+        // first. Here the same worker's lease expires and it reclaims (new
+        // claim_id), then submits a stale complete → lease-expiry CAS → 409.
         let (_, reg) = post_json(
             &app,
             "/api/workers/register",
             &register_payload(state.capability_set_hash.clone()),
         )
         .await;
-        // Late completion with stale claim_id=1.
+        let wid = reg["worker_id"].as_str().unwrap().to_string();
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .claim_step("run-c", "s1", &wid, 5_000_000_000_000, 0)
+                .unwrap();
+            store.expire_leases_and_requeue(5_000_000_000_001).unwrap();
+            store
+                .claim_step("run-c", "s1", &wid, 5_000_000_000_002, 0)
+                .unwrap();
+        }
+        // Late completion with stale claim_id=1 (current is 2).
         let (status, v) = post_json(
             &app,
             "/api/work/complete",
             &CompleteRequest {
-                worker_id: reg["worker_id"].as_str().unwrap().into(),
+                worker_id: wid,
                 session_token: reg["session_token"].as_str().unwrap().into(),
                 run_id: "run-c".into(),
                 step_id: "s1".into(),
-                claim_id: 1, // stale; current is 2
+                claim_id: 1,
                 output_json: r#""nope""#.into(),
-                output_hash: "h".into(),
+                output_hash: worker_output_hash(r#""nope""#),
                 attempt_count: 1,
             },
         )
@@ -3309,6 +3436,44 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(v["error_kind"], "coord.lease_expired");
         assert_eq!(v["current_claim_id"], 2);
+    }
+
+    #[tokio::test]
+    async fn complete_by_non_owner_returns_403() {
+        // S6: a registered worker that does NOT hold the claim cannot complete
+        // another worker's in-flight step, even with the correct claim_id.
+        let state = fresh_state();
+        pending_step(&state, "run-own", "s1", "fn main() -> Int { 1 }\n");
+        {
+            let store = state.store.lock().unwrap();
+            store
+                .claim_step("run-own", "s1", "victim-worker", 5_000_000_000_000, 0)
+                .unwrap();
+        }
+        let app = build_router(state.clone());
+        let (_, reg) = post_json(
+            &app,
+            "/api/workers/register",
+            &register_payload(state.capability_set_hash.clone()),
+        )
+        .await;
+        let (status, v) = post_json(
+            &app,
+            "/api/work/complete",
+            &CompleteRequest {
+                worker_id: reg["worker_id"].as_str().unwrap().into(), // NOT victim-worker
+                session_token: reg["session_token"].as_str().unwrap().into(),
+                run_id: "run-own".into(),
+                step_id: "s1".into(),
+                claim_id: 1, // correct, predictable claim_id
+                output_json: r#""forged""#.into(),
+                output_hash: worker_output_hash(r#""forged""#),
+                attempt_count: 1,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(v["error_kind"], "coord.claim_not_owned");
     }
 
     #[tokio::test]
@@ -3331,13 +3496,45 @@ mod tests {
                 step_id: "ghost".into(),
                 claim_id: 1,
                 output_json: "0".into(),
-                output_hash: "h".into(),
+                output_hash: worker_output_hash("0"),
                 attempt_count: 1,
             },
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(v["error_kind"], "coord.step_not_found");
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_output_hash_mismatch() {
+        // Content-addressing forgery: a worker reporting an output_hash that does
+        // not match SHA-256(output_json) is rejected before touching the store.
+        let state = fresh_state();
+        pending_step(&state, "run-h", "s1", "fn main() -> Int { 1 }\n");
+        let app = build_router(state.clone());
+        let (_, reg) = post_json(
+            &app,
+            "/api/workers/register",
+            &register_payload(state.capability_set_hash.clone()),
+        )
+        .await;
+        let (status, v) = post_json(
+            &app,
+            "/api/work/complete",
+            &CompleteRequest {
+                worker_id: reg["worker_id"].as_str().unwrap().into(),
+                session_token: reg["session_token"].as_str().unwrap().into(),
+                run_id: "run-h".into(),
+                step_id: "s1".into(),
+                claim_id: 1,
+                output_json: r#""real-output""#.into(),
+                output_hash: "sha256:deadbeef".into(), // lies about the bytes
+                attempt_count: 1,
+            },
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(v["error_kind"], "coord.output_hash_mismatch");
     }
 
     #[tokio::test]
@@ -3654,9 +3851,17 @@ mod tests {
         let run_id = submit_with_open_gate(&state).await;
         let app = build_router(state.clone());
 
+        // S9: fetch the per-gate token stashed at pause-time and present it.
+        let token = {
+            let store = state.store.lock().unwrap();
+            boruna_orchestrator::workflow::approval_gate_token(&store, &run_id, "human_review")
+                .unwrap()
+                .expect("open approval gate should have a stashed token")
+        };
         let body = serde_json::json!({
             "step_id": "human_review",
-            "decision": "approved"
+            "decision": "approved",
+            "token": token
         });
         let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
         assert_eq!(status, StatusCode::OK, "approve failed: {v}");
@@ -3680,6 +3885,28 @@ mod tests {
         );
         // The run is itself Completed because all steps reached terminal.
         assert_eq!(snap.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn approve_run_rejects_wrong_token() {
+        // S9: an open gate cannot be seized without the stashed per-gate token,
+        // even with a valid coordinator credential and correct step_id/decision.
+        let state = fresh_state();
+        let run_id = submit_with_open_gate(&state).await;
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "step_id": "human_review",
+            "decision": "approved",
+            "token": "not-the-real-token"
+        });
+        let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(v["error_kind"], "coord.approval_token_invalid");
+        // And a token-less body is likewise rejected.
+        let body2 = serde_json::json!({ "step_id": "human_review", "decision": "approved" });
+        let (status2, v2) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body2).await;
+        assert_eq!(status2, StatusCode::FORBIDDEN);
+        assert_eq!(v2["error_kind"], "coord.approval_token_invalid");
     }
 
     #[tokio::test]
@@ -3715,9 +3942,16 @@ mod tests {
         let state = fresh_state();
         let run_id = submit_with_open_gate(&state).await;
         let app = build_router(state.clone());
+        let token = {
+            let store = state.store.lock().unwrap();
+            boruna_orchestrator::workflow::approval_gate_token(&store, &run_id, "human_review")
+                .unwrap()
+                .expect("open approval gate should have a stashed token")
+        };
         let body = serde_json::json!({
             "step_id": "human_review",
-            "decision": "approved"
+            "decision": "approved",
+            "token": token
         });
         let (s1, _) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
         assert_eq!(s1, StatusCode::OK);

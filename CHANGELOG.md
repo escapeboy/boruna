@@ -6,6 +6,80 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-07-17
+
+First major release. A security-hardening + language-completeness sprint that
+remediates every finding from a whole-codebase research audit (3 High, several
+Medium, plus the "statically typed but unchecked" language gaps). It carries
+deliberate breaking changes — integer overflow and several coordinator/framework
+defaults now fail closed — hence the major bump. See **Breaking changes** below;
+each has a documented migration or override.
+
+### Security
+
+- **SSRF hardened in the live HTTP handler.** URL safety is now split into a
+  syntactic check and a live DNS-resolution check that rejects every resolved
+  private/loopback IP (IPv4 and IPv6, brackets stripped); redirects are followed
+  through a bounded manual loop that re-validates each hop, so a public host can
+  no longer redirect into the internal network.
+- **Coordinator cross-worker claim hijack closed (S6).** Completing, failing, or
+  extending a step now requires the caller to own the claim; a non-owner is
+  rejected with `403 coord.claim_not_owned`, checked at the trust boundary under
+  the store lock.
+- **Coordinator approval-gate forgery closed (S9).** An approval gate now mints a
+  per-gate token; `approve`/`reject` require it (`403 coord.approval_token_invalid`).
+- **Evidence bundles are now tamper-evident.** Verification gained an external
+  anchor (`evidence verify --expected-bundle-hash <hex>`) plus optional ed25519
+  manifest signing (`--verify-key` / `--require-signature`) and a
+  `--require-encryption` downgrade guard — a forged but internally-consistent
+  manifest that plain verify accepted is now caught.
+- **Content-addressing enforced at the coordinator.** A worker's `output_hash`
+  is verified against `SHA-256(output_json)` on completion.
+- **XSS fixed in `evidence serve`** — all bundle-derived HTML is escaped.
+- **Key material zeroized** — evidence DEK/KEK wiped on drop.
+- **Path-traversal guards** added to template names and storage `ref_to_run_id`
+  (S3/GCS/Azure).
+- **Crafted-`SpawnActor` DoS fixed** — a bad function index fails the actor
+  instead of panicking the VM.
+
+### Added
+
+- **User enum construction + real per-variant match tags.** Enums could be
+  declared and matched but never *constructed*; there is now an expression form
+  `Enum::Variant` / `Enum::Variant(payload)` (new `::` token) that compiles to
+  `MakeEnum`, and match arms dispatch on the variant's real declaration index
+  (they previously all collapsed to the first arm).
+- **Higher-order / indirect calls** via new `Op::CallIndirect` — a function
+  passed as a value now dispatches correctly (previously hardcoded to fn #0).
+- **`for` loops, `Map<K,V>` / `Fn(..) -> T` type annotations, and `ensures`
+  postconditions.**
+- **Static arity checking** — a direct call to a named function with the wrong
+  argument count is now a compile error.
+- **Warn-only static type-consistency checking (E009 warnings).** `lang check` /
+  `boruna_check` now surface `let`-annotation and call-argument type mismatches
+  as warnings, without blocking compilation — the first, non-breaking step of a
+  staged rollout toward strict typing.
+
+### Breaking changes
+
+- **Integer overflow is now a runtime error** (`VmError::ArithmeticOverflow`),
+  where it previously wrapped (release) or panicked (debug).
+- **The coordinator refuses to start on a non-loopback bind without auth.**
+  Override for trusted networks: `BORUNA_COORD_ALLOW_INSECURE=1`.
+- **The coordinator rejects an `output_hash` that doesn't match `output_json`**
+  (previously trusted).
+- **Framework policy defaults fail closed:** an empty or malformed `policies()`
+  now denies (was allow-all). Apps that define no `policies()` at all keep the
+  allow-all convenience.
+- **Codegen rejects element/field/argument counts above 255** with a compile
+  error instead of silently truncating a `u8` operand.
+
+### Fixed
+
+- `while`-body trailing-expression stack leak (one operand leaked per iteration).
+- Documentation/version/count drift (README, CLAUDE.md, stability, stdlib
+  manifest) corrected to the real workspace state.
+
 ## [1.9.0] — 2026-07-15
 
 Ninth feature minor on the 1.x LTS line. Fourth and final sprint of the

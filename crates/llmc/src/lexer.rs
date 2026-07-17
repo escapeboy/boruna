@@ -153,6 +153,8 @@ pub enum TokenKind {
     // Punctuation
     #[token(",")]
     Comma,
+    #[token("::")]
+    ColonColon,
     #[token(":")]
     Colon,
     #[token(";")]

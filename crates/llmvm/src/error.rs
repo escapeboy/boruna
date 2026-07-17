@@ -33,6 +33,9 @@ pub enum VmError {
     #[error("division by zero")]
     DivisionByZero,
 
+    #[error("integer overflow in {0}")]
+    ArithmeticOverflow(&'static str),
+
     #[error("capability denied: {0}")]
     CapabilityDenied(Capability),
 

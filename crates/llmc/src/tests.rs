@@ -248,6 +248,60 @@ mod tests {
     }
 
     #[test]
+    fn test_ensures_violation_traps() {
+        use boruna_vm::VmError;
+        let src =
+            "fn positive(n: Int) -> Int ensures result > 0 { n }\nfn main() -> Int { positive(0) }";
+        let module = compile("test", src).expect("compile");
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        match vm.run() {
+            Err(VmError::ContractViolation { message, .. }) => {
+                assert!(message.contains("postcondition"), "message: {message}");
+            }
+            other => panic!("expected ContractViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ensures_satisfied_runs_normally() {
+        let src =
+            "fn positive(n: Int) -> Int ensures result > 0 { n }\nfn main() -> Int { positive(7) }";
+        assert_eq!(run_source(src), Value::Int(7));
+    }
+
+    #[test]
+    fn test_e2e_for_loop_sums_list() {
+        let src = "fn main() -> Int {\n    let mut total = 0\n    for x in [1, 2, 3, 4, 5] {\n        total = total + x\n    }\n    total\n}";
+        assert_eq!(run_source(src), Value::Int(15));
+    }
+
+    #[test]
+    fn test_parse_map_and_fn_type_annotations() {
+        let source = "fn main() -> Int {\n    let m: Map<String, Int> = default_map()\n    let f: Fn(Int) -> Int = identity\n    0\n}";
+        let tokens = lexer::lex(source).unwrap();
+        let program = parser::parse(tokens).unwrap();
+        assert_eq!(program.items.len(), 1);
+        let Item::Function(f) = &program.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            ty: Some(map_ty), ..
+        } = &f.body.stmts[0]
+        else {
+            panic!("expected typed let");
+        };
+        assert!(matches!(map_ty, TypeExpr::Map(_, _)));
+        let Stmt::Let {
+            ty: Some(fn_ty), ..
+        } = &f.body.stmts[1]
+        else {
+            panic!("expected typed let");
+        };
+        assert!(matches!(fn_ty, TypeExpr::Fn(_, _)));
+    }
+
+    #[test]
     fn test_parse_type_def() {
         let tokens = lexer::lex("type User { name: String, age: Int }").unwrap();
         let program = parser::parse(tokens).unwrap();
@@ -421,6 +475,115 @@ fn main() -> Int {
 "#
             ),
             Value::Int(55),
+        );
+    }
+
+    #[test]
+    fn test_e2e_higher_order_indirect_call() {
+        // A function passed as a value and invoked indirectly through a
+        // parameter — exercises `Op::CallIndirect` (previously the codegen
+        // hardcoded the target to function #0, so any higher-order call was
+        // silently wrong).
+        assert_eq!(
+            run_source(
+                r#"
+fn double(n: Int) -> Int { n * 2 }
+fn apply(f: Fn(Int) -> Int, x: Int) -> Int { f(x) }
+fn main() -> Int { apply(double, 21) }
+"#
+            ),
+            Value::Int(42),
+        );
+    }
+
+    #[test]
+    fn test_e2e_enum_variant_construct_and_match() {
+        // Construct a user enum value (`Color::Green`) and match on it.
+        // Before per-variant tags, `pattern_to_tag` returned -1 for every
+        // enum arm, so every arm behaved as a wildcard and the FIRST arm
+        // (Red => 1) always matched. A result of 2 proves the Green arm
+        // (variant index 1) is selected by its real discriminant.
+        assert_eq!(
+            run_source(
+                r#"
+enum Color { Red, Green, Blue }
+fn describe(c: Color) -> Int {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+}
+fn main() -> Int { describe(Color::Green) }
+"#
+            ),
+            Value::Int(2),
+        );
+    }
+
+    #[test]
+    fn test_e2e_enum_variant_payload_construct_and_destructure() {
+        // Payload-carrying construction (`Shape::Square(5)`) plus destructuring
+        // in the match arm. Exercises MakeEnum with a real payload and confirms
+        // the Square arm (index 1), not Circle (index 0), is chosen.
+        assert_eq!(
+            run_source(
+                r#"
+enum Shape { Circle(Int), Square(Int) }
+fn area(s: Shape) -> Int {
+    match s {
+        Circle(r) => r * r * 3,
+        Square(side) => side * side,
+    }
+}
+fn main() -> Int { area(Shape::Square(5)) }
+"#
+            ),
+            Value::Int(25),
+        );
+    }
+
+    #[test]
+    fn test_arity_mismatch_is_rejected() {
+        // A direct call with the wrong number of arguments is a static error.
+        // (Calls through a local/param callee are intentionally not arity-checked
+        // — see test_e2e_higher_order_indirect_call, which must still compile.)
+        let err = compile(
+            "test",
+            r#"
+fn add(a: Int, b: Int) -> Int { a + b }
+fn main() -> Int { add(1) }
+"#,
+        )
+        .expect_err("wrong-arity call should fail type checking");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("expects 2 argument") && msg.contains("got 1"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_e2e_while_body_trailing_expr_no_stack_leak() {
+        // The while body's final statement is a bare expression (`i`), whose
+        // value is discarded each iteration. Without balancing the operand
+        // stack per iteration, one value leaks per loop and overflows the VM's
+        // 4096-slot stack. 5000 iterations exceeds that, so this only passes
+        // if the trailing expression is popped.
+        assert_eq!(
+            run_source(
+                r#"
+fn main() -> Int {
+    let mut i: Int = 0
+    while i < 5000 {
+        i = i + 1
+        i
+    }
+    i
+}
+"#
+            ),
+            Value::Int(5000),
         );
     }
 

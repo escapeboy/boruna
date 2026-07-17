@@ -31,7 +31,7 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - **Approval gates** — pause workflow execution for human review or external triggers before continuing
 - **Diagnostics, auto-repair, and migration** — `boruna lang check`, `boruna lang repair`, `boruna migrate` for `.ax` files and bundle/workflow upgrades
 - **`boruna new`** — interactive scaffold for new workflows from templates
-- **27 built-in functions** — string, list, and map operations (`__builtin_string_*`, `__builtin_list_*`, `__builtin_map_*`) available in every `.ax` file without imports
+- **33 built-in functions** — string (12), list (7), and map (7) operations plus type conversions and debug builtins (`__builtin_string_*`, `__builtin_list_*`, `__builtin_map_*`, …) available in every `.ax` file without imports
 - **Import resolution** — `import "std-name"` inlines `libs/<name>/src/core.ax` at compile time; all 13 stdlib packages are 1.0-stable
 - **Three formal versioned specifications** — `.ax` language 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
 - **MCP server** — exposes 12 tools for AI coding agent integration (Claude Code, Cursor, Codex)
@@ -158,7 +158,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v1.4.0** — fourth minor release on the 1.x LTS line. New in 1.4.0: agent-native CLI inspection surfaces (`boruna doctor`, `boruna size`, `boruna workflow graph`, `boruna lang codes`, `boruna skills` — all `--json`), the `boruna-lsp` language server for `.ax` files (diagnostics, completion, formatting in any LSP-capable editor), and three compliance example workflows (SOC 2, HIPAA, financial audit). The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) are feature-complete and frozen. The 1.x line is under long-term-support per [`docs/lts.md`](docs/lts.md): every 1.0 program, workflow, and bundle keeps working on every 1.y release.
+Boruna is at **v2.0.0** — the first major release. 2.0 is a security-hardening and language-completeness milestone that remediates a whole-codebase research audit: SSRF/XSS fixes, coordinator claim-ownership and approval-gate enforcement, tamper-evident evidence bundles (external anchor + ed25519 signing), and real language semantics (enum construction with per-variant match tags, higher-order calls, `for` loops, arity checking, and warn-only type-consistency diagnostics). It ships **deliberate breaking changes** — integer overflow is now a runtime error, and several coordinator/framework defaults fail closed — so review the 2.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md), each of which has a documented override or migration. The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 
