@@ -1640,7 +1640,8 @@ async fn handle_complete(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
-    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
         return resp;
     }
     let now_ms = now_unix_ms();
@@ -1671,7 +1672,8 @@ async fn handle_fail(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
-    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
         return resp;
     }
     let now_ms = now_unix_ms();
@@ -1721,7 +1723,8 @@ async fn handle_extend_lease(
         Ok(g) => g,
         Err(_) => return internal_error("store lock poisoned"),
     };
-    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id) {
+    if let Some(resp) = reject_if_not_claim_owner(&store, &req.run_id, &req.step_id, &req.worker_id)
+    {
         return resp;
     }
     let outcome = match store.extend_lease_cas(
