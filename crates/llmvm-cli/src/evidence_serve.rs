@@ -96,7 +96,25 @@ pub(crate) fn load_bundle(dir: &Path) -> Result<BundleData, Box<dyn std::error::
 // HTML helpers
 // ---------------------------------------------------------------------------
 
-fn page(title: &str, body: &str) -> String {
+fn page(title: &str, active: &str, body: &str) -> String {
+    // "you are here" cue: mark the matching nav link with aria-current.
+    let cur = |key: &str| {
+        if key == active {
+            r#" aria-current="page""#
+        } else {
+            ""
+        }
+    };
+    let nav = format!(
+        r#"<a href="/bundle"{b}>Overview</a>
+    <a href="/audit"{a}>Audit Log</a>
+    <a href="/outputs"{o}>Outputs</a>
+    <a href="/api/bundle"{j}>JSON API</a>"#,
+        b = cur("bundle"),
+        a = cur("audit"),
+        o = cur("outputs"),
+        j = cur("api"),
+    );
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -105,45 +123,74 @@ fn page(title: &str, body: &str) -> String {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} — Boruna Evidence</title>
 <style>
+:root{{color-scheme:light dark}}
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:system-ui,sans-serif;background:#f5f5f5;color:#222;line-height:1.5}}
-header{{background:#1a1a2e;color:#fff;padding:12px 24px;display:flex;gap:24px;align-items:center}}
-header h1{{font-size:1.1rem;font-weight:600}}
-nav a{{color:#a0c4ff;text-decoration:none;font-size:.9rem}}
+body{{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;color:#1a1a2e;line-height:1.5}}
+a{{color:#2563eb}}
+header{{background:#1a1a2e;color:#fff;padding:12px 24px;display:flex;flex-wrap:wrap;gap:6px 24px;align-items:baseline}}
+header h1{{font-size:1.05rem;font-weight:600}}
+nav{{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.9rem}}
+nav a{{color:#a0c4ff;text-decoration:none;padding:2px 6px;border-radius:3px}}
 nav a:hover{{text-decoration:underline}}
+nav a[aria-current="page"]{{color:#fff;background:rgba(255,255,255,.15);font-weight:600}}
 main{{max-width:1100px;margin:24px auto;padding:0 16px}}
-h2{{font-size:1.1rem;font-weight:600;margin-bottom:12px;color:#1a1a2e}}
+h2{{font-size:1.05rem;font-weight:600;margin:26px 0 12px;color:#1a1a2e}}
+p.lead{{color:#444;font-size:.9rem;margin-bottom:16px;max-width:74ch}}
+.hint{{color:#666;font-size:.8rem;margin:-2px 0 12px;max-width:82ch}}
 .card{{background:#fff;border:1px solid #ddd;border-radius:6px;padding:20px;margin-bottom:20px}}
-.kv{{display:grid;grid-template-columns:200px 1fr;gap:6px 16px}}
+.kv{{display:grid;grid-template-columns:190px 1fr;gap:8px 16px}}
+@media(max-width:560px){{.kv{{grid-template-columns:1fr}}.kv .k{{margin-top:8px}}}}
 .kv .k{{font-weight:600;color:#555;font-size:.85rem}}
 .kv .v{{font-size:.85rem;word-break:break-all}}
 .badge{{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.8rem;font-weight:600}}
 .pass{{background:#d1fae5;color:#065f46}}
 .fail{{background:#fee2e2;color:#991b1b}}
+.table-wrap{{overflow-x:auto;-webkit-overflow-scrolling:touch}}
 table{{width:100%;border-collapse:collapse;font-size:.85rem}}
-th{{background:#eee;text-align:left;padding:8px 10px;border-bottom:2px solid #ddd}}
+caption{{text-align:left;color:#666;font-size:.8rem;padding:0 0 10px}}
+th{{background:#eee;text-align:left;padding:8px 10px;border-bottom:2px solid #ddd;white-space:nowrap}}
 td{{padding:7px 10px;border-bottom:1px solid #eee;vertical-align:top}}
 tr:hover td{{background:#f9f9f9}}
-.mono{{font-family:monospace;font-size:.8rem}}
+.mono{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.8rem;overflow-wrap:anywhere}}
 details{{margin-bottom:12px}}
 summary{{cursor:pointer;padding:10px;background:#eef;border:1px solid #ccd;border-radius:4px;font-weight:600;font-size:.9rem}}
 pre{{background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:4px;overflow:auto;font-size:.8rem;margin-top:8px}}
 .warn{{background:#fffbeb;border:1px solid #f59e0b;padding:12px 16px;border-radius:4px;color:#78350f;font-size:.85rem;margin-bottom:16px}}
+.empty{{color:#666;font-size:.9rem;background:#fafafa;border:1px dashed #ccc;border-radius:6px;padding:16px;max-width:82ch}}
+footer{{max-width:1100px;margin:8px auto 40px;padding:16px;color:#888;font-size:.75rem;border-top:1px solid #e5e5e5}}
+@media (prefers-color-scheme: dark){{
+ body{{background:#14141f;color:#e5e7eb}}
+ a{{color:#93c5fd}}
+ h2{{color:#c7d2fe}}
+ p.lead{{color:#c9cbd1}}
+ .hint{{color:#9aa0ad}}
+ .card{{background:#1e1e2e;border-color:#33334a}}
+ .kv .k{{color:#a9adbb}}
+ th{{background:#26263a;border-color:#33334a}}
+ td{{border-color:#2a2a3d}}
+ tr:hover td{{background:#242438}}
+ summary{{background:#26263a;border-color:#3a3a55;color:#e5e7eb}}
+ caption{{color:#9aa0ad}}
+ .empty{{background:#1b1b28;border-color:#3a3a55;color:#a9adbb}}
+ footer{{color:#7b7f8c;border-color:#2a2a3d}}
+}}
 </style>
 </head>
 <body>
 <header>
   <h1>Boruna Evidence Inspector</h1>
-  <nav>
-    <a href="/bundle">Bundle</a> &nbsp;|&nbsp;
-    <a href="/audit">Audit Log</a> &nbsp;|&nbsp;
-    <a href="/outputs">Outputs</a> &nbsp;|&nbsp;
-    <a href="/api/bundle">JSON API</a>
+  <nav aria-label="Evidence bundle sections">
+    {nav}
   </nav>
 </header>
 <main>
 {body}
 </main>
+<footer>
+  Read-only inspector for one evidence bundle. Runs on <span class="mono">127.0.0.1</span> with no
+  authentication — do not expose it to a network. Verification and export are also available via
+  <span class="mono">boruna evidence verify</span> / <span class="mono">inspect</span>.
+</footer>
 </body>
 </html>"#
     )
@@ -194,35 +241,61 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
         .map(|b| b.format_version.as_str())
         .unwrap_or("(missing bundle.json)"));
 
+    // Explain what VALID / INVALID actually proves — the whole point of the page.
+    let verify_hint = if data.verify_valid {
+        "Every file in this bundle matches the SHA-256 checksum recorded in the manifest, and the \
+         audit log's hash chain is intact. Nothing has been altered since the run was sealed."
+    } else {
+        "One or more checks failed — a file, hash, or audit-chain link does not match what was \
+         sealed at run time. Treat this bundle as untrustworthy until the errors below are resolved."
+    };
+
     let body = format!(
         r#"<h2>Bundle Overview</h2>
+<p class="lead">An <strong>evidence bundle</strong> is a tamper-evident, self-contained record of one
+workflow run: its inputs' hashes, a hash-chained audit log of every step, the recorded outputs, and a
+manifest of SHA-256 checksums that ties it all together. This page verifies that record and shows what
+it contains.</p>
 {errors_html}
 <div class="card">
   <div class="kv">
     <div class="k">verification</div><div class="v">{verify_badge}</div>
-    <div class="k">run_id</div><div class="v mono">{run_id}</div>
+  </div>
+  <p class="hint">{verify_hint}</p>
+  <div class="kv" style="margin-top:12px">
+    <div class="k">run_id</div><div class="v mono" title="{run_id}">{run_id}</div>
     <div class="k">workflow</div><div class="v">{workflow}</div>
     <div class="k">started_at</div><div class="v">{started}</div>
     <div class="k">completed_at</div><div class="v">{completed}</div>
     <div class="k">format_version</div><div class="v">{format_version}</div>
     {enc_row}
   </div>
+  <p class="hint">Look up this same <span class="mono">run_id</span> in the Boruna Workflow
+  Dashboard to see the live run and its per-step status.</p>
 </div>
 <h2>Hashes</h2>
+<p class="hint">Fingerprints that make the bundle tamper-evident. <span class="mono">bundle_hash</span>
+covers the whole bundle; <span class="mono">workflow_hash</span> / <span class="mono">policy_hash</span>
+identify exactly which workflow and policy ran; <span class="mono">audit_log_hash</span> seals the audit
+chain. Re-running the same inputs reproduces the same hashes.</p>
 <div class="card">
   <div class="kv">
-    <div class="k">bundle_hash</div><div class="v mono">{bundle_hash}</div>
-    <div class="k">workflow_hash</div><div class="v mono">{workflow_hash}</div>
-    <div class="k">policy_hash</div><div class="v mono">{policy_hash}</div>
-    <div class="k">audit_log_hash</div><div class="v mono">{audit_hash}</div>
+    <div class="k">bundle_hash</div><div class="v mono" title="{bundle_hash}">{bundle_hash}</div>
+    <div class="k">workflow_hash</div><div class="v mono" title="{workflow_hash}">{workflow_hash}</div>
+    <div class="k">policy_hash</div><div class="v mono" title="{policy_hash}">{policy_hash}</div>
+    <div class="k">audit_log_hash</div><div class="v mono" title="{audit_hash}">{audit_hash}</div>
   </div>
 </div>
 <h2>File Checksums ({file_count} files)</h2>
 <div class="card">
+  <div class="table-wrap">
   <table>
-    <tr><th>File</th><th>SHA-256</th></tr>
-    {file_rows}
+    <caption>Each row is a file in the bundle and the SHA-256 it must match. Verification recomputes
+    these; any mismatch flips the bundle to INVALID. Hover a value to read it in full.</caption>
+    <thead><tr><th scope="col">File</th><th scope="col">SHA-256</th></tr></thead>
+    <tbody>{file_rows}</tbody>
   </table>
+  </div>
 </div>"#,
         run_id = esc(&data.manifest.run_id),
         workflow = esc(&data.manifest.workflow_name),
@@ -239,14 +312,14 @@ pub(crate) fn render_bundle_page(data: &BundleData) -> String {
             .iter()
             .map(|(f, h)| {
                 format!(
-                    r#"<tr><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
+                    r#"<tr><td class="mono">{}</td><td class="mono" title="{h}">{h}</td></tr>"#,
                     esc(f),
-                    esc(h)
+                    h = esc(h)
                 )
             })
             .collect::<String>(),
     );
-    page("Bundle", &body)
+    page("Bundle", "bundle", &body)
 }
 
 pub(crate) fn render_audit_page(data: &BundleData) -> String {
@@ -269,17 +342,34 @@ pub(crate) fn render_audit_page(data: &BundleData) -> String {
         })
         .collect();
 
+    let inner = if data.audit_entries.is_empty() {
+        String::from(
+            r#"<div class="card"><p class="empty">This bundle recorded no audit entries. That usually
+means a partial or demo-mode bundle — a fully recorded run logs one entry per lifecycle event
+(workflow started, each step started/completed, policy checks, and workflow completed).</p></div>"#,
+        )
+    } else {
+        format!(
+            r#"<div class="card" style="padding:0">
+  <div class="table-wrap">
+  <table>
+    <caption style="padding:12px 14px 0">Chronological, append-only record of the run. Each entry is
+    hash-linked to the one before it (entry #N embeds the hash of #N-1), so removing or editing any
+    line breaks the chain and fails verification.</caption>
+    <thead><tr><th scope="col">#</th><th scope="col">Step</th><th scope="col">Event</th><th scope="col">Detail</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  </div>
+</div>"#
+        )
+    };
+
     let body = format!(
         r#"<h2>Audit Log ({count} entries)</h2>
-<div class="card" style="padding:0;overflow:auto">
-  <table>
-    <tr><th>#</th><th>Step</th><th>Event</th><th>Detail</th></tr>
-    {rows}
-  </table>
-</div>"#,
+{inner}"#,
         count = data.audit_entries.len()
     );
-    page("Audit Log", &body)
+    page("Audit Log", "audit", &body)
 }
 
 fn describe_event(event: &AuditEvent) -> (String, &'static str, String) {
@@ -367,7 +457,11 @@ fn describe_event(event: &AuditEvent) -> (String, &'static str, String) {
 
 pub(crate) fn render_outputs_page(data: &BundleData) -> String {
     let items: String = if data.outputs.is_empty() {
-        String::from("<p style='color:#888'>No outputs found.</p>")
+        String::from(
+            r#"<p class="empty">No outputs found in this bundle. Demo-mode runs and workflows that
+don't record step results show nothing here — the run may still be valid. Click a step below (when
+present) to expand its recorded JSON result.</p>"#,
+        )
     } else {
         data.outputs
             .iter()
@@ -386,10 +480,12 @@ pub(crate) fn render_outputs_page(data: &BundleData) -> String {
 
     let body = format!(
         r#"<h2>Step Outputs ({count} steps)</h2>
+<p class="lead">The exact JSON result each step produced, as it was sealed into the bundle. These are
+the recorded outputs verified by the checksums on the Overview page.</p>
 <div class="card">{items}</div>"#,
         count = data.outputs.len()
     );
-    page("Outputs", &body)
+    page("Outputs", "outputs", &body)
 }
 
 // ---------------------------------------------------------------------------
