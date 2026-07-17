@@ -1036,6 +1036,13 @@ pub struct ApproveRequest {
     pub decision: String,
     #[serde(default)]
     pub reason: Option<String>,
+    /// Per-gate approval token stashed at pause-time (finding S9). Required:
+    /// without it any bearer/worker-cert holder could seize the gate. Mirrors
+    /// `TriggerRequest.token`. Defaults to empty so a token-less legacy body
+    /// deserializes — but an empty token never matches a stashed token, so it
+    /// is rejected (fail-closed).
+    #[serde(default)]
+    pub token: String,
 }
 
 /// Sprint `0.5-S6` — `POST /api/runs/{run_id}/trigger` body. The
@@ -2057,6 +2064,29 @@ async fn handle_approve_run(
         Ok(g) => g,
         Err(e) => return internal_error(&format!("store mutex poisoned: {e}")),
     };
+    // S9: require the per-gate token before recording a decision, so a holder of
+    // the bearer/worker credential cannot seize (or pre-empt) an approval gate.
+    // Constant-time compare against the token stashed at pause-time. When no token
+    // is stashed (unknown run, or the gate was never reached) fall through so
+    // record_approval_decision_in_store returns the precise 404/gate-state error
+    // rather than masking it as a token failure.
+    match boruna_orchestrator::workflow::approval_gate_token(&store_guard, &run_id, &req.step_id) {
+        Ok(Some(stashed)) => {
+            if !constant_time_bytes_eq(req.token.as_bytes(), stashed.as_bytes()) {
+                return respond_err(
+                    StatusCode::FORBIDDEN,
+                    ErrorBody::new(
+                        "coord.approval_token_invalid",
+                        "approval requires the per-gate token stashed at pause-time; \
+                         supplied token is missing or does not match"
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return internal_error(&format!("approval_gate_token: {e}")),
+    }
     let result = boruna_orchestrator::workflow::record_approval_decision_in_store(
         &store_guard,
         &run_id,
@@ -2561,6 +2591,7 @@ pub fn run_remote(
 /// `boruna workflow reject --coordinator <url>`. Returns `Ok(())` on
 /// success, an error with the coordinator's `error_kind` and
 /// message verbatim on a non-2xx response.
+#[allow(clippy::too_many_arguments)]
 pub fn send_approve_remote(
     coord_url: &str,
     coord_token: Option<&str>,
@@ -2568,6 +2599,7 @@ pub fn send_approve_remote(
     step_id: &str,
     decision: &str,
     reason: Option<&str>,
+    token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base = coord_url.trim_end_matches('/');
     let url = format!("{base}/api/runs/{run_id}/approve");
@@ -2575,6 +2607,7 @@ pub fn send_approve_remote(
         step_id: step_id.to_string(),
         decision: decision.to_string(),
         reason: reason.map(|s| s.to_string()),
+        token: token.to_string(),
     };
     post_operator_command(&url, coord_token, &body)
 }
@@ -3818,9 +3851,17 @@ mod tests {
         let run_id = submit_with_open_gate(&state).await;
         let app = build_router(state.clone());
 
+        // S9: fetch the per-gate token stashed at pause-time and present it.
+        let token = {
+            let store = state.store.lock().unwrap();
+            boruna_orchestrator::workflow::approval_gate_token(&store, &run_id, "human_review")
+                .unwrap()
+                .expect("open approval gate should have a stashed token")
+        };
         let body = serde_json::json!({
             "step_id": "human_review",
-            "decision": "approved"
+            "decision": "approved",
+            "token": token
         });
         let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
         assert_eq!(status, StatusCode::OK, "approve failed: {v}");
@@ -3844,6 +3885,28 @@ mod tests {
         );
         // The run is itself Completed because all steps reached terminal.
         assert_eq!(snap.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn approve_run_rejects_wrong_token() {
+        // S9: an open gate cannot be seized without the stashed per-gate token,
+        // even with a valid coordinator credential and correct step_id/decision.
+        let state = fresh_state();
+        let run_id = submit_with_open_gate(&state).await;
+        let app = build_router(state.clone());
+        let body = serde_json::json!({
+            "step_id": "human_review",
+            "decision": "approved",
+            "token": "not-the-real-token"
+        });
+        let (status, v) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(v["error_kind"], "coord.approval_token_invalid");
+        // And a token-less body is likewise rejected.
+        let body2 = serde_json::json!({ "step_id": "human_review", "decision": "approved" });
+        let (status2, v2) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body2).await;
+        assert_eq!(status2, StatusCode::FORBIDDEN);
+        assert_eq!(v2["error_kind"], "coord.approval_token_invalid");
     }
 
     #[tokio::test]
@@ -3879,9 +3942,16 @@ mod tests {
         let state = fresh_state();
         let run_id = submit_with_open_gate(&state).await;
         let app = build_router(state.clone());
+        let token = {
+            let store = state.store.lock().unwrap();
+            boruna_orchestrator::workflow::approval_gate_token(&store, &run_id, "human_review")
+                .unwrap()
+                .expect("open approval gate should have a stashed token")
+        };
         let body = serde_json::json!({
             "step_id": "human_review",
-            "decision": "approved"
+            "decision": "approved",
+            "token": token
         });
         let (s1, _) = post_json(&app, &format!("/api/runs/{run_id}/approve"), &body).await;
         assert_eq!(s1, StatusCode::OK);

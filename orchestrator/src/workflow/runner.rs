@@ -1023,6 +1023,12 @@ impl WorkflowRunner {
                     // the same status.
                     let exists = checkpoint_by_id.contains_key(step_id);
                     if !exists {
+                        // S9: mint a per-gate approval token (stashed in
+                        // metadata.triggers, payload left empty) so the operator
+                        // must present it to approve — prevents a bearer/worker-
+                        // cert holder from seizing or pre-empting the gate. Mirror
+                        // of the ExternalTrigger arm below; idempotent on re-tick.
+                        let _token = acquire_trigger_token(store, run_id, step_id)?;
                         store
                             .upsert_step_checkpoint(&StepCheckpoint {
                                 run_id: run_id.to_string(),
@@ -3964,6 +3970,35 @@ pub fn record_approval_decision(
 ) -> Result<(), WorkflowRunError> {
     let store = open_store(data_dir)?;
     record_approval_decision_in_store(&store, run_id, step_id, decision, reason)
+}
+
+/// Return the per-gate token stashed for a step's approval gate (minted at
+/// pause-time by `acquire_trigger_token`, stored in `metadata.triggers`), or
+/// `None` if there is no run/metadata/stashed token yet.
+///
+/// Finding S9: `POST /api/runs/{id}/approve` previously required no token, so any
+/// bearer/worker-cert holder could seize (and pre-empt) a human-in-the-loop gate.
+/// The coordinator now requires the caller to present this token, mirroring the
+/// per-step token already enforced on `/trigger`. Kept as a read helper so the
+/// existing `record_approval_decision_in_store` (and its ~10 tests) are untouched
+/// — the token check lives at the coordinator trust boundary.
+#[cfg(feature = "persist-sqlite")]
+pub fn approval_gate_token(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+) -> Result<Option<String>, WorkflowRunError> {
+    let metadata_json = match store
+        .get_run_metadata(run_id)
+        .map_err(WorkflowRunError::from)?
+    {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).map_err(|e| {
+        WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+    })?;
+    Ok(metadata.triggers.get(step_id).map(|r| r.token.clone()))
 }
 
 /// Store-scoped variant of [`record_approval_decision`] for callers

@@ -916,6 +916,12 @@ enum WorkflowCommand {
         /// `--coordinator`.
         #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
         coord_token: Option<String>,
+        /// Per-gate approval token stashed at pause-time (finding S9). Required
+        /// by a remote coordinator's `/approve` — without it the gate cannot be
+        /// approved. Distinct from `--coord-token` (the auth bearer). Retrieve
+        /// it from the paused run's status. Only meaningful with `--coordinator`.
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
     },
     /// Reject a paused approval-gate step. Records a rejection sentinel;
     /// `boruna workflow resume <run-id>` will then halt the run as
@@ -935,6 +941,11 @@ enum WorkflowCommand {
         coordinator: Option<String>,
         #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
         coord_token: Option<String>,
+        /// Per-gate approval token stashed at pause-time (finding S9), required
+        /// by a remote coordinator's `/approve`. Only meaningful with
+        /// `--coordinator`.
+        #[arg(long, value_name = "TOKEN")]
+        token: Option<String>,
     },
     /// Trigger a paused external_trigger step (sprint 0.3-S15). Records
     /// the supplied payload as the step's output and primes resume to
@@ -3473,6 +3484,7 @@ fn run_workflow(
             data_dir,
             coordinator,
             coord_token,
+            token,
         } => {
             if let Some(url) = coordinator {
                 #[cfg(feature = "serve")]
@@ -3484,6 +3496,7 @@ fn run_workflow(
                         &step_id,
                         "approved",
                         None,
+                        token.as_deref().unwrap_or_default(),
                     )?;
                     println!(
                         "approval recorded for step '{step_id}' in run '{run_id}' \
@@ -3492,12 +3505,13 @@ fn run_workflow(
                 }
                 #[cfg(not(feature = "serve"))]
                 {
-                    let _ = (url, coord_token);
+                    let _ = (url, coord_token, token);
                     return Err(
                         "`workflow approve --coordinator` requires the `serve` feature".into(),
                     );
                 }
             } else {
+                let _ = token; // local approve is operator-trusted; no gate token
                 #[cfg(feature = "persist-sqlite")]
                 {
                     use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
@@ -3530,6 +3544,7 @@ fn run_workflow(
             data_dir,
             coordinator,
             coord_token,
+            token,
         } => {
             if let Some(url) = coordinator {
                 #[cfg(feature = "serve")]
@@ -3541,6 +3556,7 @@ fn run_workflow(
                         &step_id,
                         "rejected",
                         reason.as_deref(),
+                        token.as_deref().unwrap_or_default(),
                     )?;
                     println!(
                         "rejection recorded for step '{step_id}' in run '{run_id}' \
@@ -3549,12 +3565,13 @@ fn run_workflow(
                 }
                 #[cfg(not(feature = "serve"))]
                 {
-                    let _ = (url, coord_token, reason);
+                    let _ = (url, coord_token, reason, token);
                     return Err(
                         "`workflow reject --coordinator` requires the `serve` feature".into(),
                     );
                 }
             } else {
+                let _ = token; // local reject is operator-trusted; no gate token
                 #[cfg(feature = "persist-sqlite")]
                 {
                     use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};

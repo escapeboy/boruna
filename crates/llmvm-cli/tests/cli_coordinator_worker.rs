@@ -1646,6 +1646,15 @@ fn cli_workflow_approve_via_coordinator_advances_remote_run() {
     }
     assert!(!run_id.is_empty(), "gate never opened within 20s");
 
+    // S9: read the per-gate approval token stashed when the gate opened and
+    // pass it to `workflow approve` — the coordinator now requires it.
+    let approval_token = {
+        let store = RunCheckpointStore::open(&coord_data.join("runs.db")).unwrap();
+        boruna_orchestrator::workflow::approval_gate_token(&store, &run_id, "human_review")
+            .unwrap()
+            .expect("open approval gate should have a stashed token")
+    };
+
     // Approve via remote CLI.
     let approve = Command::new(boruna_bin())
         .args([
@@ -1655,6 +1664,8 @@ fn cli_workflow_approve_via_coordinator_advances_remote_run() {
             "human_review",
             "--coordinator",
             &coord_url,
+            "--token",
+            &approval_token,
         ])
         .output()
         .expect("invoke workflow approve --coordinator");
