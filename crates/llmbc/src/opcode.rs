@@ -1,5 +1,24 @@
 use serde::{Deserialize, Serialize};
 
+/// Which contract clause an [`Op::Assert`] guards. Recorded verbatim
+/// (`requires`/`ensures`) into the evidence trail's `ContractCheck`
+/// events, so an auditor can tell preconditions from postconditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContractKind {
+    Requires,
+    Ensures,
+}
+
+impl ContractKind {
+    /// Stable lowercase label used in the audit trail.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContractKind::Requires => "requires",
+            ContractKind::Ensures => "ensures",
+        }
+    }
+}
+
 /// Bytecode instructions for the Boruna VM.
 /// Stack-based: operands are pushed/popped from the operand stack.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,7 +82,18 @@ pub enum Op {
     ReceiveMsg,
 
     /// Pop value, assert it is truthy or abort with error const index.
-    Assert(u32),
+    ///
+    /// Carries contract provenance for the evidence trail: `kind`
+    /// distinguishes a precondition (`requires`) from a postcondition
+    /// (`ensures`), and `index` is the 0-based clause position within
+    /// that list. The VM records a `ContractCheck` event on every
+    /// evaluation (pass or fail) so a sealed run proves each contract
+    /// held. Emitted only by codegen for `requires`/`ensures` clauses.
+    Assert {
+        msg: u32,
+        kind: ContractKind,
+        index: u32,
+    },
 
     /// Capability call: cap_id, arg_count. Args on stack.
     CapCall(u32, u8),
@@ -262,7 +292,7 @@ impl Op {
             Op::SpawnActor(_) => 0x0F,
             Op::SendMsg => 0x10,
             Op::ReceiveMsg => 0x11,
-            Op::Assert(_) => 0x12,
+            Op::Assert { .. } => 0x12,
             Op::CapCall(_, _) => 0x13,
             Op::Add => 0x20,
             Op::Sub => 0x21,

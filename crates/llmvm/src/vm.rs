@@ -583,9 +583,23 @@ impl Vm {
                         self.push(Value::Unit)?;
                     }
                 }
-                Op::Assert(err_const) => {
+                Op::Assert {
+                    msg: err_const,
+                    kind,
+                    index,
+                } => {
                     let val = self.pop()?;
-                    if !val.is_truthy() {
+                    let passed = val.is_truthy();
+                    // Seal the contract check into the evidence trail for
+                    // BOTH outcomes: a passing run proves the clause held;
+                    // a failing run pins exactly which clause broke, right
+                    // before the trap below. `Op::Assert` is emitted only
+                    // by codegen for contracts, so `func_idx` names the
+                    // function under contract.
+                    let function = self.module.functions[func_idx as usize].name.clone();
+                    self.event_log
+                        .log_contract_check(&function, kind, index as usize, passed);
+                    if !passed {
                         let msg = self
                             .module
                             .constants

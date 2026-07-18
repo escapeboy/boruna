@@ -561,7 +561,11 @@ mod tests {
         let module = simple_module(
             vec![
                 Op::PushConst(0), // true
-                Op::Assert(1),
+                Op::Assert {
+                    msg: 1,
+                    kind: ContractKind::Requires,
+                    index: 0,
+                },
                 Op::PushConst(2),
                 Op::Ret,
             ],
@@ -579,7 +583,11 @@ mod tests {
         let module = simple_module(
             vec![
                 Op::PushConst(0), // false
-                Op::Assert(1),
+                Op::Assert {
+                    msg: 1,
+                    kind: ContractKind::Requires,
+                    index: 0,
+                },
                 Op::PushConst(2),
                 Op::Ret,
             ],
@@ -590,6 +598,194 @@ mod tests {
             ],
         );
         assert!(run_module(module).is_err());
+    }
+
+    #[test]
+    fn test_contract_check_passing_requires_recorded() {
+        // A passing `requires` guard must leave a ContractCheck{passed:true}
+        // in the evidence trail — a passing contract is no longer invisible.
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // true
+                Op::Assert {
+                    msg: 1,
+                    kind: ContractKind::Requires,
+                    index: 0,
+                },
+                Op::PushConst(2),
+                Op::Ret,
+            ],
+            vec![
+                Value::Bool(true),
+                Value::String("precondition 1 failed in `main`".into()),
+                Value::Int(7),
+            ],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        assert_eq!(vm.run().unwrap(), Value::Int(7));
+
+        let contract_events: Vec<_> = vm
+            .event_log()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::ContractCheck { .. }))
+            .collect();
+        assert_eq!(contract_events.len(), 1);
+        match contract_events[0] {
+            Event::ContractCheck {
+                function,
+                kind,
+                index,
+                passed,
+            } => {
+                assert_eq!(function, "main");
+                assert_eq!(kind, "requires");
+                assert_eq!(*index, 0);
+                assert!(*passed);
+            }
+            other => panic!("expected ContractCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_contract_check_failing_requires_recorded_and_traps() {
+        // A failing `requires` guard must record ContractCheck{passed:false}
+        // AND still trap with VmError::ContractViolation.
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // false
+                Op::Assert {
+                    msg: 1,
+                    kind: ContractKind::Requires,
+                    index: 0,
+                },
+                Op::PushConst(2),
+                Op::Ret,
+            ],
+            vec![
+                Value::Bool(false),
+                Value::String("precondition 1 failed in `main`".into()),
+                Value::Int(7),
+            ],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        let err = vm.run().expect_err("failing precondition must trap");
+        assert!(matches!(err, VmError::ContractViolation { .. }));
+
+        // Even though the run trapped, the failed check is sealed.
+        let contract_events: Vec<_> = vm
+            .event_log()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::ContractCheck { .. }))
+            .collect();
+        assert_eq!(contract_events.len(), 1);
+        match contract_events[0] {
+            Event::ContractCheck { kind, passed, .. } => {
+                assert_eq!(kind, "requires");
+                assert!(!*passed);
+            }
+            other => panic!("expected ContractCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_contract_check_passing_ensures_recorded() {
+        // A passing `ensures` postcondition records kind="ensures".
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // true
+                Op::Assert {
+                    msg: 1,
+                    kind: ContractKind::Ensures,
+                    index: 0,
+                },
+                Op::PushConst(2),
+                Op::Ret,
+            ],
+            vec![
+                Value::Bool(true),
+                Value::String("postcondition 1 failed in `main`".into()),
+                Value::Int(99),
+            ],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        assert_eq!(vm.run().unwrap(), Value::Int(99));
+
+        let ensures: Vec<_> = vm
+            .event_log()
+            .events()
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::ContractCheck { kind, passed, .. } if kind == "ensures" && *passed
+                )
+            })
+            .collect();
+        assert_eq!(ensures.len(), 1);
+    }
+
+    #[test]
+    fn test_contract_check_replay_determinism() {
+        // A run containing contract events must verify_full-match a
+        // re-run of the identical module.
+        let make_module = || {
+            simple_module(
+                vec![
+                    Op::PushConst(0), // true
+                    Op::Assert {
+                        msg: 1,
+                        kind: ContractKind::Requires,
+                        index: 0,
+                    },
+                    Op::PushConst(2),
+                    Op::Assert {
+                        msg: 1,
+                        kind: ContractKind::Ensures,
+                        index: 0,
+                    },
+                    Op::PushConst(2),
+                    Op::Ret,
+                ],
+                vec![
+                    Value::Bool(true),
+                    Value::String("contract failed in `main`".into()),
+                    Value::Bool(true),
+                ],
+            )
+        };
+
+        let mut vm1 = Vm::new(make_module(), CapabilityGateway::new(Policy::allow_all()));
+        vm1.run().unwrap();
+        let mut vm2 = Vm::new(make_module(), CapabilityGateway::new(Policy::allow_all()));
+        vm2.run().unwrap();
+
+        // Both runs recorded contract events.
+        assert!(vm1
+            .event_log()
+            .events()
+            .iter()
+            .any(|e| matches!(e, Event::ContractCheck { .. })));
+
+        let result = ReplayEngine::verify_full(vm1.event_log(), vm2.event_log());
+        assert!(
+            matches!(result, ReplayResult::Identical),
+            "contract events must replay identically: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_event_log_explicit_v1_still_reads() {
+        // Backward compat: an explicit version-1 log (no ContractCheck)
+        // must still deserialize after the v2 bump.
+        let v1_json = r#"{"version":1,"events":[{"CapCall":{"capability":"time.now","args":[]}}]}"#;
+        let log = EventLog::from_json(v1_json).unwrap();
+        assert_eq!(log.version(), 1);
+        assert_eq!(log.events().len(), 1);
     }
 
     #[test]
@@ -1021,8 +1217,9 @@ mod tests {
     }
 
     #[test]
-    fn test_event_log_v1_format_stability() {
-        // Golden test: lock the JSON format of EventLog v1
+    fn test_event_log_v2_format_stability() {
+        // Golden test: lock the JSON format of the current EventLog
+        // (v2 — bumped when ContractCheck was added).
         let mut log = EventLog::new();
         log.log_cap_call(
             &Capability::NetFetch,
@@ -1033,7 +1230,7 @@ mod tests {
         let json = log.to_json().unwrap();
 
         // Must contain version
-        assert!(json.contains("\"version\": 1"), "must have version: 1");
+        assert!(json.contains("\"version\": 2"), "must have version: 2");
         // Must contain events array
         assert!(json.contains("\"events\""), "must have events array");
         // Must contain CapCall variant

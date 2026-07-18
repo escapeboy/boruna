@@ -206,7 +206,7 @@ mod tests {
         let module = compile("m", "fn main() -> Int requires true { 0 }").unwrap();
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
         assert!(
-            main.code.iter().any(|op| matches!(op, Op::Assert(_))),
+            main.code.iter().any(|op| matches!(op, Op::Assert { .. })),
             "expected an Assert opcode from the requires clause"
         );
     }
@@ -217,7 +217,7 @@ mod tests {
         let module = compile("m", "fn main() -> Int { 0 }").unwrap();
         let main = module.functions.iter().find(|f| f.name == "main").unwrap();
         assert!(
-            !main.code.iter().any(|op| matches!(op, Op::Assert(_))),
+            !main.code.iter().any(|op| matches!(op, Op::Assert { .. })),
             "a function without a contract must not emit Assert"
         );
     }

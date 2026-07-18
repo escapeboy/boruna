@@ -4,7 +4,7 @@ use boruna_bytecode::capability::Capability;
 use boruna_bytecode::module::{
     Function, MatchArm as BcMatchArm, Module, TypeDef as BcTypeDef, TypeKind as BcTypeKind,
 };
-use boruna_bytecode::opcode::Op;
+use boruna_bytecode::opcode::{ContractKind, Op};
 use boruna_bytecode::value::Value;
 
 use crate::ast::*;
@@ -121,7 +121,11 @@ impl Emitter {
             self.emit_expr(req, &mut fe)?;
             let msg = format!("precondition {} failed in `{}`", i + 1, f.name);
             let msg_idx = self.module.add_const(Value::String(msg));
-            fe.code.push(Op::Assert(msg_idx));
+            fe.code.push(Op::Assert {
+                msg: msg_idx,
+                kind: ContractKind::Requires,
+                index: i as u32,
+            });
         }
 
         // Emit body
@@ -150,7 +154,11 @@ impl Emitter {
                 self.emit_expr(ens, &mut fe)?;
                 let msg = format!("postcondition {} failed in `{}`", i + 1, f.name);
                 let msg_idx = self.module.add_const(Value::String(msg));
-                fe.code.push(Op::Assert(msg_idx));
+                fe.code.push(Op::Assert {
+                    msg: msg_idx,
+                    kind: ContractKind::Ensures,
+                    index: i as u32,
+                });
             }
 
             fe.code.push(Op::LoadLocal(result_local));
