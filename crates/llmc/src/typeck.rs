@@ -88,6 +88,11 @@ impl TypeChecker {
         // See docs/spec/bytecode-1.0.md §4 (Debug, DebugMsg).
         functions.insert("__builtin_debug".to_string(), 1);
         functions.insert("__builtin_debug_msg".to_string(), 2);
+        // guard-and-seal: `__builtin_guard(value, passed, label)` runs a
+        // deterministic boolean check on a value, fails closed on false,
+        // and seals the verdict into the evidence trail. Returns `value`
+        // unchanged on pass. Compiles to `Op::GuardSeal`.
+        functions.insert("__builtin_guard".to_string(), 3);
         // 0.3-S14: read a workflow step's resolved input value at
         // runtime. Compiles to `Op::CapCall(StepInput, 1)` which
         // dispatches through the gateway's StepInputHandler. Returns

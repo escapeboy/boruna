@@ -779,6 +779,138 @@ mod tests {
     }
 
     #[test]
+    fn test_guard_seal_pass_returns_value_and_seals() {
+        // __builtin_guard(value, true, "json-shape") returns `value`
+        // unchanged AND seals an output ContractCheck{passed:true}.
+        // Stack the VM expects (top → bottom): [label, passed, value].
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // value
+                Op::PushConst(1), // passed = true
+                Op::PushConst(2), // label
+                Op::GuardSeal,
+                Op::Ret,
+            ],
+            vec![
+                Value::Int(42),
+                Value::Bool(true),
+                Value::String("json-shape".into()),
+            ],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        // Transparent on the happy path: the guarded value flows through.
+        assert_eq!(vm.run().unwrap(), Value::Int(42));
+
+        let checks: Vec<_> = vm
+            .event_log()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::ContractCheck { .. }))
+            .collect();
+        assert_eq!(checks.len(), 1);
+        match checks[0] {
+            Event::ContractCheck {
+                function,
+                kind,
+                index,
+                passed,
+            } => {
+                assert_eq!(function, "json-shape");
+                assert_eq!(kind, "output");
+                assert_eq!(*index, 0);
+                assert!(*passed);
+            }
+            other => panic!("expected ContractCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_guard_seal_fail_traps_and_seals() {
+        // __builtin_guard(value, false, "json-shape") traps fail-closed
+        // with VmError::ContractViolation AND still seals the verdict as
+        // an output ContractCheck{passed:false}.
+        let module = simple_module(
+            vec![
+                Op::PushConst(0), // value
+                Op::PushConst(1), // passed = false
+                Op::PushConst(2), // label
+                Op::GuardSeal,
+                Op::Ret,
+            ],
+            vec![
+                Value::Int(42),
+                Value::Bool(false),
+                Value::String("json-shape".into()),
+            ],
+        );
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        let err = vm.run().expect_err("failing output guard must trap");
+        assert!(matches!(err, VmError::ContractViolation { .. }));
+
+        // Even though the run trapped, the failed check is sealed.
+        let checks: Vec<_> = vm
+            .event_log()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::ContractCheck { .. }))
+            .collect();
+        assert_eq!(checks.len(), 1);
+        match checks[0] {
+            Event::ContractCheck {
+                function,
+                kind,
+                passed,
+                ..
+            } => {
+                assert_eq!(function, "json-shape");
+                assert_eq!(kind, "output");
+                assert!(!*passed);
+            }
+            other => panic!("expected ContractCheck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_guard_seal_replay_determinism() {
+        // A run containing guard-and-seal output events must
+        // verify_full-match a re-run of the identical module.
+        let make_module = || {
+            simple_module(
+                vec![
+                    Op::PushConst(0), // value
+                    Op::PushConst(1), // passed = true
+                    Op::PushConst(2), // label
+                    Op::GuardSeal,
+                    Op::Ret,
+                ],
+                vec![
+                    Value::Int(7),
+                    Value::Bool(true),
+                    Value::String("output-shape".into()),
+                ],
+            )
+        };
+
+        let mut vm1 = Vm::new(make_module(), CapabilityGateway::new(Policy::allow_all()));
+        vm1.run().unwrap();
+        let mut vm2 = Vm::new(make_module(), CapabilityGateway::new(Policy::allow_all()));
+        vm2.run().unwrap();
+
+        assert!(vm1.event_log().events().iter().any(|e| matches!(
+            e,
+            Event::ContractCheck { kind, .. } if kind == "output"
+        )));
+
+        let result = ReplayEngine::verify_full(vm1.event_log(), vm2.event_log());
+        assert!(
+            matches!(result, ReplayResult::Identical),
+            "output guard events must replay identically: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_event_log_explicit_v1_still_reads() {
         // Backward compat: an explicit version-1 log (no ContractCheck)
         // must still deserialize after the v2 bump.
