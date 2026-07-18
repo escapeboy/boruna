@@ -47,6 +47,7 @@ The server communicates over JSON-RPC stdio. All tools return structured JSON wi
 | `boruna_capability_list` | List the frozen 1.0 capability set with `capability_set_hash` |
 | `boruna_policy_validate` | Validate a `Policy` JSON document; returns typed `error_kind` on rejection |
 | `boruna_symbols` | Extract top-level symbols (fns/records/enums) from `.ax` source → exact typed signatures, capabilities, requires/ensures arity |
+| `boruna_run_sealed` | Compile + run `.ax`, replay-verify the execution, return a verifiable record (result, `replay_verified`, capability calls, event log, SHA-256 seal digest) |
 
 ## Agent-native CLI surfaces
 

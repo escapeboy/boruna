@@ -85,19 +85,25 @@ Occupying a distinct category does not mean living apart from the
 ecosystem. The intent is for a Boruna execution record to slot into
 existing supply-chain and attestation tooling rather than replace it.
 
-To that end, an **in-toto / DSSE emission** is being developed
-separately: an option to export the bundle's core attestation
-(run identity, `workflow_hash`, `policy_hash`, `audit_log_hash`,
-output digests) as an in-toto statement wrapped in a DSSE envelope. That
-makes the execution-provenance claim consumable by the same tooling that
-already ingests SLSA and in-toto attestations — for example, a
-transparency log or a policy engine that gates on attestations.
+To that end, an **in-toto / DSSE emission** is available via
+`boruna evidence attest <bundle-dir>`: it exports the bundle's core
+attestation (run identity, `workflow_hash`, `policy_hash`,
+`audit_log_hash`, output digests) as an in-toto Statement
+(`predicateType: https://boruna.dev/runtime-provenance/v1`) wrapped in a
+DSSE envelope signed with the bundle's ed25519 key. That makes the
+execution-provenance claim consumable by the same tooling that already
+ingests SLSA and in-toto attestations — for example, a transparency log
+or a policy engine that gates on attestations. The predicate schema is
+specified in `docs/spec/runtime-provenance-predicate-1.0.md`.
 
-> **Status note.** As of this writing the in-toto/DSSE emitter is
-> *forthcoming* and is **not** present in the current codebase. The
-> native, implemented format is the evidence bundle described in
-> `docs/spec/evidence-bundle-1.0.md`. Treat the DSSE interop as planned
-> interoperability work, not a shipped feature.
+> **Status note.** The in-toto/DSSE emitter is implemented
+> (`boruna evidence attest`, `--verify` to check the envelope). It is
+> **additive** — the native, authoritative format remains the evidence
+> bundle described in `docs/spec/evidence-bundle-1.0.md`. Live
+> interoperability with a specific `cosign`/`in-toto-verify` binary is
+> spec-conformant but not yet end-to-end verified (the DSSE `keyid` is a
+> raw-hex ed25519 key that a consumer must bridge to PEM SPKI); see the
+> predicate spec's compatibility notes.
 
 The relationship is layered, not overlapping:
 

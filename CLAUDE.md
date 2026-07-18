@@ -107,7 +107,7 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 - **boruna-framework** (dir: crates/llmfw) — Framework layer enforcing the App protocol (Elm architecture: init/update/view). `AppValidator`, `AppRuntime`, `TestHarness`, `PolicySet`, state machine diffing.
 - **boruna-effect** (dir: crates/llm-effect) — Token-optimized LLM integration: prompt building, context management, caching, normalization, capability gating for LLM calls.
 - **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template, workflow, evidence.
-- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 13 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
+- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 14 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
 
 ### Supporting Crates
 
@@ -122,8 +122,8 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 
 ### Standard Libraries (libs/)
 
-13 deterministic libraries, each with `package.ax.json` and `src/core.ax`:
-std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing (all 1.0-stable as of v1.2.0), plus std-llm and std-json (1.0-stable as of v1.3.0). All 13 are 1.0-stable.
+14 deterministic libraries, each with `package.ax.json` and `src/core.ax`:
+std-ui, std-forms, std-authz, std-http, std-db, std-sync, std-validation, std-routing, std-storage, std-notifications, std-testing (all 1.0-stable as of v1.2.0), plus std-llm and std-json (1.0-stable as of v1.3.0), plus std-guard (deterministic output validators). The original 13 are 1.0-stable.
 
 All are pure-functional (no hidden side effects). Libraries needing capabilities declare them in their manifest (e.g., std-http requires `net.fetch`, std-db requires `db.query`).
 
@@ -152,6 +152,7 @@ MCP (Model Context Protocol) server that exposes Boruna's toolchain to AI coding
 | `boruna_capability_list` | Report the capability-set identity hash for `.ax` source |
 | `boruna_policy_validate` | Validate a policy definition (strict validator) |
 | `boruna_symbols` | Extract top-level symbols (fns/records/enums) from `.ax` source → exact typed signatures, capabilities, requires/ensures arity |
+| `boruna_run_sealed` | Compile + run `.ax`, replay-verify the execution, return a verifiable record (result, `replay_verified`, capability calls, event log, SHA-256 seal digest). Not a signed bundle — that's the workflow path |
 
 ### IDE Configuration
 
