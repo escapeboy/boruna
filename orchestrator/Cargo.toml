@@ -6,6 +6,13 @@ edition.workspace = true
 [features]
 default = ["persist-sqlite"]
 http = ["boruna-vm/http"]
+# Transparency-log anchoring: live submit of a Rekor `hashedrekord`
+# entry over HTTP (Sigstore Rekor or a private/air-gapped instance).
+# Off by default so the default build (and all tests) stay network-free
+# — building a Rekor entry and verifying a stored inclusion proof are
+# always available; only the POST needs this. See audit/anchor.rs and
+# `boruna evidence anchor`.
+rekor = ["dep:ureq"]
 # SQLite-backed persistent workflow checkpoint store. See ADR 001 +
 # docs/design-persistence-store.md. Off-by-default in downstream binaries
 # that don't need persistence (boruna-mcp, boruna-pkg); on by default for
@@ -114,6 +121,9 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 # CLI bounds it via `--parallelism N`. Default features pulled in
 # (the crate has no system deps).
 rayon = "1"
+# Minimal blocking HTTP client for live Rekor submission (behind the
+# `rekor` feature). Same crate/major the VM's `http` feature uses.
+ureq = { version = "2", optional = true }
 
 # post1-T-3.1 / T-3.2: object_store backs the S3 (T-3.1) and GCS
 # (T-3.2) BundleStorage adapters — and Azure Blob in T-3.3.

@@ -1,3 +1,4 @@
+pub mod anchor;
 pub mod attestation;
 pub mod encryption;
 pub mod evidence;

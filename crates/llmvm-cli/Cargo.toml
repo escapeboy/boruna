@@ -30,6 +30,12 @@ gcs = ["boruna-orchestrator/gcs"]
 # `--bundle-storage azblob://...` constructs a real adapter. Off
 # by default. See docs/guides/bundle-storage-azure.md.
 azure = ["boruna-orchestrator/azure"]
+# Live transparency-log anchoring: forwards to boruna-orchestrator's
+# `rekor` feature so `boruna evidence anchor` (without `--offline`) can
+# POST to a Rekor instance. Off by default — the network client is only
+# pulled in when this is set. Offline entry-building + inclusion-proof
+# verification work without it. See docs/... and audit/anchor.rs.
+rekor = ["boruna-orchestrator/rekor"]
 
 [dependencies]
 boruna-bytecode = { path = "../llmbc" }

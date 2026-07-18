@@ -982,6 +982,43 @@ enum EvidenceCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Anchor a signed bundle in a Sigstore Rekor transparency log,
+    /// adding an external witness + trusted timestamp on top of the
+    /// bundle's own hash chain (closes the "trust the recorder /
+    /// silent backdating" hole). Builds a `hashedrekord` entry from the
+    /// manifest's `bundle_hash` + ed25519 signature. Three modes:
+    ///
+    ///   * default (live): POST the entry to `--rekor-url` and store the
+    ///     returned entry (with inclusion proof) as `rekor-entry.json`.
+    ///     Requires building with `--features rekor`.
+    ///   * `--offline`: emit the entry payload (no network) for external
+    ///     submission — to `--output` or stdout.
+    ///   * `--verify`: verify a stored `rekor-entry.json` offline —
+    ///     recompute the Merkle root from the inclusion proof and check
+    ///     the entry commits to this bundle's `bundle_hash`.
+    ///
+    /// `--rekor-url` accepts a PRIVATE Rekor instance for air-gapped
+    /// deployments; it is not pinned to the public log.
+    Anchor {
+        /// Evidence bundle directory (must contain `manifest.json`).
+        dir: PathBuf,
+        /// Rekor instance base URL. Accepts a private/air-gapped Rekor.
+        #[arg(long, value_name = "URL", default_value = "https://rekor.sigstore.dev")]
+        rekor_url: String,
+        /// Emit the entry payload without any network call, for external
+        /// submission. Writes to `--output` (or stdout if unset).
+        #[arg(long)]
+        offline: bool,
+        /// Verify a stored `rekor-entry.json` (inclusion proof + that it
+        /// commits to this bundle's `bundle_hash`). Offline, no network.
+        #[arg(long)]
+        verify: bool,
+        /// Output/stored path. Defaults: `--offline` →
+        /// `<dir>/rekor-entry-request.json`; live → `<dir>/rekor-entry.json`;
+        /// `--verify` reads `<dir>/rekor-entry.json`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Generate a human-readable COMPLIANCE evidence-mapping report that
     /// maps a bundle's actual contents to the specific regulatory
     /// obligation each one helps satisfy. Verifies the bundle first and
@@ -4181,6 +4218,15 @@ fn run_evidence(
         } => {
             run_evidence_attest(dir, verify, signing_key, verify_key, output)?;
         }
+        EvidenceCommand::Anchor {
+            dir,
+            rekor_url,
+            offline,
+            verify,
+            output,
+        } => {
+            run_evidence_anchor(dir, rekor_url, offline, verify, output)?;
+        }
         EvidenceCommand::Report {
             dir,
             framework,
@@ -4277,6 +4323,105 @@ fn run_evidence_attest(
         println!("  keyid:       {}", sig.keyid);
     }
     Ok(())
+}
+
+/// `boruna evidence anchor <dir>` — anchor a signed bundle in a Rekor
+/// transparency log, or verify a stored anchor offline.
+///
+/// Builds a `hashedrekord` entry from the manifest's `bundle_hash` +
+/// ed25519 signature. In live mode (default) it POSTs to `rekor_url`
+/// (requires the `rekor` feature) and stores the returned entry —
+/// inclusion proof + trusted timestamp — as `rekor-entry.json`. With
+/// `--offline` it emits the entry payload for external submission. With
+/// `--verify` it re-derives the Merkle root from a stored entry's
+/// inclusion proof and checks the entry commits to this bundle_hash.
+fn run_evidence_anchor(
+    dir: PathBuf,
+    rekor_url: String,
+    offline: bool,
+    verify: bool,
+    output: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::audit::anchor::{
+        hashedrekord_from_manifest, verify_entry, RekorLogEntry,
+    };
+    use boruna_orchestrator::audit::evidence::BundleManifest;
+
+    let manifest_json = fs::read_to_string(dir.join("manifest.json"))
+        .map_err(|e| format!("cannot read manifest.json: {e}"))?;
+    let manifest: BundleManifest =
+        serde_json::from_str(&manifest_json).map_err(|e| format!("invalid manifest.json: {e}"))?;
+
+    // --verify: check a stored rekor-entry.json entirely offline.
+    if verify {
+        let entry_path = output.unwrap_or_else(|| dir.join("rekor-entry.json"));
+        let raw = fs::read_to_string(&entry_path)
+            .map_err(|e| format!("cannot read {}: {e}", entry_path.display()))?;
+        let entry: RekorLogEntry =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid rekor-entry.json: {e}"))?;
+        match verify_entry(&entry, &manifest.bundle_hash) {
+            Ok(v) => {
+                println!("anchor is VALID");
+                println!("  logIndex:       {}", v.log_index);
+                println!("  integratedTime: {}", v.integrated_time);
+                println!("  rootHash:       {}", v.root_hash);
+                println!("  bundle_hash:    {} (matches)", v.data_hash);
+            }
+            Err(e) => {
+                eprintln!("anchor INVALID: {e}");
+                process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // --offline: emit the proposed entry payload; no network.
+    if offline {
+        let entry = hashedrekord_from_manifest(&manifest).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&entry)
+            .map_err(|e| format!("cannot serialize entry: {e}"))?;
+        match output {
+            Some(path) => {
+                fs::write(&path, &json)
+                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                println!("rekor entry payload written to {}", path.display());
+                println!("  submit it externally, then store the response as rekor-entry.json");
+            }
+            None => println!("{json}"),
+        }
+        return Ok(());
+    }
+
+    // Live mode: POST to Rekor. Only available with the `rekor` feature.
+    #[cfg(feature = "rekor")]
+    {
+        use boruna_orchestrator::audit::anchor::submit;
+        let entry = hashedrekord_from_manifest(&manifest).map_err(|e| e.to_string())?;
+        let log_entry = submit(&rekor_url, &entry).map_err(|e| e.to_string())?;
+        // Sanity: confirm the returned entry verifies against this bundle
+        // before we store it as the bundle's anchor.
+        verify_entry(&log_entry, &manifest.bundle_hash)
+            .map_err(|e| format!("Rekor returned an entry that does not verify: {e}"))?;
+        let store = output.unwrap_or_else(|| dir.join("rekor-entry.json"));
+        let json = serde_json::to_string_pretty(&log_entry)
+            .map_err(|e| format!("cannot serialize entry: {e}"))?;
+        fs::write(&store, &json).map_err(|e| format!("cannot write {}: {e}", store.display()))?;
+        println!("anchored in Rekor: {rekor_url}");
+        println!("  logIndex:       {}", log_entry.log_index);
+        println!("  integratedTime: {}", log_entry.integrated_time);
+        println!("  logID:          {}", log_entry.log_id);
+        println!("  stored:         {}", store.display());
+        Ok(())
+    }
+    #[cfg(not(feature = "rekor"))]
+    {
+        let _ = (&rekor_url, &output);
+        Err(
+            "live Rekor anchoring requires building with `--features rekor`; \
+             use `--offline` to emit the entry payload for external submission"
+                .into(),
+        )
+    }
 }
 
 /// `boruna evidence rotate-kek` (post1-T-2.4). Dispatches to
