@@ -1,0 +1,29 @@
+# Boruna
+
+> Boruna is a deterministic execution platform for enterprise AI/LLM-agent workflows, written in Rust. Workflows are DAG-based, policy-gated, and auditable. Each step is written in `.ax` — a small, statically-typed, deterministic language — that compiles to bytecode and runs on a capability-enforcing VM. Every run can emit a hash-chained evidence bundle for compliance. Same input always produces the same output: no ambient randomness, no wall-clock, no hidden side effects. Any effect (network, LLM, filesystem, DB) must be declared as a capability and is gated by a runtime policy.
+
+This file is a curated index for coding agents. For the full inlined language primer (types, syntax, framework protocol, correct `.ax` snippets), read `llms-full.txt` — it is designed to be ingested in one fetch so a model can write correct `.ax` without prior training data.
+
+## Language
+
+- [.ax language reference](docs/reference/ax-language.md): narrative, example-driven syntax and type reference.
+- [.ax teaching primer (full, inlined)](llms-full.txt): the entire language surface in one document, with correct snippets. Start here to write `.ax`.
+- [Capabilities](docs/concepts/capabilities.md): the 11-capability taxonomy and how side effects are declared and gated.
+- [Determinism](docs/concepts/determinism.md): why and how execution is made reproducible.
+
+## CLI & tooling
+
+- [CLI reference](docs/reference/cli.md): every `boruna` command (compile, run, framework, workflow, evidence, lang, template, skills).
+- [MCP server / agent integration](AGENTS.md): the `boruna-mcp` tool surface for AI coding agents.
+- [Agent portal manifest (machine-readable)](docs/agent/portal.json): version, capability taxonomy, stdlib, templates, and MCP tools as JSON.
+
+## Concepts
+
+- [Evidence bundles](docs/concepts/evidence-bundles.md): hash-chained audit logs, replay, and verification.
+- [Quickstart](docs/QUICKSTART.md): 10-minute end-to-end onboarding, ending in `evidence verify`.
+
+## Examples
+
+- [examples/](examples/): runnable `.ax` programs. See `examples/hello.ax`, `examples/pattern_matching.ax`, `examples/counter.ax`.
+- [examples/framework/](examples/framework/): Elm-architecture apps (`counter_app.ax`, `todo_app.ax`).
+- [examples/workflows/](examples/workflows/): DAG workflows (`llm_code_review`, `document_processing`, `customer_support_triage`).

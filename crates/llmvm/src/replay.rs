@@ -1,11 +1,15 @@
-use boruna_bytecode::{Capability, Value};
+use boruna_bytecode::{Capability, ContractKind, Value};
 use serde::{Deserialize, Serialize};
 
 /// Current version of the EventLog format.
-pub const EVENT_LOG_VERSION: u32 = 1;
+///
+/// Bumped to 2 when `Event::ContractCheck` was added. Version-1 logs
+/// simply lack the variant; they deserialize unchanged (the new arm is
+/// additive), so old evidence still verifies.
+pub const EVENT_LOG_VERSION: u32 = 2;
 
 /// Maximum supported version (for forward-compat rejection).
-const MAX_SUPPORTED_VERSION: u32 = 1;
+const MAX_SUPPORTED_VERSION: u32 = 2;
 
 /// A single event in the execution log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +41,18 @@ pub enum Event {
     SchedulerTick {
         round: u64,
         active_actor: u64,
+    },
+    /// A `requires`/`ensures` contract clause was evaluated at a guard
+    /// site. Recorded for BOTH outcomes so a sealed run proves every
+    /// precondition and postcondition held (`passed: true`) — or pins
+    /// exactly which one failed (`passed: false`, immediately before the
+    /// run traps with `VmError::ContractViolation`). `kind` is
+    /// `"requires"`/`"ensures"`; `index` is the 0-based clause position.
+    ContractCheck {
+        function: String,
+        kind: String,
+        index: usize,
+        passed: bool,
     },
 }
 
@@ -117,6 +133,23 @@ impl EventLog {
         self.events.push(Event::SchedulerTick {
             round,
             active_actor,
+        });
+    }
+
+    /// Record that a contract clause was evaluated. Called by the VM at
+    /// every `requires`/`ensures` guard site for both pass and fail.
+    pub fn log_contract_check(
+        &mut self,
+        function: &str,
+        kind: ContractKind,
+        index: usize,
+        passed: bool,
+    ) {
+        self.events.push(Event::ContractCheck {
+            function: function.to_string(),
+            kind: kind.as_str().to_string(),
+            index,
+            passed,
         });
     }
 
@@ -210,7 +243,10 @@ impl ReplayEngine {
     }
 
     /// Verify that ALL events match (not just CapCall).
-    /// Compares CapCall, ActorSpawn, MessageSend, MessageReceive, SchedulerTick.
+    /// Compares CapCall, ActorSpawn, MessageSend, MessageReceive,
+    /// SchedulerTick, and ContractCheck — every event serializes to JSON
+    /// and is compared position-by-position, so contract checks must
+    /// recur identically (same order, same pass/fail) on replay.
     pub fn verify_full(original: &EventLog, replay: &EventLog) -> ReplayResult {
         let orig = original.events();
         let repl = replay.events();

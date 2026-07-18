@@ -632,6 +632,81 @@ mod tests {
     }
 
     #[test]
+    fn test_bundle_carries_contract_check_events() {
+        // End-to-end: compile+run an .ax program whose `requires`
+        // precondition passes, capture the VM event log, seal it into an
+        // evidence bundle, verify the bundle, then read the log back and
+        // confirm the ContractCheck event survived into verified evidence.
+        use crate::audit::verify::verify_bundle;
+        use boruna_vm::replay::{Event, EventLog};
+        use boruna_vm::{CapabilityGateway, Policy, Vm};
+
+        let module =
+            boruna_compiler::compile("contract_prog", "fn main() -> Int requires true { 42 }")
+                .expect("program compiles");
+        let mut vm = Vm::new(module, CapabilityGateway::new(Policy::allow_all()));
+        assert_eq!(vm.run().unwrap(), boruna_bytecode::Value::Int(42));
+        let event_log_json = vm.event_log().to_json().unwrap();
+
+        // Sanity: the running VM did record a ContractCheck.
+        assert!(vm
+            .event_log()
+            .events()
+            .iter()
+            .any(|e| matches!(e, Event::ContractCheck { .. })));
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-contract-001", "contract-wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"contract"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+        builder.add_file("event_log.json", &event_log_json).unwrap();
+
+        let audit = AuditLog::new();
+        let manifest = builder.finalize(&audit).unwrap();
+
+        let bundle_path = dir.path().join("run-contract-001");
+        // The event log is a checksummed, hash-covered component.
+        assert!(manifest.file_checksums.contains_key("event_log.json"));
+
+        // The pristine bundle verifies.
+        let ok = verify_bundle(&bundle_path);
+        assert!(ok.valid, "expected valid bundle, errors: {:?}", ok.errors);
+
+        // Read the sealed log back and confirm the ContractCheck survived.
+        let sealed = std::fs::read_to_string(bundle_path.join("event_log.json")).unwrap();
+        let restored = EventLog::from_json(&sealed).unwrap();
+        let contract = restored
+            .events()
+            .iter()
+            .find(|e| matches!(e, Event::ContractCheck { .. }))
+            .expect("ContractCheck event survived into the bundle");
+        match contract {
+            Event::ContractCheck {
+                function,
+                kind,
+                passed,
+                ..
+            } => {
+                assert_eq!(function, "main");
+                assert_eq!(kind, "requires");
+                assert!(*passed);
+            }
+            other => panic!("expected ContractCheck, got {other:?}"),
+        }
+
+        // Tampering the sealed contract event breaks verification — the
+        // contract trail is inside the hash chain, not decorative.
+        std::fs::write(
+            bundle_path.join("event_log.json"),
+            r#"{"version":2,"events":[]}"#,
+        )
+        .unwrap();
+        let bad = verify_bundle(&bundle_path);
+        assert!(!bad.valid, "tampered event_log.json must fail verification");
+    }
+
+    #[test]
     fn test_bundle_determinism() {
         // Two bundles with same content should have same checksums (except timestamps)
         let dir1 = tempfile::tempdir().unwrap();

@@ -1,0 +1,429 @@
+# Boruna `.ax` — Full Language Primer for LLMs
+
+This is a single-document teaching primer for the `.ax` language used by Boruna, a
+deterministic execution platform for enterprise AI/LLM-agent workflows. Read this in
+one pass, then you can write correct `.ax` without prior exposure. Every construct
+below is grounded in the real compiler (`crates/llmc`) and the compiling examples in
+`examples/`. Where the narrative reference (`docs/reference/ax-language.md`) disagrees
+with the compiler, this primer follows the compiler and calls out the difference.
+
+Boruna version: 3.0.0. Boruna is a LOCAL deterministic engine + CLI only (no server,
+no coordinator, no web UI).
+
+--------------------------------------------------------------------------------
+## 1. Mental model
+--------------------------------------------------------------------------------
+
+`.ax` is small, statically typed, and deterministic by construction:
+
+- Variables are immutable. There is no mutation, no loops, and no exceptions.
+- The last expression in a block is its value. There is no `return` keyword.
+- Same input always yields the same output. No ambient randomness, no wall clock.
+- Any side effect (network, LLM, filesystem, DB, time, randomness) must be declared
+  as a **capability** on the function and is gated at runtime by a **policy**.
+- Statements are newline-separated. There are no semicolons.
+- Comments start with `//`.
+
+What `.ax` deliberately does NOT have: mutable variables, loops (use recursion or
+stdlib helpers), exceptions (use `Result<T, E>`), implicit side effects, generics
+(types are concrete at definition sites).
+
+--------------------------------------------------------------------------------
+## 2. File structure & entry point
+--------------------------------------------------------------------------------
+
+Every standalone `.ax` file must define a `main` function. It is the entry point for
+`boruna run`. By convention `main` returns `Int` (used as the exit/result code):
+
+```ax
+fn main() -> Int {
+    42
+}
+```
+
+(Some example files return other types, e.g. `fn main() -> String`, but prefer
+`-> Int` unless you have a reason not to.)
+
+--------------------------------------------------------------------------------
+## 3. Types
+--------------------------------------------------------------------------------
+
+| Type          | Meaning              | Literal examples                 |
+|---------------|----------------------|----------------------------------|
+| `Int`         | 64-bit signed int    | `42`, `-7`                       |
+| `Float`       | 64-bit float         | `3.14`                           |
+| `String`      | UTF-8 string         | `"hello"`                        |
+| `Bool`        | boolean              | `true`, `false`                  |
+| `Unit`        | no value             | `()`                             |
+| `Option<T>`   | optional value       | `Some(42)`, `None`               |
+| `Result<T,E>` | success or error     | `Ok(42)`, `Err("msg")`           |
+| `List<T>`     | ordered list         | `[1, 2, 3]`                      |
+| `Map<K,V>`    | key-value map        | `{ "a": 1, "b": 2 }`             |
+| record types  | named fields         | `Point { x: 1, y: 2 }`           |
+| enum types    | tagged unions        | `Shape::Circle(5.0)`             |
+
+--------------------------------------------------------------------------------
+## 4. Variables
+--------------------------------------------------------------------------------
+
+Immutable bindings with `let` and an explicit type annotation:
+
+```ax
+let name: String = "Boruna"
+let count: Int = 0
+let flag: Bool = true
+let scores: List<Int> = [90, 82, 77]
+let config: Map<String, Int> = { "timeout": 30, "retries": 3 }
+```
+
+No semicolons; one statement per line.
+
+--------------------------------------------------------------------------------
+## 5. Functions
+--------------------------------------------------------------------------------
+
+```ax
+fn add(a: Int, b: Int) -> Int {
+    a + b
+}
+```
+
+The last expression is the return value. Functions with no capability annotation are
+**pure**: their output depends only on their inputs.
+
+### 5.1 Capability annotations
+
+A function that performs a side effect must declare the required capabilities with a
+`!{...}` clause after the return type:
+
+```ax
+fn fetch(url: String) -> String !{net.fetch} {
+    // live implementation; gated by policy at runtime
+}
+
+fn call_model(prompt: String) -> String !{llm.call} {
+    // live implementation
+}
+
+// multiple capabilities, comma-separated
+fn fetch_and_cache(url: String) -> String !{net.fetch, fs.write} {
+    // live implementation
+}
+```
+
+Without the annotation, the VM rejects any attempt to invoke that capability. The
+11 capabilities are: `net.fetch`, `llm.call`, `time.now`, `random`, `fs.read`,
+`fs.write`, `db.query`, `ui.render`, `actor.spawn`, `actor.send`, `step.input`.
+
+### 5.2 Contracts and intent (optional clauses)
+
+These clauses are optional and order-independent with the capability clause:
+
+```ax
+// precondition, checked at runtime against the arguments on entry
+fn transfer(amount: Int) -> Int !{db.query} requires amount > 0 {
+    amount
+}
+
+// machine-read purpose, captured into the evidence bundle
+fn charge(amount: Int) -> Int !{db.query} intent "Debit customer account" {
+    amount
+}
+```
+
+Notes on fidelity: `requires` preconditions ARE enforced at runtime (a violation
+traps with a reproducible counterexample). `ensures` postconditions are parsed but
+NOT yet enforced. A function may declare at most one `intent`.
+
+--------------------------------------------------------------------------------
+## 6. Records
+--------------------------------------------------------------------------------
+
+Record types are declared with the `type` keyword (this is the keyword the compiler
+actually accepts — the narrative reference's `record` keyword is doc drift):
+
+```ax
+type Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() -> Int {
+    let p: Point = Point { x: 3, y: 4 }
+    let px: Int = p.x
+    px
+}
+```
+
+Field access uses dot notation: `p.x`. Record **spread** creates an updated copy —
+this is how you express a state transition without mutation:
+
+```ax
+type Point {
+    x: Int,
+    y: Int,
+}
+
+fn move_up(p: Point) -> Point {
+    Point { ..p, y: p.y + 1 }
+}
+```
+
+The spread `..p` must come first inside the braces; later fields override.
+
+--------------------------------------------------------------------------------
+## 7. Enums
+--------------------------------------------------------------------------------
+
+Enum variants are either **unit** (no payload) or carry a **single** payload value:
+
+```ax
+enum Action {
+    Increment,
+    Decrement,
+    Reset,
+}
+
+enum Shape {
+    Empty,
+    Circle(Float),
+    Named(String),
+}
+```
+
+Construct a variant with `EnumName::Variant` (unit) or `EnumName::Variant(payload)`:
+
+```ax
+let a: Action = Action::Increment
+let s: Shape = Shape::Circle(5.0)
+```
+
+(The compiler supports a single payload expression per variant. Struct-style enum
+variants like `Circle { radius: Float }` shown in the narrative reference are doc
+drift — use a single payload, or a named record type as the payload.)
+
+--------------------------------------------------------------------------------
+## 8. Pattern matching
+--------------------------------------------------------------------------------
+
+`match` is an expression; every arm returns the same type. Match arms use the bare
+variant name (with an optional binding for the payload), a string literal, or `_`
+as the catch-all. `Option` and `Result` are ordinary enums, so `Some/None/Ok/Err`
+are matched the same way.
+
+Match on an enum:
+
+```ax
+fn describe(s: Shape) -> String {
+    match s {
+        Circle(r) => "circle"
+        Named(name) => name
+        Empty => "empty"
+        _ => "unknown"
+    }
+}
+```
+
+Match on `Option`:
+
+```ax
+fn unwrap_or_zero(value: Option<Int>) -> Int {
+    match value {
+        Some(x) => x
+        None => 0
+    }
+}
+```
+
+Match on `Result`:
+
+```ax
+fn get_or_default(r: Result<Int, String>) -> Int {
+    match r {
+        Ok(v) => v
+        Err(_) => -1
+    }
+}
+```
+
+Match on string literals:
+
+```ax
+fn greet(lang: String) -> String {
+    match lang {
+        "en" => "hello"
+        "es" => "hola"
+        _ => "hi"
+    }
+}
+```
+
+--------------------------------------------------------------------------------
+## 9. Conditionals
+--------------------------------------------------------------------------------
+
+`if`/`else` is an expression. There are no loops; nest `if` or use recursion.
+
+```ax
+fn label(score: Int) -> String {
+    if score > 90 {
+        "pass"
+    } else {
+        "fail"
+    }
+}
+```
+
+--------------------------------------------------------------------------------
+## 10. Built-in functions
+--------------------------------------------------------------------------------
+
+The runtime provides pure built-ins (no import needed). They use a `__builtin_`
+prefix. A representative subset:
+
+- Strings: `__builtin_string_len`, `__builtin_string_contains`,
+  `__builtin_string_to_upper`, `__builtin_string_split`, `__builtin_string_join`,
+  `__builtin_string_slice`, `__builtin_int_parse`.
+- Lists: `__builtin_list_len`, `__builtin_list_head`, `__builtin_list_tail`,
+  `__builtin_list_append`, `__builtin_list_concat`, `__builtin_list_reverse`.
+- Maps: `__builtin_map_get`, `__builtin_map_set`, `__builtin_map_keys`,
+  `__builtin_map_contains_key`, `__builtin_map_len`.
+- Conversions: `__builtin_int_to_string`, `__builtin_float_to_string`,
+  `__builtin_bool_to_string`.
+
+Example:
+
+```ax
+fn main() -> Int {
+    let words: List<String> = ["a", "b", "c"]
+    let n: Int = __builtin_list_len(words)
+    n
+}
+```
+
+--------------------------------------------------------------------------------
+## 11. Imports (standard libraries)
+--------------------------------------------------------------------------------
+
+`import "std-name"` loads a standard library package at compile time; its source is
+inlined before type-checking, and any `fn main` stub in the library is stripped.
+Libraries are resolved from the `libs/` directory relative to the working directory.
+
+```ax
+import "std-json"
+
+fn main() -> Int {
+    let s: String = int_to_string(42)
+    0
+}
+```
+
+The 13 stable stdlib packages: `std-ui`, `std-forms`, `std-authz`, `std-http`,
+`std-db`, `std-sync`, `std-validation`, `std-routing`, `std-storage`,
+`std-notifications`, `std-testing`, `std-llm`, `std-json`. Libraries that need
+capabilities declare them in their manifest (e.g. `std-http` needs `net.fetch`).
+
+--------------------------------------------------------------------------------
+## 12. Framework apps (Elm architecture)
+--------------------------------------------------------------------------------
+
+A framework app defines the protocol types and three functions: `init`, `update`,
+`view`. The protocol types are `State`, `Msg`, `Effect`, `UpdateResult`, `UINode`,
+and (for policy-gated apps) `PolicySet`. `update` must be pure — side effects are
+requested by returning `Effect` values, not performed inline.
+
+This complete example compiles and runs (`boruna framework validate <file>`):
+
+```ax
+// Counter app — the mandatory App protocol: init, update, view
+type State { count: Int }
+type Msg { tag: String, payload: Int }
+type Effect { kind: String, payload: String, callback_tag: String }
+type UpdateResult { state: State, effects: List<Effect> }
+type UINode { tag: String, text: String }
+
+fn init() -> State {
+    State { count: 0 }
+}
+
+fn update(state: State, msg: Msg) -> UpdateResult {
+    let new_count: Int = if msg.tag == "increment" {
+        state.count + 1
+    } else {
+        if msg.tag == "decrement" {
+            state.count - 1
+        } else {
+            if msg.tag == "reset" {
+                0
+            } else {
+                state.count
+            }
+        }
+    }
+    UpdateResult {
+        state: State { count: new_count },
+        effects: [],
+    }
+}
+
+fn view(state: State) -> UINode {
+    UINode { tag: "counter", text: "count" }
+}
+
+fn main() -> Int {
+    let s0: State = init()
+    let m: Msg = Msg { tag: "increment", payload: 0 }
+    let r: UpdateResult = update(s0, m)
+    r.state.count
+}
+```
+
+Test a framework app through a message sequence:
+
+```bash
+boruna framework validate examples/framework/counter_app.ax
+boruna framework test examples/framework/counter_app.ax -m "increment:1,increment:1,reset:0"
+```
+
+--------------------------------------------------------------------------------
+## 13. Running & checking `.ax`
+--------------------------------------------------------------------------------
+
+```bash
+# run a file (deny-all policy by default: no capabilities)
+boruna run examples/hello.ax
+
+# run with all capabilities allowed
+boruna run app.ax --policy allow-all
+
+# static diagnostics (machine-readable)
+boruna lang check app.ax --json
+
+# auto-repair from diagnostic suggestions
+boruna lang repair app.ax
+
+# compile only (no execution)
+boruna compile app.ax
+```
+
+Policies: `allow-all` (all 11 capabilities), `deny-all` (none, the default),
+`default` (same as deny-all). In demo mode (no `--live`) capability calls are
+stubbed; `--live` (requires the `http` feature build) enforces the policy against
+real handlers.
+
+--------------------------------------------------------------------------------
+## 14. Correctness checklist for generated `.ax`
+--------------------------------------------------------------------------------
+
+- Define `fn main() -> Int` in any standalone file.
+- Annotate every `let` with an explicit type.
+- Declare records with `type Name { field: Type, ... }` (NOT `record`).
+- Declare enums with unit or single-payload variants; construct via
+  `Enum::Variant` / `Enum::Variant(payload)`.
+- Match arms are the bare variant name, a string literal, or `_` — not `Enum::Variant`.
+- No loops, no mutation, no `return`, no semicolons.
+- Any side effect needs a `!{capability}` annotation from the 11-capability set.
+- Prefer `Result<T, E>` over any error-throwing idiom; there are no exceptions.
+
+If unsure whether a construct exists, run `boruna lang check <file>.ax --json` or
+consult `docs/reference/ax-language.md` and the compiling files under `examples/`.

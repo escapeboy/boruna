@@ -4,6 +4,7 @@ pub mod compile;
 pub mod framework;
 pub mod policy;
 pub mod run;
+pub mod symbols;
 pub mod template;
 pub mod workflow;
 
@@ -69,6 +70,20 @@ mod protocol_version_tests {
     fn ast_failure_carries_protocol_version() {
         let out = compile::parse_ast("@@@ not valid");
         assert_protocol_version(&out, "ast failure");
+    }
+
+    // ── symbols ──
+
+    #[test]
+    fn symbols_success_carries_protocol_version() {
+        let out = symbols::extract_symbols("fn main() -> Int { 1 }\n");
+        assert_protocol_version(&out, "symbols success");
+    }
+
+    #[test]
+    fn symbols_parse_failure_carries_protocol_version() {
+        let out = symbols::extract_symbols("@@@ not valid");
+        assert_protocol_version(&out, "symbols parse failure");
     }
 
     // ── run ──

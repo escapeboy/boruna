@@ -107,7 +107,7 @@ Note: directory paths still use original names (crates/llmbc, crates/llmc, etc.)
 - **boruna-framework** (dir: crates/llmfw) — Framework layer enforcing the App protocol (Elm architecture: init/update/view). `AppValidator`, `AppRuntime`, `TestHarness`, `PolicySet`, state machine diffing.
 - **boruna-effect** (dir: crates/llm-effect) — Token-optimized LLM integration: prompt building, context management, caching, normalization, capability gating for LLM calls.
 - **boruna-cli** (dir: crates/llmvm-cli) — CLI binary (`boruna`). Subcommands: compile, run, trace, replay, inspect, ast, framework, lang, trace2tests, template, workflow, evidence.
-- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 12 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
+- **boruna-mcp** (dir: crates/boruna-mcp) — MCP server binary (`boruna-mcp`). Exposes 13 tools over JSON-RPC stdio for AI coding agents. Built on rmcp v0.16.
 
 ### Supporting Crates
 
@@ -151,6 +151,7 @@ MCP (Model Context Protocol) server that exposes Boruna's toolchain to AI coding
 | `boruna_template_apply` | Apply a template with variable substitution |
 | `boruna_capability_list` | Report the capability-set identity hash for `.ax` source |
 | `boruna_policy_validate` | Validate a policy definition (strict validator) |
+| `boruna_symbols` | Extract top-level symbols (fns/records/enums) from `.ax` source → exact typed signatures, capabilities, requires/ensures arity |
 
 ### IDE Configuration
 

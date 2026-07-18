@@ -1,0 +1,90 @@
+{
+  "note": "static/curated; a future `boruna` subcommand should generate this from the compiled toolchain to prevent drift",
+  "schema_version": 1,
+  "product": "Boruna",
+  "description": "Deterministic execution platform for enterprise AI/LLM-agent workflows. Local engine + CLI only (no server/coordinator/web UI).",
+  "boruna_version": "3.0.0",
+  "language": {
+    "name": "ax",
+    "file_extension": ".ax",
+    "entry_point": "fn main() -> Int",
+    "record_keyword": "type",
+    "enum_variants": "unit or single-payload; construct via Enum::Variant or Enum::Variant(payload)",
+    "immutable": true,
+    "loops": false,
+    "exceptions": false,
+    "primer": "llms-full.txt",
+    "reference": "docs/reference/ax-language.md"
+  },
+  "capabilities": [
+    { "name": "net.fetch", "effect": "HTTP requests to external APIs / webhooks" },
+    { "name": "llm.call", "effect": "LLM inference (hosted or local models)" },
+    { "name": "time.now", "effect": "Read the current timestamp" },
+    { "name": "random", "effect": "Generate random numbers" },
+    { "name": "fs.read", "effect": "Filesystem reads" },
+    { "name": "fs.write", "effect": "Filesystem writes" },
+    { "name": "db.query", "effect": "Database access" },
+    { "name": "ui.render", "effect": "UI surface rendering (framework view output)" },
+    { "name": "actor.spawn", "effect": "Actor creation (parallel agents)" },
+    { "name": "actor.send", "effect": "Inter-actor messaging" },
+    { "name": "step.input", "effect": "Read a workflow step's resolved inputs" }
+  ],
+  "policies": [
+    { "name": "allow-all", "allowed": "all 11 capabilities" },
+    { "name": "deny-all", "allowed": "none (default)" },
+    { "name": "default", "allowed": "none (same as deny-all)" }
+  ],
+  "stdlib": [
+    { "name": "std-ui", "purpose": "Declarative UI primitives for framework apps" },
+    { "name": "std-forms", "purpose": "Model-driven form engine with validation and state tracking" },
+    { "name": "std-authz", "purpose": "Role and permission enforcement via policies" },
+    { "name": "std-http", "purpose": "Safe typed HTTP effect wrappers", "capabilities_required": ["net.fetch"] },
+    { "name": "std-db", "purpose": "Typed database query helpers", "capabilities_required": ["db.query"] },
+    { "name": "std-sync", "purpose": "Offline queue and conflict resolution helpers" },
+    { "name": "std-validation", "purpose": "Reusable composable validation rules" },
+    { "name": "std-routing", "purpose": "Declarative routing model" },
+    { "name": "std-storage", "purpose": "Typed local persistence abstraction" },
+    { "name": "std-notifications", "purpose": "Notification queue and toast helpers" },
+    { "name": "std-testing", "purpose": "High-level test helpers for framework apps" },
+    { "name": "std-llm", "purpose": "Typed LLM effect wrappers for prompting and structured generation", "capabilities_required": ["llm.call"] },
+    { "name": "std-json", "purpose": "JSON-flavoured data extraction and manipulation utilities" }
+  ],
+  "templates": [
+    { "name": "crud-admin", "purpose": "Full CRUD admin panel with authz guards, db effects, form validation" },
+    { "name": "form-basic", "purpose": "Simple validated form with field binding and submission" },
+    { "name": "auth-app", "purpose": "Authentication flow with role management" },
+    { "name": "realtime-feed", "purpose": "Live event feed with polling, rate limiting, and notifications" },
+    { "name": "offline-sync", "purpose": "Offline-first app with sync queue and conflict resolution" }
+  ],
+  "mcp_server": {
+    "binary": "boruna-mcp",
+    "transport": "JSON-RPC over stdio",
+    "tools": [
+      { "name": "boruna_compile", "description": "Compile .ax source -> module info or structured errors" },
+      { "name": "boruna_ast", "description": "Parse .ax source -> AST JSON (truncated at 100KB)" },
+      { "name": "boruna_run", "description": "Compile + execute .ax source with policy/step-limit/trace" },
+      { "name": "boruna_check", "description": "Run diagnostics -> severity, spans, suggested patches" },
+      { "name": "boruna_repair", "description": "Auto-repair .ax source using diagnostic suggestions" },
+      { "name": "boruna_validate_app", "description": "Validate App protocol conformance (init/update/view)" },
+      { "name": "boruna_framework_test", "description": "Run a framework app through a message sequence" },
+      { "name": "boruna_workflow_validate", "description": "Validate workflow DAG structure + topological order" },
+      { "name": "boruna_template_list", "description": "List available app templates" },
+      { "name": "boruna_template_apply", "description": "Apply a template with variable substitution" },
+      { "name": "boruna_capability_list", "description": "Report the capability-set identity hash for .ax source" },
+      { "name": "boruna_policy_validate", "description": "Validate a policy definition (strict validator)" },
+      { "name": "boruna_symbols", "description": "Extract the symbol table (functions, types, capabilities) from .ax source (added this session)" }
+    ]
+  },
+  "resources": {
+    "index": "llms.txt",
+    "primer": "llms-full.txt",
+    "language_reference": "docs/reference/ax-language.md",
+    "cli_reference": "docs/reference/cli.md",
+    "capabilities": "docs/concepts/capabilities.md",
+    "determinism": "docs/concepts/determinism.md",
+    "evidence_bundles": "docs/concepts/evidence-bundles.md",
+    "quickstart": "docs/QUICKSTART.md",
+    "agents_guide": "AGENTS.md",
+    "examples": "examples/"
+  }
+}

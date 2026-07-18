@@ -46,6 +46,7 @@ The server communicates over JSON-RPC stdio. All tools return structured JSON wi
 | `boruna_template_apply` | Apply a template with variable substitution |
 | `boruna_capability_list` | List the frozen 1.0 capability set with `capability_set_hash` |
 | `boruna_policy_validate` | Validate a `Policy` JSON document; returns typed `error_kind` on rejection |
+| `boruna_symbols` | Extract top-level symbols (fns/records/enums) from `.ax` source → exact typed signatures, capabilities, requires/ensures arity |
 
 ## Agent-native CLI surfaces
 

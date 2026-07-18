@@ -33,7 +33,7 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - **33 built-in functions** — string (12), list (7), and map (7) operations plus type conversions and debug builtins (`__builtin_string_*`, `__builtin_list_*`, `__builtin_map_*`, …) available in every `.ax` file without imports
 - **Import resolution** — `import "std-name"` inlines `libs/<name>/src/core.ax` at compile time; all 13 stdlib packages are 1.0-stable
 - **Four formal versioned specifications** — `.ax` language 1.0, bytecode 1.0, evidence bundle format 1.0, workflow DAG schema 1.0 (all under [`docs/spec/`](./docs/spec/))
-- **MCP server** — exposes 12 tools for AI coding agent integration (Claude Code, Cursor, Codex)
+- **MCP server** — exposes 13 tools for AI coding agent integration (Claude Code, Cursor, Codex)
 
 ## What Boruna is not
 
