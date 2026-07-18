@@ -46,9 +46,6 @@ fn compiled_features() -> String {
     if cfg!(feature = "persist-sqlite") {
         features.push("persist-sqlite");
     }
-    if cfg!(feature = "serve") {
-        features.push("serve");
-    }
     if cfg!(feature = "http") {
         features.push("http");
     }
