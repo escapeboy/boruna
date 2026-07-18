@@ -982,6 +982,22 @@ enum EvidenceCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Generate a human-readable COMPLIANCE evidence-mapping report that
+    /// maps a bundle's actual contents to the specific regulatory
+    /// obligation each one helps satisfy. Verifies the bundle first and
+    /// stamps the verdict at the top; a tampered/unverifiable bundle
+    /// produces a report that says so loudly. This is a technical mapping,
+    /// NOT a certificate of compliance.
+    Report {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Regulatory framework to map against.
+        #[arg(long, value_name = "FRAMEWORK")]
+        framework: String,
+        /// Output rendering: `md` (default) or `html`.
+        #[arg(long, value_name = "FORMAT", default_value = "md")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4146,6 +4162,19 @@ fn run_evidence(
             output,
         } => {
             run_evidence_attest(dir, verify, signing_key, verify_key, output)?;
+        }
+        EvidenceCommand::Report {
+            dir,
+            framework,
+            format,
+        } => {
+            use boruna_orchestrator::audit::report::{
+                generate_report, ComplianceFramework, ReportFormat,
+            };
+            let framework = ComplianceFramework::parse(&framework)?;
+            let format = ReportFormat::parse(&format)?;
+            let report = generate_report(&dir, framework, format)?;
+            println!("{report}");
         }
     }
     Ok(())
