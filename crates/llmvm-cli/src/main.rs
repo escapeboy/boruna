@@ -15,24 +15,14 @@ use boruna_vm::capability_gateway::{CapabilityGateway, Policy, ReplayHandler};
 use boruna_vm::replay::EventLog;
 use boruna_vm::vm::Vm;
 
-#[cfg(feature = "serve")]
-mod coordinator;
-#[cfg(feature = "serve")]
-mod dashboard;
 mod doctor;
 mod evidence_diff;
-#[cfg(feature = "serve")]
-mod evidence_serve;
 mod format;
 mod provider_registry;
 mod repl;
 mod scaffold;
-#[cfg(feature = "serve")]
-mod serve;
 mod size;
 mod skills;
-#[cfg(feature = "serve")]
-mod worker;
 mod workflow_eval;
 
 #[derive(Parser)]
@@ -268,27 +258,6 @@ enum Command {
     /// stable `error_kind` taxonomy.
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Workflow dashboard — read-only HTTP view over `runs.db`
-    /// (sprint 0.4-S16). Requires `--features serve`. See
-    /// `docs/design-workflow-dashboard.md` for the security
-    /// posture (loopback by default, no auth).
-    #[cfg(feature = "serve")]
-    #[command(subcommand)]
-    Dashboard(DashboardCommand),
-    /// Distributed-execution coordinator — HTTP server that
-    /// dispatches workflow steps to remote workers (sprint
-    /// 0.5-S2b, ADR 002). Requires `--features serve`. Loopback
-    /// default; **no authentication** — front with reverse
-    /// proxy if exposed publicly.
-    #[cfg(feature = "serve")]
-    #[command(subcommand)]
-    Coordinator(CoordinatorCommand),
-    /// Distributed-execution worker — polls a coordinator for
-    /// claimable steps, executes them, reports results (sprint
-    /// 0.5-S2b, ADR 002). Requires `--features serve`.
-    #[cfg(feature = "serve")]
-    #[command(subcommand)]
-    Worker(WorkerCommand),
     /// Migration tooling beta (sprint `W5-C`). Upgrades pre-1.0
     /// Boruna artifacts to the current on-disk format. See
     /// `docs/guides/migration.md` for the coverage matrix and
@@ -313,208 +282,6 @@ enum Command {
         /// `<path>.migrated` sibling.
         #[arg(long)]
         in_place: bool,
-    },
-}
-
-#[cfg(feature = "serve")]
-#[derive(Subcommand)]
-enum CoordinatorCommand {
-    /// Serve the coordinator HTTP routes.
-    Serve {
-        /// Persistent data directory holding `runs.db`. Same
-        /// fallback chain as `boruna workflow run`.
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Listen port (default 8090).
-        #[arg(long, default_value = "8090")]
-        port: u16,
-        /// Bind address. Defaults to `127.0.0.1`. Pass `0.0.0.0`
-        /// to expose on all interfaces (you accept the
-        /// no-auth-on-LAN consequences).
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
-        /// Cap on lease TTL workers can request (default 5 min).
-        #[arg(long, default_value = "300000")]
-        max_lease_ttl_ms: u64,
-        /// Long-poll wait timeout for `/api/work/claim`
-        /// (default 30 s).
-        #[arg(long, default_value = "30000")]
-        poll_timeout_ms: u64,
-        /// Background lease-expiry sweep interval in
-        /// milliseconds (default 30 s). Lower = faster
-        /// recovery from worker crashes; higher = less DB
-        /// churn under steady-state. Minimum 100 ms (lower
-        /// values are clamped + a warning is logged).
-        #[arg(long, default_value = "30000")]
-        sweep_interval_ms: u64,
-        /// Shared-secret bearer token for HTTP authentication
-        /// (sprint `0.5-S3`). When set, every coord HTTP route
-        /// requires `Authorization: Bearer <secret>` header.
-        /// Generate via `openssl rand -hex 32`. Falls back to
-        /// `BORUNA_COORD_SECRET` env var. When unset, no auth
-        /// is enforced — operators binding to a non-loopback
-        /// address without a secret get a loud stderr warning
-        /// (the no-auth posture remains backwards-compatible
-        /// for loopback-only deployments).
-        #[arg(long, env = "BORUNA_COORD_SECRET")]
-        shared_secret: Option<String>,
-        /// Server certificate chain (PEM) for mTLS (sprint
-        /// `W6-A`). Required together with `--tls-key` and
-        /// `--tls-client-ca`; passing only some is a startup
-        /// error. Operators generate certs out-of-band — see
-        /// `docs/guides/coord-mtls.md`.
-        #[arg(long)]
-        tls_cert: Option<PathBuf>,
-        /// Server private key (PEM) for mTLS. Required with
-        /// `--tls-cert` and `--tls-client-ca`.
-        #[arg(long)]
-        tls_key: Option<PathBuf>,
-        /// Trust root for verifying CLIENT certificates (PEM).
-        /// When all three TLS flags are set the coord requires
-        /// every connection to present a client cert chained to
-        /// this root. The cert subject CN drives worker identity
-        /// and is matched against any `worker_id` in the request
-        /// body — mismatch returns `coord.identity_mismatch`.
-        #[arg(long)]
-        tls_client_ca: Option<PathBuf>,
-    },
-    /// Drive a submit-only workflow run to terminal status by
-    /// computing downstream-ready successors as workers complete
-    /// steps and writing fresh Pending checkpoints. Sprint
-    /// `0.5-S2f`: client-side multi-wave advancement. Operates on
-    /// the same `runs.db` the coordinator process uses; must run
-    /// on a host with filesystem access to `--data-dir`.
-    ///
-    /// Idempotent on restart — kill and re-invoke at any point;
-    /// the run continues from where it was left.
-    ///
-    /// Exit codes:
-    /// - 0 — run reached `Completed` status.
-    /// - 1 — run reached `Failed` status.
-    /// - 2 — invalid arguments, run not found, missing
-    ///   `workflow_def` in metadata, or unsupported step kind
-    ///   (approval/external_trigger in non-first wave).
-    /// - 3 — `--max-wait-secs` budget exceeded before terminal.
-    Wait {
-        /// Run id to drive to terminal status (returned by
-        /// `boruna workflow run --submit-only`).
-        run_id: String,
-        /// Persistent data directory holding `runs.db`. Same
-        /// fallback chain as `boruna workflow run`. Must match
-        /// the coordinator process's `--data-dir`.
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Polling interval in milliseconds. Minimum 100 ms
-        /// (lower values are clamped + a warning is logged).
-        #[arg(long, default_value = "500")]
-        poll_interval_ms: u64,
-        /// Maximum total wait duration in seconds. `0` =
-        /// unlimited. Useful for CI test timeouts.
-        #[arg(long, default_value = "0")]
-        max_wait_secs: u64,
-    },
-}
-
-#[cfg(feature = "serve")]
-#[derive(Subcommand)]
-enum WorkerCommand {
-    /// Run a worker that polls the named coordinator for work.
-    Run {
-        /// Coordinator base URL, e.g.
-        /// `http://coord.internal:8090`. Sprint W2: accepts a
-        /// comma-separated list of URLs for HA failover at
-        /// registration time, e.g.
-        /// `http://coord-1:8090,http://coord-2:8090`. The worker
-        /// tries URLs in order and registers against the first
-        /// reachable one. After successful registration the
-        /// worker sticks to that coord for its lifetime — operator
-        /// restarts pick a different healthy URL.
-        #[arg(long)]
-        coordinator: String,
-        /// Optional worker id; auto-generated if absent.
-        #[arg(long)]
-        worker_id: Option<String>,
-        /// Lease TTL the worker requests on each claim.
-        /// Coordinator may cap this.
-        #[arg(long, default_value = "300000")]
-        lease_ttl_ms: u64,
-        /// Long-poll timeout the worker tells the coordinator
-        /// to wait before returning 204.
-        #[arg(long, default_value = "30000")]
-        poll_timeout_ms: u64,
-        /// Shared-secret bearer token for HTTP authentication
-        /// (sprint `0.5-S3`). MUST match the coordinator's
-        /// `--shared-secret`. Falls back to `BORUNA_COORD_SECRET`
-        /// env var. When unset, no `Authorization` header is
-        /// sent — only works when the coord also has no secret.
-        #[arg(long, env = "BORUNA_COORD_SECRET")]
-        shared_secret: Option<String>,
-        /// Sprint `W3-A` — comma-separated capability names this
-        /// worker advertises (e.g. `--advertise-caps net.fetch,db.query`).
-        /// When set, the coordinator only routes steps whose
-        /// policy-required capabilities are a subset of this list.
-        /// When omitted (or empty), the worker behaves as a
-        /// full-fleet worker (the pre-W3-A default). Capability
-        /// names must match `boruna_bytecode::Capability::ALL`
-        /// exactly; unknown names cause registration to fail
-        /// with `coord.unknown_capability`.
-        ///
-        /// **Operational metadata only** — placement filter, not
-        /// a security gate. The VM's capability gateway remains
-        /// the security boundary.
-        #[arg(long)]
-        advertise_caps: Option<String>,
-        /// Per-capability version declarations: `llm.call=2.0,net.fetch=1.5`.
-        /// Matched against per-step `required_capability_versions` in the
-        /// workflow DAG. Workers without a declared version for a capability
-        /// default to `"1.0"`. Coordinate with `--advertise-caps` — versions
-        /// for undeclared capabilities are ignored by the coordinator.
-        #[arg(long)]
-        advertise_cap_versions: Option<String>,
-        /// Client certificate chain (PEM) for mTLS (sprint
-        /// `W6-A`). Required together with `--tls-key` and
-        /// `--tls-server-ca`; passing only some is a startup
-        /// error. The cert's subject CN MUST match
-        /// `--worker-id` (case-insensitive) when both are set —
-        /// mismatch surfaces as `coord.identity_mismatch` at
-        /// registration time.
-        #[arg(long)]
-        tls_cert: Option<PathBuf>,
-        /// Client private key (PEM) for mTLS. Required with
-        /// `--tls-cert` and `--tls-server-ca`.
-        #[arg(long)]
-        tls_key: Option<PathBuf>,
-        /// Trust root for verifying the COORD's server
-        /// certificate (PEM). Required with `--tls-cert` and
-        /// `--tls-key`.
-        #[arg(long)]
-        tls_server_ca: Option<PathBuf>,
-    },
-}
-
-#[cfg(feature = "serve")]
-#[derive(Subcommand)]
-enum DashboardCommand {
-    /// Serve a read-only dashboard over HTTP.
-    ///
-    /// Loopback (127.0.0.1) by default. Pass `--bind 0.0.0.0` to
-    /// expose on the LAN; the dashboard ships no auth, so any
-    /// public bind MUST be fronted by an auth-enforcing reverse
-    /// proxy.
-    Serve {
-        /// Persistent data directory holding `runs.db`. Same
-        /// fallback chain as `boruna workflow run` /
-        /// `metrics export`.
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Listen port (default 8080).
-        #[arg(long, default_value = "8080")]
-        port: u16,
-        /// Bind address. Defaults to `127.0.0.1`. Pass `0.0.0.0`
-        /// to expose on all interfaces (you accept the
-        /// no-auth-on-LAN consequences).
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
     },
 }
 
@@ -817,44 +584,6 @@ enum WorkflowCommand {
         /// deferred to a future sprint.
         #[arg(long, conflicts_with_all = ["ephemeral", "skip_if_running"])]
         submit_only: bool,
-        /// Submit the workflow to a remote coordinator over HTTP and
-        /// poll for terminal status (sprint `0.5-S4`). The CI runner
-        /// does NOT need filesystem access to the cluster's data-dir;
-        /// the workflow.json + every Source-kind step's `.ax` body
-        /// are inlined into the submit payload. Bearer token via
-        /// `--coord-token` or the `BORUNA_TOKEN` env var when the
-        /// cluster is auth-gated (0.5-S3).
-        ///
-        /// Mutually exclusive with `--data-dir` (different
-        /// operational model entirely), `--ephemeral`,
-        /// `--submit-only`, and `--skip-if-running`. Exit codes
-        /// match `coordinator wait`: `0` Completed, `1` Failed,
-        /// `2` timeout / submit-failed.
-        #[arg(
-            long,
-            value_name = "URL",
-            conflicts_with_all = ["data_dir", "ephemeral", "submit_only", "skip_if_running"]
-        )]
-        coordinator: Option<String>,
-        /// Bearer token for the coordinator's auth middleware (sprint
-        /// `0.5-S3`). Only meaningful with `--coordinator`. Falls back
-        /// to the `BORUNA_TOKEN` env var. Omit if the cluster is
-        /// loopback / unauthenticated.
-        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
-        coord_token: Option<String>,
-        /// How often to poll `/api/runs/{run_id}/status` when running
-        /// against `--coordinator`. Defaults to `1000` ms; clamped
-        /// silently to a `500`-ms floor matching `coordinator wait`.
-        /// Ignored without `--coordinator`.
-        #[arg(long, default_value = "1000")]
-        coord_poll_interval_ms: u64,
-        /// Maximum total wall-clock time to wait for terminal status
-        /// in `--coordinator` mode. `0` (default) means wait
-        /// indefinitely — same posture as `coordinator wait`. On
-        /// timeout the CLI exits with `2` and the run keeps going
-        /// on the cluster.
-        #[arg(long, default_value = "0")]
-        coord_max_wait_secs: u64,
         /// CI/CD safety check: refuse to run if the on-disk def's
         /// workflow_hash doesn't match this value (case-insensitive
         /// 64-char SHA-256 hex). Capture via `boruna workflow
@@ -902,26 +631,8 @@ enum WorkflowCommand {
         run_id: String,
         /// Step id of the approval gate to approve.
         step_id: String,
-        #[arg(long, conflicts_with = "coordinator")]
+        #[arg(long)]
         data_dir: Option<PathBuf>,
-        /// Sprint 0.5-S6: drive a remote coordinator over HTTP instead
-        /// of mutating a local data-dir. POSTs to
-        /// `/api/runs/{run_id}/approve`. Mutually exclusive with
-        /// `--data-dir`. Bearer token via `--coord-token` or
-        /// `BORUNA_TOKEN` env var.
-        #[arg(long, value_name = "URL")]
-        coordinator: Option<String>,
-        /// Bearer token for the coordinator's auth middleware. Falls
-        /// back to the `BORUNA_TOKEN` env var. Only meaningful with
-        /// `--coordinator`.
-        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
-        coord_token: Option<String>,
-        /// Per-gate approval token stashed at pause-time (finding S9). Required
-        /// by a remote coordinator's `/approve` — without it the gate cannot be
-        /// approved. Distinct from `--coord-token` (the auth bearer). Retrieve
-        /// it from the paused run's status. Only meaningful with `--coordinator`.
-        #[arg(long, value_name = "TOKEN")]
-        token: Option<String>,
     },
     /// Reject a paused approval-gate step. Records a rejection sentinel;
     /// `boruna workflow resume <run-id>` will then halt the run as
@@ -933,19 +644,8 @@ enum WorkflowCommand {
         /// resumed run's step error_msg.
         #[arg(long)]
         reason: Option<String>,
-        #[arg(long, conflicts_with = "coordinator")]
+        #[arg(long)]
         data_dir: Option<PathBuf>,
-        /// Sprint 0.5-S6: drive a remote coordinator over HTTP. POSTs
-        /// to `/api/runs/{run_id}/approve` with `decision: "rejected"`.
-        #[arg(long, value_name = "URL")]
-        coordinator: Option<String>,
-        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
-        coord_token: Option<String>,
-        /// Per-gate approval token stashed at pause-time (finding S9), required
-        /// by a remote coordinator's `/approve`. Only meaningful with
-        /// `--coordinator`.
-        #[arg(long, value_name = "TOKEN")]
-        token: Option<String>,
     },
     /// Trigger a paused external_trigger step (sprint 0.3-S15). Records
     /// the supplied payload as the step's output and primes resume to
@@ -976,15 +676,8 @@ enum WorkflowCommand {
         /// exclusive with `--payload`. Useful for large webhook bodies.
         #[arg(long)]
         payload_file: Option<PathBuf>,
-        #[arg(long, conflicts_with = "coordinator")]
+        #[arg(long)]
         data_dir: Option<PathBuf>,
-        /// Sprint 0.5-S6: drive a remote coordinator over HTTP. POSTs
-        /// to `/api/runs/{run_id}/trigger`. Mutually exclusive with
-        /// `--data-dir`.
-        #[arg(long, value_name = "URL")]
-        coordinator: Option<String>,
-        #[arg(long, value_name = "BEARER", env = "BORUNA_TOKEN")]
-        coord_token: Option<String>,
     },
     /// Show the full state of a single run: row, step checkpoints, and
     /// approval-gate decisions. Use `--json` for machine-readable output
@@ -1247,15 +940,6 @@ enum EvidenceCommand {
         #[arg(long, value_name = "N")]
         parallelism: Option<usize>,
     },
-    /// Start a local web UI to browse an evidence bundle (post1-T-4.4).
-    /// Requires the `serve` feature.
-    Serve {
-        /// Evidence bundle directory.
-        dir: PathBuf,
-        /// Port to listen on (default: 4444).
-        #[arg(long, default_value = "4444")]
-        port: u16,
-    },
     /// Compare two evidence bundles side-by-side (post1-evidence-diff).
     /// Reports differences in workflow metadata, step outputs, audit event
     /// counts, and verification status.
@@ -1338,15 +1022,6 @@ enum FrameworkCommand {
         file: PathBuf,
         /// Cycle log file (JSON).
         log: PathBuf,
-    },
-    /// Serve a framework app as a web page (requires --features serve).
-    #[cfg(feature = "serve")]
-    Serve {
-        /// Source file (.ax)
-        file: PathBuf,
-        /// Port to listen on.
-        #[arg(short, long, default_value = "3000")]
-        port: u16,
     },
 }
 
@@ -1647,12 +1322,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 process::exit(code);
             }
         }
-        #[cfg(feature = "serve")]
-        Command::Dashboard(d) => run_dashboard(d, env_arg)?,
-        #[cfg(feature = "serve")]
-        Command::Coordinator(c) => run_coordinator(c, env_arg)?,
-        #[cfg(feature = "serve")]
-        Command::Worker(w) => run_worker_cmd(w)?,
         Command::Migrate {
             kind,
             path,
@@ -1696,148 +1365,6 @@ fn run_migrate(
     };
 
     println!("{report}");
-    Ok(())
-}
-
-#[cfg(feature = "serve")]
-fn run_coordinator(
-    cmd: CoordinatorCommand,
-    env_arg: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match cmd {
-        CoordinatorCommand::Serve {
-            data_dir,
-            port,
-            bind,
-            max_lease_ttl_ms,
-            poll_timeout_ms,
-            sweep_interval_ms,
-            shared_secret,
-            tls_cert,
-            tls_key,
-            tls_client_ca,
-        } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                let bind_addr: std::net::IpAddr = bind
-                    .parse()
-                    .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
-                let tls_config =
-                    coordinator::ServerTlsPaths::from_optional(tls_cert, tls_key, tls_client_ca)?;
-                coordinator::run_serve(
-                    resolved,
-                    port,
-                    bind_addr,
-                    max_lease_ttl_ms,
-                    poll_timeout_ms,
-                    sweep_interval_ms,
-                    shared_secret,
-                    tls_config,
-                )?;
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (
-                    data_dir,
-                    port,
-                    bind,
-                    max_lease_ttl_ms,
-                    poll_timeout_ms,
-                    sweep_interval_ms,
-                    shared_secret,
-                    tls_cert,
-                    tls_key,
-                    tls_client_ca,
-                );
-                return Err("`coordinator serve` requires the `persist-sqlite` feature".into());
-            }
-        }
-        CoordinatorCommand::Wait {
-            run_id,
-            data_dir,
-            poll_interval_ms,
-            max_wait_secs,
-        } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                let exit_code =
-                    coordinator::run_wait(resolved, run_id, poll_interval_ms, max_wait_secs)?;
-                if exit_code != 0 {
-                    std::process::exit(exit_code);
-                }
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (run_id, data_dir, poll_interval_ms, max_wait_secs);
-                return Err("`coordinator wait` requires the `persist-sqlite` feature".into());
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "serve")]
-fn run_worker_cmd(cmd: WorkerCommand) -> Result<(), Box<dyn std::error::Error>> {
-    match cmd {
-        WorkerCommand::Run {
-            coordinator,
-            worker_id,
-            lease_ttl_ms,
-            poll_timeout_ms,
-            shared_secret,
-            advertise_caps,
-            advertise_cap_versions,
-            tls_cert,
-            tls_key,
-            tls_server_ca,
-        } => {
-            let advertised = worker::parse_advertise_caps(advertise_caps.as_deref());
-            let cap_versions = worker::parse_cap_versions(advertise_cap_versions.as_deref());
-            let tls_config =
-                worker::ClientTlsPaths::from_optional(tls_cert, tls_key, tls_server_ca)?;
-            worker::run_worker(
-                coordinator,
-                worker_id,
-                lease_ttl_ms,
-                poll_timeout_ms,
-                shared_secret,
-                advertised,
-                cap_versions,
-                tls_config,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(feature = "serve")]
-fn run_dashboard(
-    cmd: DashboardCommand,
-    env_arg: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match cmd {
-        DashboardCommand::Serve {
-            data_dir,
-            port,
-            bind,
-        } => {
-            #[cfg(feature = "persist-sqlite")]
-            {
-                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                let bind_addr: std::net::IpAddr = bind
-                    .parse()
-                    .map_err(|e| format!("invalid --bind address {bind:?}: {e}"))?;
-                dashboard::run_serve(resolved, port, bind_addr)?;
-            }
-            #[cfg(not(feature = "persist-sqlite"))]
-            {
-                let _ = (data_dir, port, bind);
-                return Err("`dashboard serve` requires the `persist-sqlite` feature".into());
-            }
-        }
-    }
     Ok(())
 }
 
@@ -2682,10 +2209,6 @@ fn main() -> Int {{
             println!("cycles: {}", harness.cycle());
             println!("state: {}", harness.state());
         }
-        #[cfg(feature = "serve")]
-        FrameworkCommand::Serve { file, port } => {
-            serve::run_serve(file, port)?;
-        }
         FrameworkCommand::Replay { file, log } => {
             let source = fs::read_to_string(&file)?;
             let log_json = fs::read_to_string(&log)?;
@@ -3136,10 +2659,6 @@ fn run_workflow(
             concurrency,
             skip_if_running,
             submit_only,
-            coordinator,
-            coord_token,
-            coord_poll_interval_ms,
-            coord_max_wait_secs,
             expect_workflow_hash,
             bundle_storage,
             providers,
@@ -3184,37 +2703,6 @@ fn run_workflow(
                     boruna_vm::policy_validate::parse_file(std::path::Path::new(path))?
                 }
             };
-
-            // Sprint 0.5-S4: --coordinator branches off the local-
-            // run path entirely. Build the inline submit payload,
-            // POST it, then poll status until terminal. Exit with
-            // the conventional code (0/1/2) and skip the rest of
-            // the local-run flow.
-            if let Some(coord_url) = coordinator {
-                #[cfg(feature = "serve")]
-                {
-                    let exit = crate::coordinator::run_remote(
-                        &def,
-                        &dir,
-                        &policy_obj,
-                        &coord_url,
-                        coord_token.as_deref(),
-                        coord_poll_interval_ms,
-                        coord_max_wait_secs,
-                    )?;
-                    process::exit(exit);
-                }
-                #[cfg(not(feature = "serve"))]
-                {
-                    let _ = (
-                        coord_url,
-                        coord_token,
-                        coord_poll_interval_ms,
-                        coord_max_wait_secs,
-                    );
-                    return Err("`workflow run --coordinator` requires the `serve` feature".into());
-                }
-            }
 
             let options = RunOptions {
                 policy: Some(policy_obj.clone()),
@@ -3493,59 +2981,29 @@ fn run_workflow(
             run_id,
             step_id,
             data_dir,
-            coordinator,
-            coord_token,
-            token,
         } => {
-            if let Some(url) = coordinator {
-                #[cfg(feature = "serve")]
-                {
-                    crate::coordinator::send_approve_remote(
-                        &url,
-                        coord_token.as_deref(),
-                        &run_id,
-                        &step_id,
-                        "approved",
-                        None,
-                        token.as_deref().unwrap_or_default(),
-                    )?;
-                    println!(
-                        "approval recorded for step '{step_id}' in run '{run_id}' \
-                         via coordinator {url}."
-                    );
-                }
-                #[cfg(not(feature = "serve"))]
-                {
-                    let _ = (url, coord_token, token);
-                    return Err(
-                        "`workflow approve --coordinator` requires the `serve` feature".into(),
-                    );
-                }
-            } else {
-                let _ = token; // local approve is operator-trusted; no gate token
-                #[cfg(feature = "persist-sqlite")]
-                {
-                    use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                    record_approval_decision(
-                        &resolved,
-                        &run_id,
-                        &step_id,
-                        ApprovalKind::Approved,
-                        None,
-                    )
-                    .map_err(|e| format!("{e}"))?;
-                    println!("approval recorded for step '{step_id}' in run '{run_id}'.");
-                    println!(
-                        "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
-                        resolved.display()
-                    );
-                }
-                #[cfg(not(feature = "persist-sqlite"))]
-                {
-                    let _ = (run_id, step_id, data_dir);
-                    return Err("`workflow approve` requires the `persist-sqlite` feature".into());
-                }
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                record_approval_decision(
+                    &resolved,
+                    &run_id,
+                    &step_id,
+                    ApprovalKind::Approved,
+                    None,
+                )
+                .map_err(|e| format!("{e}"))?;
+                println!("approval recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, data_dir);
+                return Err("`workflow approve` requires the `persist-sqlite` feature".into());
             }
         }
         WorkflowCommand::Reject {
@@ -3553,59 +3011,29 @@ fn run_workflow(
             step_id,
             reason,
             data_dir,
-            coordinator,
-            coord_token,
-            token,
         } => {
-            if let Some(url) = coordinator {
-                #[cfg(feature = "serve")]
-                {
-                    crate::coordinator::send_approve_remote(
-                        &url,
-                        coord_token.as_deref(),
-                        &run_id,
-                        &step_id,
-                        "rejected",
-                        reason.as_deref(),
-                        token.as_deref().unwrap_or_default(),
-                    )?;
-                    println!(
-                        "rejection recorded for step '{step_id}' in run '{run_id}' \
-                         via coordinator {url}."
-                    );
-                }
-                #[cfg(not(feature = "serve"))]
-                {
-                    let _ = (url, coord_token, reason, token);
-                    return Err(
-                        "`workflow reject --coordinator` requires the `serve` feature".into(),
-                    );
-                }
-            } else {
-                let _ = token; // local reject is operator-trusted; no gate token
-                #[cfg(feature = "persist-sqlite")]
-                {
-                    use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
-                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                    record_approval_decision(
-                        &resolved,
-                        &run_id,
-                        &step_id,
-                        ApprovalKind::Rejected,
-                        reason,
-                    )
-                    .map_err(|e| format!("{e}"))?;
-                    println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
-                    println!(
-                        "Run `boruna workflow resume {run_id} --data-dir {}` to halt the run.",
-                        resolved.display()
-                    );
-                }
-                #[cfg(not(feature = "persist-sqlite"))]
-                {
-                    let _ = (run_id, step_id, reason, data_dir);
-                    return Err("`workflow reject` requires the `persist-sqlite` feature".into());
-                }
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                record_approval_decision(
+                    &resolved,
+                    &run_id,
+                    &step_id,
+                    ApprovalKind::Rejected,
+                    reason,
+                )
+                .map_err(|e| format!("{e}"))?;
+                println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to halt the run.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, reason, data_dir);
+                return Err("`workflow reject` requires the `persist-sqlite` feature".into());
             }
         }
         WorkflowCommand::Trigger {
@@ -3615,8 +3043,6 @@ fn run_workflow(
             payload,
             payload_file,
             data_dir,
-            coordinator,
-            coord_token,
         } => {
             let payload_str = match (payload, payload_file) {
                 (Some(p), None) => p,
@@ -3633,52 +3059,25 @@ fn run_workflow(
                 }
             };
             // Defense-in-depth: confirm the payload is well-formed JSON.
-            // Same posture for both local and remote paths so operators
-            // get the early failure regardless of mode.
             serde_json::from_str::<serde_json::Value>(&payload_str)
                 .map_err(|e| format!("--payload is not valid JSON: {e}"))?;
 
-            if let Some(url) = coordinator {
-                #[cfg(feature = "serve")]
-                {
-                    crate::coordinator::send_trigger_remote(
-                        &url,
-                        coord_token.as_deref(),
-                        &run_id,
-                        &step_id,
-                        &token,
-                        &payload_str,
-                    )?;
-                    println!(
-                        "trigger recorded for step '{step_id}' in run '{run_id}' \
-                         via coordinator {url}."
-                    );
-                }
-                #[cfg(not(feature = "serve"))]
-                {
-                    let _ = (url, coord_token);
-                    return Err(
-                        "`workflow trigger --coordinator` requires the `serve` feature".into(),
-                    );
-                }
-            } else {
-                #[cfg(feature = "persist-sqlite")]
-                {
-                    use boruna_orchestrator::workflow::record_external_trigger;
-                    let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                    record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
-                        .map_err(|e| format!("{e}"))?;
-                    println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
-                    println!(
-                        "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
-                        resolved.display()
-                    );
-                }
-                #[cfg(not(feature = "persist-sqlite"))]
-                {
-                    let _ = (run_id, step_id, token, data_dir);
-                    return Err("`workflow trigger` requires the `persist-sqlite` feature".into());
-                }
+            #[cfg(feature = "persist-sqlite")]
+            {
+                use boruna_orchestrator::workflow::record_external_trigger;
+                let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
+                record_external_trigger(&resolved, &run_id, &step_id, &token, &payload_str)
+                    .map_err(|e| format!("{e}"))?;
+                println!("trigger recorded for step '{step_id}' in run '{run_id}'.");
+                println!(
+                    "Run `boruna workflow resume {run_id} --data-dir {}` to advance.",
+                    resolved.display()
+                );
+            }
+            #[cfg(not(feature = "persist-sqlite"))]
+            {
+                let _ = (run_id, step_id, token, data_dir);
+                return Err("`workflow trigger` requires the `persist-sqlite` feature".into());
             }
         }
         WorkflowCommand::Show {
@@ -4701,20 +4100,6 @@ fn run_evidence(
                 dry_run,
                 parallelism,
             )?;
-        }
-        EvidenceCommand::Serve { dir, port } => {
-            #[cfg(feature = "serve")]
-            {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(evidence_serve::serve(&dir, port))?;
-            }
-            #[cfg(not(feature = "serve"))]
-            {
-                let _ = (dir, port);
-                return Err("`evidence serve` requires the `serve` feature — \
-                            build with: cargo build --features boruna-cli/serve"
-                    .into());
-            }
         }
         EvidenceCommand::Diff {
             bundle_a,

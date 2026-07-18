@@ -6,6 +6,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the HTTP serving layer — coordinator, distributed workers, workflow
+  dashboard, evidence web viewer, and approval console. Boruna is now
+  local-engine + CLI only.
+
 ## [2.0.0] — 2026-07-17
 
 First major release. A security-hardening + language-completeness sprint that

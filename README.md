@@ -27,7 +27,6 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 - **Capability enforcement** — every side effect (LLM calls, HTTP, database, filesystem) is declared and policy-gated at the VM level
 - **Evidence bundles** — hash-chained tamper-evident logs, written automatically with `--record`. Optional **AES-256-GCM envelope encryption** for compliance-sensitive deployments. `evidence inspect` shows step output content for plaintext bundles.
 - **Deterministic replay** — re-execute any recorded workflow with identical outputs, verified by the VM
-- **Distributed execution** — coord+workers HTTP cluster with active-active **HA**, worker URL failover, capability-tagged placement, and optional **mTLS** with per-worker client certs
 - **Approval gates** — pause workflow execution for human review or external triggers before continuing
 - **Diagnostics, auto-repair, and migration** — `boruna lang check`, `boruna lang repair`, `boruna migrate` for `.ax` files and bundle/workflow upgrades
 - **`boruna new`** — interactive scaffold for new workflows from templates
@@ -129,7 +128,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 | `boruna-tooling` | Diagnostics, repair, trace-to-tests, templates |
 | `boruna-pkg` | Package registry, resolver, lockfiles |
 
-1175+ tests across 11 workspace members. `cargo test --workspace --features boruna-cli/serve` — all pass.
+1175+ tests across 11 workspace members. `cargo test --workspace` — all pass.
 
 ## Documentation
 
@@ -140,9 +139,6 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 | [Concepts: Capabilities](docs/concepts/capabilities.md) | Side effect declaration and policy gating |
 | [Concepts: Evidence Bundles](docs/concepts/evidence-bundles.md) | Hash-chained audit logs and replay |
 | [Guide: First Workflow](docs/guides/first-workflow.md) | Build a workflow from scratch |
-| [Guide: Coord HA](docs/guides/coord-ha.md) | Multi-coord deployment topologies |
-| [Guide: Coord mTLS](docs/guides/coord-mtls.md) | X.509 client certs + cert generation |
-| [Guide: Worker Capability Tagging](docs/guides/worker-capability-tagging.md) | Heterogeneous fleet placement |
 | [Guide: Migration](docs/guides/migration.md) | Upgrade legacy bundles and workflow files |
 | [Spec: `.ax` Language 1.0](docs/spec/ax-language-1.0.md) | Formal language specification |
 | [Spec: Workflow DAG 1.0](docs/spec/workflow-dag-1.0.md) | `workflow.json` schema |
@@ -158,7 +154,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v2.0.0** — the first major release. 2.0 is a security-hardening and language-completeness milestone that remediates a whole-codebase research audit: SSRF/XSS fixes, coordinator claim-ownership and approval-gate enforcement, tamper-evident evidence bundles (external anchor + ed25519 signing), and real language semantics (enum construction with per-variant match tags, higher-order calls, `for` loops, arity checking, and warn-only type-consistency diagnostics). It ships **deliberate breaking changes** — integer overflow is now a runtime error, and several coordinator/framework defaults fail closed — so review the 2.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md), each of which has a documented override or migration. The core execution engine, distributed-execution stack, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
+Boruna is at **v2.0.0** — the first major release. 2.0 is a security-hardening and language-completeness milestone that remediates a whole-codebase research audit: SSRF/XSS fixes, coordinator claim-ownership and approval-gate enforcement, tamper-evident evidence bundles (external anchor + ed25519 signing), and real language semantics (enum construction with per-variant match tags, higher-order calls, `for` loops, arity checking, and warn-only type-consistency diagnostics). It ships **deliberate breaking changes** — integer overflow is now a runtime error, and several coordinator/framework defaults fail closed — so review the 2.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md), each of which has a documented override or migration. The core execution engine, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 
