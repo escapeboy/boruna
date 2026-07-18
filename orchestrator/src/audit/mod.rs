@@ -34,4 +34,11 @@ pub use verify::*;
 /// - Different major (`2.x`) → breaking: readers MUST reject.
 ///
 /// See `docs/spec/evidence-bundle-1.0.md` for the full spec.
-pub const BUNDLE_FORMAT_VERSION: &str = "1.0";
+///
+/// Bumped to `1.1` for the commitment-chain audit log that enables
+/// verifiable redaction (`orchestrator/docs/verifiable-redaction.md`).
+/// This is a MINOR bump: same-major, so a 1.0 reader still accepts a 1.1
+/// bundle, and the current reader verifies both legacy (1.0, chain over
+/// raw event JSON) and commitment-form (1.1) audit logs — the form is
+/// detected per entry by the presence of `content_sha256`.
+pub const BUNDLE_FORMAT_VERSION: &str = "1.1";

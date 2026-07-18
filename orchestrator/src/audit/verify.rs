@@ -38,6 +38,25 @@ impl std::error::Error for EvidenceError {}
 pub struct VerifyResult {
     pub valid: bool,
     pub errors: Vec<String>,
+    /// Sequence numbers of audit-log entries that carry an authorized
+    /// redaction. Populated once the audit log is parsed; empty when the
+    /// bundle is rejected before that point. A validly-redacted bundle is
+    /// still `valid: true` with these entries listed — that is how a
+    /// reader sees a redaction is present (and recorded), as distinct
+    /// from a tamper (which flips `valid` to false).
+    pub redacted_entries: Vec<u64>,
+}
+
+impl VerifyResult {
+    /// Build an invalid result with no redaction info (used for the
+    /// early-return rejection paths before the audit log is parsed).
+    fn invalid(errors: Vec<String>) -> Self {
+        VerifyResult {
+            valid: false,
+            errors,
+            redacted_entries: Vec::new(),
+        }
+    }
 }
 
 /// Read and validate the top-level `bundle.json` format gate.
@@ -155,10 +174,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
     //    bundle from a future incompatible major. This runs FIRST so
     //    we don't try to read content we can't safely interpret.
     if let Err(e) = check_bundle_format(bundle_dir) {
-        return VerifyResult {
-            valid: false,
-            errors: vec![e.to_string()],
-        };
+        return VerifyResult::invalid(vec![e.to_string()]);
     }
 
     // 1. Load and parse manifest
@@ -166,20 +182,14 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
     let manifest_json = match std::fs::read_to_string(&manifest_path) {
         Ok(j) => j,
         Err(e) => {
-            return VerifyResult {
-                valid: false,
-                errors: vec![format!("cannot read manifest.json: {e}")],
-            };
+            return VerifyResult::invalid(vec![format!("cannot read manifest.json: {e}")]);
         }
     };
 
     let manifest: BundleManifest = match serde_json::from_str(&manifest_json) {
         Ok(m) => m,
         Err(e) => {
-            return VerifyResult {
-                valid: false,
-                errors: vec![format!("invalid manifest.json: {e}")],
-            };
+            return VerifyResult::invalid(vec![format!("invalid manifest.json: {e}")]);
         }
     };
 
@@ -240,52 +250,39 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                 None => match crate::audit::encryption::resolve_kek(None) {
                     Ok(k) => k,
                     Err(e) => {
-                        return VerifyResult {
-                            valid: false,
-                            errors: vec![format!("invalid KEK: {e}")],
-                        };
+                        return VerifyResult::invalid(vec![format!("invalid KEK: {e}")]);
                     }
                 },
             };
             let key = match resolved_kek {
                 Some(k) => k,
                 None => {
-                    return VerifyResult {
-                        valid: false,
-                        errors: vec![format!(
-                            "evidence.encryption_key_required: bundle is encrypted (kek_id={}); \
-                             supply --bundle-encryption-key <hex> or set BORUNA_BUNDLE_KEK",
-                            info.kek_id
-                        )],
-                    };
+                    return VerifyResult::invalid(vec![format!(
+                        "evidence.encryption_key_required: bundle is encrypted (kek_id={}); \
+                         supply --bundle-encryption-key <hex> or set BORUNA_BUNDLE_KEK",
+                        info.kek_id
+                    )]);
                 }
             };
             match Envelope::unwrap(info, &key) {
                 Ok(env) => Some(env),
                 Err(EncryptionError::UnsupportedAlgorithm { found, expected }) => {
-                    return VerifyResult {
-                        valid: false,
-                        errors: vec![format!(
-                            "evidence.unsupported_algorithm: bundle declares algorithm={found:?}; \
-                             reader supports only {expected:?}"
-                        )],
-                    };
+                    return VerifyResult::invalid(vec![format!(
+                        "evidence.unsupported_algorithm: bundle declares algorithm={found:?}; \
+                         reader supports only {expected:?}"
+                    )]);
                 }
                 Err(EncryptionError::EncryptionKeyMismatch) => {
-                    return VerifyResult {
-                        valid: false,
-                        errors: vec![format!(
-                            "evidence.encryption_key_mismatch: supplied KEK does not unwrap the \
-                             bundle's wrapped_dek (kek_id={})",
-                            info.kek_id
-                        )],
-                    };
+                    return VerifyResult::invalid(vec![format!(
+                        "evidence.encryption_key_mismatch: supplied KEK does not unwrap the \
+                         bundle's wrapped_dek (kek_id={})",
+                        info.kek_id
+                    )]);
                 }
                 Err(e) => {
-                    return VerifyResult {
-                        valid: false,
-                        errors: vec![format!("invalid encryption metadata: {e}")],
-                    };
+                    return VerifyResult::invalid(vec![format!(
+                        "invalid encryption metadata: {e}"
+                    )]);
                 }
             }
         }
@@ -328,6 +325,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
     }
 
     // 4. Verify audit log chain integrity (decrypt-then-parse).
+    let mut redacted_entries: Vec<u64> = Vec::new();
     let audit_path = bundle_dir.join("audit_log.json");
     match std::fs::read(&audit_path) {
         Ok(raw) => {
@@ -343,6 +341,10 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                 match std::str::from_utf8(&audit_pt) {
                     Ok(audit_json) => match AuditLog::from_json(audit_json) {
                         Ok(audit_log) => {
+                            // A valid redaction preserves the chain and
+                            // audit_log_hash; a content tamper breaks one
+                            // of them. So these checks are exactly what
+                            // separates "redacted" from "tampered".
                             if let Err(bad_seq) = audit_log.verify() {
                                 errors.push(format!("audit log chain broken at entry {bad_seq}"));
                             }
@@ -353,6 +355,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                                     audit_log.hash()
                                 ));
                             }
+                            redacted_entries = audit_log.redacted_sequences();
                         }
                         Err(e) => {
                             errors.push(format!("invalid audit_log.json: {e}"));
@@ -384,6 +387,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
     VerifyResult {
         valid: errors.is_empty(),
         errors,
+        redacted_entries,
     }
 }
 
@@ -558,6 +562,132 @@ mod tests {
 
         let result = verify_bundle(&bundle_dir);
         assert!(result.valid, "errors: {:?}", result.errors);
+        assert!(result.redacted_entries.is_empty());
+    }
+
+    // ---- verifiable redaction at the bundle level ----
+
+    /// Build a bundle whose audit log carries PII (an approver email at
+    /// entry 1) so redaction has something to remove.
+    fn build_bundle_with_pii(dir: &Path, run_id: &str) -> BundleManifest {
+        let mut builder = EvidenceBundleBuilder::new(dir, run_id, "pii-test").unwrap();
+        builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+        let mut audit = AuditLog::new();
+        audit.append(AuditEvent::WorkflowStarted {
+            workflow_hash: "abc".into(),
+            policy_hash: "def".into(),
+        });
+        audit.append(AuditEvent::ApprovalGranted {
+            step_id: "s1".into(),
+            approver: "alice.privacy@example.com".into(),
+        });
+        audit.append(AuditEvent::WorkflowCompleted {
+            result_hash: "res".into(),
+            total_duration_ms: 60,
+        });
+        builder.finalize(&audit).unwrap()
+    }
+
+    #[test]
+    fn redact_bundle_still_verifies_and_reports_redaction() {
+        use crate::audit::evidence::redact_bundle;
+        let dir = tempfile::tempdir().unwrap();
+        let orig = build_bundle_with_pii(dir.path(), "run-redact-001");
+        let bundle_dir = dir.path().join("run-redact-001");
+
+        // Sanity: PII is present on disk before redaction.
+        let before = std::fs::read_to_string(bundle_dir.join("audit_log.json")).unwrap();
+        assert!(before.contains("alice.privacy@example.com"));
+
+        let outcome = redact_bundle(&bundle_dir, 1, None, Some("GDPR erasure".into())).unwrap();
+
+        // audit_log_hash is INVARIANT under redaction; bundle_hash changed.
+        assert_eq!(outcome.audit_log_hash, orig.audit_log_hash);
+        assert_ne!(outcome.new_bundle_hash, orig.bundle_hash);
+        assert_eq!(outcome.redacted_sequence, 1);
+
+        // Bundle STILL verifies and reports the redacted entry.
+        let res = verify_bundle(&bundle_dir);
+        assert!(
+            res.valid,
+            "redacted bundle must verify; errors: {:?}",
+            res.errors
+        );
+        assert_eq!(res.redacted_entries, vec![1]);
+
+        // The original PII is gone; the commitment + marker remain.
+        let after = std::fs::read_to_string(bundle_dir.join("audit_log.json")).unwrap();
+        assert!(!after.contains("alice.privacy@example.com"));
+        assert!(after.contains(&outcome.content_sha256));
+        assert!(after.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_bundle_then_tamper_placeholder_fails() {
+        use crate::audit::evidence::redact_bundle;
+        use crate::audit::log::AuditLog as Log;
+        let dir = tempfile::tempdir().unwrap();
+        build_bundle_with_pii(dir.path(), "run-redact-002");
+        let bundle_dir = dir.path().join("run-redact-002");
+        redact_bundle(&bundle_dir, 1, None, None).unwrap();
+        assert!(verify_bundle(&bundle_dir).valid);
+
+        // Forge a different original by corrupting the redacted entry's
+        // committed hash in the file. The entry's own `content_sha256`
+        // field serializes before its `redacted` marker, so replacing the
+        // first occurrence splits the commitment from the marker AND from
+        // entry_hash — the chain no longer recomputes.
+        let audit_json = std::fs::read_to_string(bundle_dir.join("audit_log.json")).unwrap();
+        let log = Log::from_json(&audit_json).unwrap();
+        let corrupted = audit_json.replacen(&log.entries()[1].content_sha256, &"0".repeat(64), 1);
+        std::fs::write(bundle_dir.join("audit_log.json"), &corrupted).unwrap();
+
+        let res = verify_bundle(&bundle_dir);
+        assert!(!res.valid, "redact-then-tamper must fail");
+    }
+
+    #[test]
+    fn tamper_after_redact_content_fails_via_checksum() {
+        use crate::audit::evidence::redact_bundle;
+        let dir = tempfile::tempdir().unwrap();
+        build_bundle_with_pii(dir.path(), "run-redact-003");
+        let bundle_dir = dir.path().join("run-redact-003");
+        redact_bundle(&bundle_dir, 1, None, None).unwrap();
+        assert!(verify_bundle(&bundle_dir).valid);
+
+        // A naive tamper of the audit log (without updating the manifest
+        // checksum) is caught by the file_checksums loop.
+        std::fs::write(
+            bundle_dir.join("audit_log.json"),
+            r#"[{"sequence":0,"event":{"WorkflowStarted":{"workflow_hash":"x","policy_hash":"y"}},"entry_hash":"z"}]"#,
+        )
+        .unwrap();
+        assert!(!verify_bundle(&bundle_dir).valid);
+    }
+
+    #[test]
+    fn redact_encrypted_bundle_is_rejected() {
+        use crate::audit::evidence::{redact_bundle, BundleRedactError};
+        let dir = tempfile::tempdir().unwrap();
+        let kek = [7u8; KEY_LEN];
+        let mut builder = EvidenceBundleBuilder::new(dir.path(), "run-redact-enc", "enc")
+            .unwrap()
+            .with_encryption(&kek, "default")
+            .unwrap();
+        builder.add_workflow_def(r#"{"name":"x"}"#).unwrap();
+        builder.add_policy(r#"{}"#).unwrap();
+        let mut audit = AuditLog::new();
+        audit.append(AuditEvent::ApprovalGranted {
+            step_id: "s1".into(),
+            approver: "bob@example.com".into(),
+        });
+        builder.finalize(&audit).unwrap();
+        let bundle_dir = dir.path().join("run-redact-enc");
+        assert!(matches!(
+            redact_bundle(&bundle_dir, 0, None, None),
+            Err(BundleRedactError::EncryptedUnsupported)
+        ));
     }
 
     #[test]

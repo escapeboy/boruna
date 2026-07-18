@@ -940,6 +940,31 @@ enum EvidenceCommand {
         #[arg(long, value_name = "N")]
         parallelism: Option<usize>,
     },
+    /// Verifiably redact one audit-log entry in an evidence bundle so PII
+    /// can be removed from a SEALED bundle without breaking verification.
+    ///
+    /// The commitment-chain audit log (format 1.1) lets the entry's event
+    /// content be blanked in place while its `content_sha256` commitment —
+    /// and therefore the chain and `audit_log_hash` — stay intact. This
+    /// updates `file_checksums` + `bundle_hash` so `evidence verify` still
+    /// passes; any prior manifest signature is dropped (re-sign or
+    /// re-anchor afterward). `audit_log_hash` is invariant under redaction,
+    /// which is how a verifier tells a redaction from a tamper. See
+    /// `orchestrator/docs/verifiable-redaction.md`.
+    Redact {
+        /// Evidence bundle directory (must be plaintext, format 1.1).
+        dir: PathBuf,
+        /// Index (== sequence) of the audit-log entry to redact.
+        #[arg(long, value_name = "INDEX")]
+        event: usize,
+        /// Optional: redact only this named field of the event instead of
+        /// the whole event.
+        #[arg(long, value_name = "NAME")]
+        field: Option<String>,
+        /// Optional operator-recorded reason (advisory; not hashed).
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Compare two evidence bundles side-by-side (post1-evidence-diff).
     /// Reports differences in workflow metadata, step outputs, audit event
     /// counts, and verification status.
@@ -3965,6 +3990,9 @@ fn run_evidence(
             );
             if result.valid {
                 println!("evidence bundle is VALID");
+                if !result.redacted_entries.is_empty() {
+                    println!("  redacted entries: {:?}", result.redacted_entries);
+                }
             } else {
                 eprintln!("evidence bundle INVALID:");
                 for err in &result.errors {
@@ -4201,6 +4229,44 @@ fn run_evidence(
                 dry_run,
                 parallelism,
             )?;
+        }
+        EvidenceCommand::Redact {
+            dir,
+            event,
+            field,
+            reason,
+        } => {
+            let outcome = boruna_orchestrator::audit::evidence::redact_bundle(
+                &dir,
+                event,
+                field.as_deref(),
+                reason,
+            )
+            .map_err(|e| format!("redact failed: {e}"))?;
+            println!("redacted audit-log entry {}", outcome.redacted_sequence);
+            println!("  content_sha256: {}", outcome.content_sha256);
+            println!("  audit_log_hash: {} (unchanged)", outcome.audit_log_hash);
+            println!("  new bundle_hash: {}", outcome.new_bundle_hash);
+            if outcome.signature_stripped {
+                eprintln!(
+                    "warning: a manifest signature was dropped (it signed the pre-redaction \
+                     bundle_hash). Re-sign or re-anchor the bundle."
+                );
+            }
+            // Re-verify so the operator sees the bundle is still valid.
+            let result = verify_bundle_with_opts(&dir, &VerifyOptions::default());
+            if result.valid {
+                println!(
+                    "re-verify: VALID (redacted entries: {:?})",
+                    result.redacted_entries
+                );
+            } else {
+                eprintln!("re-verify: INVALID:");
+                for err in &result.errors {
+                    eprintln!("  {err}");
+                }
+                process::exit(1);
+            }
         }
         EvidenceCommand::Diff {
             bundle_a,

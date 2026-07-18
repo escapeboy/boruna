@@ -433,6 +433,179 @@ fn fullsync_file(file: &std::fs::File) -> std::io::Result<()> {
     }
 }
 
+/// Outcome of a successful [`redact_bundle`] call.
+#[derive(Debug, Clone)]
+pub struct RedactOutcome {
+    /// Sequence number of the redacted audit-log entry.
+    pub redacted_sequence: u64,
+    /// The preserved content commitment for the removed event.
+    pub content_sha256: String,
+    /// True iff a now-stale manifest signature was dropped (the operator
+    /// must re-sign or re-anchor after redaction — see below).
+    pub signature_stripped: bool,
+    /// The recomputed manifest `bundle_hash` after redaction.
+    pub new_bundle_hash: String,
+    /// The `audit_log_hash`, which is INVARIANT under redaction. An
+    /// operator holding this out-of-band anchor can distinguish a
+    /// redaction (anchor unchanged) from a content tamper (anchor
+    /// changes).
+    pub audit_log_hash: String,
+}
+
+/// Errors from [`redact_bundle`].
+#[derive(Debug)]
+pub enum BundleRedactError {
+    Io(std::io::Error),
+    InvalidManifest(String),
+    InvalidAuditLog(String),
+    /// The bundle's audit chain does not verify — refuse to redact a
+    /// bundle that is already broken (nothing to preserve).
+    ChainInvalid(u64),
+    /// Redaction of encrypted bundles is not supported here; rotate/
+    /// decrypt first. See `orchestrator/docs/verifiable-redaction.md`.
+    EncryptedUnsupported,
+    Redact(crate::audit::log::RedactError),
+}
+
+impl std::fmt::Display for BundleRedactError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BundleRedactError::Io(e) => write!(f, "io: {e}"),
+            BundleRedactError::InvalidManifest(s) => write!(f, "invalid manifest: {s}"),
+            BundleRedactError::InvalidAuditLog(s) => write!(f, "invalid audit_log.json: {s}"),
+            BundleRedactError::ChainInvalid(seq) => {
+                write!(
+                    f,
+                    "audit chain is broken at entry {seq}; refusing to redact"
+                )
+            }
+            BundleRedactError::EncryptedUnsupported => write!(
+                f,
+                "redaction of encrypted bundles is not supported (decrypt/rotate first)"
+            ),
+            BundleRedactError::Redact(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for BundleRedactError {}
+
+impl From<std::io::Error> for BundleRedactError {
+    fn from(e: std::io::Error) -> Self {
+        BundleRedactError::Io(e)
+    }
+}
+
+/// Verifiably redact one audit-log entry inside an evidence bundle on
+/// disk, keeping the bundle verifiable.
+///
+/// The commitment chain (format 1.1) makes this possible: the redacted
+/// entry's `content_sha256` is preserved, so its `entry_hash`, the
+/// prev-hash links, and the log's overall `audit_log_hash` are all
+/// UNCHANGED. What legitimately changes is:
+///
+/// - `audit_log.json` bytes (the event content is blanked + a redaction
+///   marker added), hence
+/// - `manifest.file_checksums["audit_log.json"]`, hence
+/// - `manifest.bundle_hash` (recomputed here so the bundle stays
+///   self-consistent and `evidence verify` passes).
+///
+/// A prior ed25519 `signature` (which signed the OLD `bundle_hash`) is
+/// dropped, because redaction is a post-seal authorized transformation
+/// the original signer did not endorse; the operator re-signs afterward.
+///
+/// **Distinguishing redaction from tampering.** `audit_log_hash` is the
+/// invariant: a redaction leaves it unchanged, while any tamper that
+/// alters event *content* must change a `content_sha256` and therefore
+/// the chain and `audit_log_hash`. An operator who anchored the original
+/// `audit_log_hash` out-of-band sees it survive redaction but not a
+/// tamper. Within the bundle, verification also reports which entries
+/// are redacted, and the chain still verifies for a valid redaction but
+/// fails for a content tamper.
+///
+/// Only plaintext bundles are supported; encrypted bundles return
+/// [`BundleRedactError::EncryptedUnsupported`].
+pub fn redact_bundle(
+    bundle_dir: &Path,
+    index: usize,
+    field: Option<&str>,
+    reason: Option<String>,
+) -> Result<RedactOutcome, BundleRedactError> {
+    // 1. Load manifest.
+    let manifest_path = bundle_dir.join("manifest.json");
+    let manifest_raw = std::fs::read_to_string(&manifest_path)?;
+    let mut manifest: BundleManifest = serde_json::from_str(&manifest_raw)
+        .map_err(|e| BundleRedactError::InvalidManifest(e.to_string()))?;
+
+    if manifest.encryption.is_some() {
+        return Err(BundleRedactError::EncryptedUnsupported);
+    }
+
+    // 2. Load + verify the audit log BEFORE mutating anything.
+    let audit_path = bundle_dir.join("audit_log.json");
+    let audit_raw = std::fs::read_to_string(&audit_path)?;
+    let mut log = AuditLog::from_json(&audit_raw)
+        .map_err(|e| BundleRedactError::InvalidAuditLog(e.to_string()))?;
+    if let Err(seq) = log.verify() {
+        return Err(BundleRedactError::ChainInvalid(seq));
+    }
+    let audit_log_hash = log.hash();
+
+    // 3. Redact the entry; the chain (and audit_log_hash) is preserved.
+    let content_sha256 = log
+        .redact_entry(index, field, reason)
+        .map_err(BundleRedactError::Redact)?;
+    debug_assert_eq!(
+        log.hash(),
+        audit_log_hash,
+        "redaction must preserve audit_log_hash"
+    );
+    let redacted_sequence = log.entries()[index].sequence;
+
+    // 4. Rewrite audit_log.json and update its checksum.
+    let new_audit_json = log
+        .to_json()
+        .map_err(|e| BundleRedactError::InvalidAuditLog(e.to_string()))?;
+    atomic_write_with_dir_fsync(bundle_dir, "audit_log.json", new_audit_json.as_bytes())?;
+    manifest
+        .file_checksums
+        .insert("audit_log.json".to_string(), sha256_str(&new_audit_json));
+
+    // 5. audit_log_hash is unchanged; drop the now-stale signature.
+    let signature_stripped = manifest.signature.take().is_some();
+
+    // 6. Recompute bundle_hash exactly as finalize does (clear
+    //    bundle_hash + signature, pretty-print, sha256).
+    let new_bundle_hash = recompute_bundle_hash(&manifest)
+        .map_err(|e| BundleRedactError::InvalidManifest(e.to_string()))?;
+    manifest.bundle_hash = new_bundle_hash.clone();
+
+    // 7. Atomically rewrite the manifest.
+    let final_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| BundleRedactError::InvalidManifest(e.to_string()))?;
+    atomic_write_with_dir_fsync(bundle_dir, "manifest.json", final_json.as_bytes())?;
+
+    Ok(RedactOutcome {
+        redacted_sequence,
+        content_sha256,
+        signature_stripped,
+        new_bundle_hash,
+        audit_log_hash,
+    })
+}
+
+/// Recompute a manifest's `bundle_hash` the way
+/// [`EvidenceBundleBuilder::finalize`] does: clone, clear `bundle_hash`
+/// and `signature`, pretty-print, sha256. Mirrors
+/// `verify::recompute_bundle_hash` / `rotate::compute_bundle_hash`.
+fn recompute_bundle_hash(manifest: &BundleManifest) -> Result<String, serde_json::Error> {
+    let mut clone = manifest.clone();
+    clone.bundle_hash = String::new();
+    clone.signature = None;
+    let json = serde_json::to_string_pretty(&clone)?;
+    Ok(sha256_str(&json))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,7 +796,10 @@ mod tests {
         );
         let raw = std::fs::read_to_string(&bundle_json_path).unwrap();
         let parsed: BundleJson = serde_json::from_str(&raw).unwrap();
-        assert_eq!(parsed.format_version, "1.0");
+        // Locks the current emitted format version byte-exactly. Bumped
+        // to 1.1 with the commitment-chain audit log (verifiable
+        // redaction). A 1.0 reader still accepts this bundle (same major).
+        assert_eq!(parsed.format_version, "1.1");
         assert_eq!(parsed.run_id, "run-fmt-001");
         assert!(!parsed.boruna_version.is_empty());
         assert!(parsed.components.iter().any(|c| c == "manifest.json"));
