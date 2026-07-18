@@ -1,7 +1,7 @@
 # Canonical `error_kind` taxonomy
 
 This is the single source of truth for the stable `error_kind` strings
-emitted by the Boruna binary, MCP server, and coordinator HTTP API.
+emitted by the Boruna binary and the MCP server.
 
 ## Stability contract
 
@@ -12,9 +12,6 @@ emitted by the Boruna binary, MCP server, and coordinator HTTP API.
   MUST tolerate values they don't recognize.
 - Integrators MAY switch on these strings programmatically — the strings
   are part of the LTS-protected contract, not human-readable log copy.
-- Numeric HTTP status codes paired with each `coord.*` kind are part of
-  the same contract: 1.x will not change the status code attached to a
-  given `error_kind`.
 
 ## How this list is maintained
 
@@ -25,36 +22,6 @@ gate for this in a future sprint; today the discipline is reviewer-
 enforced.
 
 ---
-
-## `coord.*` — coordinator HTTP API
-
-Emitted by the `boruna coordinator serve` HTTP surface. JSON body shape
-is `{"error_kind": "...", "message": "...", "details": {...}?}` (see
-`crates/llmvm-cli/src/coordinator.rs::ErrorBody`).
-
-| `error_kind` | HTTP | Phase | Where it fires | Sprint | Caller-facing meaning |
-|---|:--:|---|---|---|---|
-| `coord.unauthorized` | 401 | N/A | `coordinator.rs::auth_middleware` | `0.5-S3` | Bearer token / mTLS identity missing or invalid. The shared-secret bearer auth and/or mTLS gate rejected the request. |
-| `coord.identity_mismatch` | 401 | N/A | `coordinator.rs::handle_register` | `W6-A` | mTLS cert subject CN does not match the body `worker_id`. The cert proves a different worker identity than the one being registered. |
-| `coord.invalid_request` | 400 | serialization | `coordinator.rs::handle_claim` | `0.5-S2` | Request body cannot be parsed as the expected shape. |
-| `coord.unknown_worker` | 404 | N/A | `coordinator.rs::handle_claim`, `handle_report_*` | `0.5-S2` | The `worker_id` in the request is not registered with this coordinator. |
-| `coord.unknown_capability` | 400 | N/A | `coordinator.rs::handle_register` | `W3-A` | A capability name in `advertise_caps` is not in the coord's known capability set. |
-| `coord.binary_mismatch` | 409 | N/A | `coordinator.rs::handle_register` | `0.5-S2` | Worker's `boruna_version` does not match the coord's expected version (capability-set hash mismatch). |
-| `coord.lease_expired` | 409 | N/A | `coordinator.rs::handle_report_*` | `0.5-S2` | The worker's lease on the step has already expired and another worker has been re-dispatched (per ADR 002). |
-| `coord.step_not_found` | 404 | N/A | `coordinator.rs::handle_report_*` | `0.5-S2` | No step matching `(run_id, step_id)` is currently in flight. |
-| `coord.output_too_large` | 413 | output_validation | (consumed by `worker.rs`) | `0.5-S7` | Step output exceeds the coord's accepted size. Worker treats this as a non-retryable step failure. |
-| `coord.submit.invalid_workflow` | 400 | N/A | `coordinator.rs::handle_submit_run` | `0.5-S4` | Submitted workflow JSON fails validation (cycle, missing field, etc.). |
-| `coord.submit.bad_payload` | 400 | serialization | `coordinator.rs::handle_submit_run` | `0.5-S4` | Submit-run request body cannot be parsed. |
-| `coord.runs.not_found` | 404 | N/A | `coordinator.rs::handle_get_run`, `handle_approve_run`, `handle_trigger_run` | `0.5-S4` | No run with the given `run_id` exists. |
-| `coord.approve.invalid_state` | 409 | N/A | `coordinator.rs::handle_approve_run` | `0.5-S6` | Approval request received for a run not currently waiting on an approval gate. |
-| `coord.approve.bad_payload` | 400 | serialization | `coordinator.rs::handle_approve_run` | `0.5-S6` | Approval request body cannot be parsed. |
-| `coord.trigger.invalid_state` | 409 | N/A | `coordinator.rs::handle_trigger_run` | `0.5-S6` | External-trigger request received for a run not currently waiting on the named trigger. |
-| `coord.trigger.bad_token` | 401 | N/A | `coordinator.rs::handle_trigger_run` | `0.5-S6` | External-trigger token did not match the run's expected token. |
-| `coord.trigger.bad_payload` | 400 | serialization | `coordinator.rs::handle_trigger_run` | `0.5-S6` | External-trigger request body cannot be parsed. |
-| `coord.blobs.bad_hash` | 400 | N/A | `coordinator.rs::handle_get_blob` | `0.5-S7` | Blob lookup hash is not 64 hex chars. |
-| `coord.blobs.not_found` | 404 | N/A | `coordinator.rs::handle_get_blob` | `0.5-S7` | No blob with the given content-hash exists in the coord's blob store. |
-| `coord.unavailable` | 503 | N/A | `coordinator.rs::handle_health` | `W2` | Coord HTTP surface is up but a downstream dependency (SQLite store) is unhealthy; emitted on `/api/health`. |
-| `coord.capability_version_mismatch` | 409 | N/A | `coordinator.rs::handle_claim` | `post1-T-1.3` | The worker's session covers every required capability NAME for at least one pending step, but at a version that does not match the coord's current `Capability::version()`. Operator action: roll out a worker build that advertises the matching version. Distinct from `coord.unknown_capability` (which fires at REGISTER for an unknown name) and from the silent W3-A skip (worker missing the capability entirely). |
 
 ## `evidence.*` — evidence bundle reader
 
@@ -107,7 +74,7 @@ for full context.
 ## MCP-layer top-level kinds
 
 Emitted by the `boruna-mcp` server's tool layer. These predate the
-namespaced `coord.*` / `evidence.*` schemes and are kept for
+namespaced `evidence.*` / `workflow.*` schemes and are kept for
 back-compat per the LTS contract.
 
 | `error_kind` | Tool | Phase | Sprint | Caller-facing meaning |
@@ -129,10 +96,8 @@ back-compat per the LTS contract.
 
 - All `error_kind` strings are dotted, lower-snake-case, and
   hierarchical (`<namespace>.<short_kind>`). The namespace identifies
-  the surface (coord HTTP API, evidence reader, workflow loader,
-  policy validator, MCP top-level).
-- HTTP status codes are documented for `coord.*` only — the other
-  surfaces are CLI/MCP errors, not HTTP.
+  the surface (evidence reader, workflow loader, policy validator, MCP
+  top-level).
 - "Phase" follows the project convention of distinguishing `serialization`
   (parse-time / shape rejection) from `output_validation`
   (post-execution shape rejection) from `execution` (runtime failures).

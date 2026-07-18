@@ -10,7 +10,7 @@ Boruna is at version **1.3.0** — third minor release on the 1.x LTS line. This
 
 ## Current status
 
-Boruna 1.3 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, distributed-execution stack, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), HA coordinator, mTLS, bundle encryption, capability-tagged worker placement, blob GC, migration tooling, and performance baselines are all shipped, tested, and frozen for the 1.x line. All 13 stdlib packages are 1.0-stable as of 1.3.0.
+Boruna 1.3 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), bundle encryption, blob GC, migration tooling, and performance baselines are all shipped, tested, and frozen for the 1.x line. All 13 stdlib packages are 1.0-stable as of 1.3.0.
 
 Boruna is appropriate for:
 - Production workloads on the LTS-protected surface (`lts.md` §B)
@@ -33,11 +33,9 @@ These components are complete, tested, and behave as documented. Every 1.0 progr
 - **Workflow DAG 1.0** — `workflow.json` format with `schema_version: 1`, topological execution, step isolation; spec at [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md)
 - **Evidence bundle 1.0** — hash-chained log + `bundle.json` manifest with `format_version: "1.0"`, optional AES-256-GCM envelope encryption; spec at [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md)
 - **Capability system** — the capability set is frozen at 1.0; any additions in 1.x are additive
-- **CLI commands** — `run`, `compile`, `workflow validate/run/approve`, `evidence inspect/verify/gc-blobs/rotate-kek`, `coordinator serve/wait`, `worker run`, `migrate`, `new`, `lang check/repair`, `template list/apply`
+- **CLI commands** — `run`, `compile`, `workflow validate/run/approve/reject/trigger/resume`, `evidence inspect/verify/gc-blobs/rotate-kek`, `migrate`, `new`, `lang check/repair`, `template list/apply`
 - **`BundleStorage` trait and adapters** — `BundleStorage`, `StorageRef`, `StorageError` (`#[non_exhaustive]`), `LocalFs`, `from_uri` dispatcher, and the S3/GCS/Azure Blob adapter modules (`storage_s3`, `storage_gcs`, `storage_azure`) are now stable public API
-- **Coord/worker HTTP protocol** — `protocol_version: 1` responses, locked `coord.*` and `evidence.*` `error_kind` taxonomy
 - **MCP tool response shapes** — `protocol_version: 1` carried on every response (success and failure)
-- **HA + mTLS surfaces** — multi-coord deployments, worker URL failover, X.509 client certs
 - **Standard libraries** — all 13 `std-*` packages are 1.0-stable (11 as of v1.2.0, plus `std-llm` and `std-json` as of v1.3.0); see [`docs/stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md)
 
 ### Experimental (may change in minor versions)
@@ -63,7 +61,6 @@ These components are available but under active development:
 
 These components shipped in 1.1.0 but may change based on usage feedback in 1.x minors:
 
-- **`boruna evidence serve`** — local web UI for evidence bundle inspection. Requires `--features boruna-cli/serve`. May change in 1.x based on operator feedback.
 - **`lex_full()` / trivia-in-AST API** — `lex_full(source)` returning tokens with `leading_trivia`. Foundation for `boruna fmt v2`. Not yet used by any public tool; shape may change before the formatter ships.
 
 ### Planned (post-1.1 — see [roadmap.md](./roadmap.md))

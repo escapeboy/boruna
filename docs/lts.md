@@ -88,19 +88,12 @@ allowed; removals and renames are not.
 
 ### B.6 Error taxonomy
 
-- **`error_kind` strings** — the strings emitted in CLI errors, MCP error
-  responses, and HTTP API errors are LTS-protected: an `error_kind` that
+- **`error_kind` strings** — the strings emitted in CLI errors and MCP error
+  responses are LTS-protected: an `error_kind` that
   exists in 1.0 will exist with the same meaning in every 1.y. New
   `error_kind` values may be introduced in minor releases.
 
-### B.7 HTTP API
-
-- **HTTP API endpoints + wire format** — the coordinator HTTP API
-  (paths, methods, request/response JSON shapes, status codes, bearer-auth
-  contract) is LTS-protected. Field additions allowed; removals and renames
-  require 2.0.
-
-### B.8 Standard library packages (`libs/`)
+### B.7 Standard library packages (`libs/`)
 
 The following `std-*` packages are 1.0-stable and LTS-protected from **v1.2.0**:
 
@@ -127,8 +120,8 @@ LTS guarantees for these packages: function signatures, parameter types, and ret
 The following are **not** part of the LTS contract and may evolve in minor
 releases:
 
-- **Internal Rust APIs.** Boruna ships as a CLI binary plus a coordinator
-  HTTP service. We do not commit to a stable Rust library API. Crates
+- **Internal Rust APIs.** Boruna ships as a CLI binary. We do not commit to
+  a stable Rust library API. Crates
   (`boruna-vm`, `boruna-compiler`, `boruna-orchestrator`, etc.) may change
   signatures and module structures freely.
 - **Performance characteristics.** Throughput, latency, and resource
@@ -232,7 +225,7 @@ LTS-protected. It does *not* mark every component as stable. Refer to
 - **Experimental** surfaces are clearly marked and may break in 1.x minors.
   Operators choosing to depend on them do so explicitly.
 - **Alpha** surfaces are under active development and may break frequently.
-- **Out-of-scope-for-1.0 additions** — items such as mTLS, evidence-bundle
+- **Out-of-scope-for-1.0 additions** — items such as evidence-bundle
   encryption, additional storage adapters, and the LLM provider registry
   are pre-LTS additions. They enter 1.x as Experimental, graduate through
   Experimental → Stable across the 1.x minor releases as their interfaces

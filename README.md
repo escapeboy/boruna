@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
-> **v2.0.0 is the current release.** The 1.x line remains under long-term support — active through 2027-11-15, security through 2028-05-15. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
+> **v3.0.0 is the current release.** The 1.x line remains under long-term support — active through 2027-11-15, security through 2028-05-15. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 
@@ -154,7 +154,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v2.0.0** — the first major release. 2.0 is a security-hardening and language-completeness milestone that remediates a whole-codebase research audit: SSRF/XSS fixes, coordinator claim-ownership and approval-gate enforcement, tamper-evident evidence bundles (external anchor + ed25519 signing), and real language semantics (enum construction with per-variant match tags, higher-order calls, `for` loops, arity checking, and warn-only type-consistency diagnostics). It ships **deliberate breaking changes** — integer overflow is now a runtime error, and several coordinator/framework defaults fail closed — so review the 2.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md), each of which has a documented override or migration. The core execution engine, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
+Boruna is at **v3.0.0** — the release that removes the entire HTTP / serving / distributed-execution layer. Gone are the distributed coordinator, distributed workers, active-active HA and coordinator mTLS, the three web UIs (workflow dashboard, evidence web viewer, approval console), and the `serve` cargo feature and its server dependencies. What remains is a **local deterministic engine and CLI**: compiler → capability-gated VM → orchestrator (runner, persistence, audit) → tamper-evident evidence bundles. Approval and external-trigger gates are still handled locally via `boruna workflow approve/reject/trigger` plus `resume`. This is a **breaking** release — the `coordinator`, `dashboard`, `worker`, and `evidence serve` CLI commands, the `--coordinator` / `--coord-token` flags, and the `serve` feature are removed — so review the 3.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md). The core execution engine, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 

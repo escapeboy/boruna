@@ -96,7 +96,7 @@ When writing or modifying Boruna code:
 
 1. **Never break determinism** — use `BTreeMap`, never `HashMap` for ordered iteration. No randomness or time reads in pure code.
 2. **Declare all capabilities** — functions with side effects require `!{capability}` annotations. The VM enforces this; tests will fail if missing.
-3. **Run `cargo test --workspace --features boruna-cli/serve`** after every change — 1175+ tests must pass (1.3.0 baseline).
+3. **Run `cargo test --workspace`** after every change — 1175+ tests must pass (1.3.0 baseline).
 4. **Run `cargo clippy --workspace -- -D warnings`** — zero warnings are allowed. CI enforces this.
 5. **Run `cargo fmt --all`** — formatting is enforced by CI.
 6. **No semicolons in `.ax` files** — `.ax` has no statement terminators.

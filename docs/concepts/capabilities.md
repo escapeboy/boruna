@@ -4,7 +4,7 @@ A capability is an explicit permission for a workflow step to perform a side eff
 
 ## The eleven capabilities
 
-The 1.0 capability set is frozen in `crates/llmbc/src/capability.rs::Capability::ALL`. Workers and the coordinator carry a `capability_set_hash` derived from the (name, version) tuples of this set; mismatched workers are rejected at registration with `error_kind: "coord.binary_mismatch"` (see [`docs/guides/worker-capability-tagging.md`](../guides/worker-capability-tagging.md) for subset advertising).
+The 1.0 capability set is frozen in `crates/llmbc/src/capability.rs::Capability::ALL`. A `capability_set_hash`, derived from the (name, version) tuples of this set, gives the capability surface a stable identity — reported by the `boruna_capability_list` MCP tool for compatibility checks.
 
 | Capability | Effect | Example use |
 |------------|--------|-------------|

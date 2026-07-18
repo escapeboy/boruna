@@ -358,7 +358,6 @@ boruna evidence verify <bundle-dir/> [--bundle-encryption-key <hex>]
 boruna evidence inspect <bundle-dir/> [--json] [--decrypt] [--bundle-encryption-key <hex>]
 boruna evidence diff <bundle-a> <bundle-b> [--json]
 boruna evidence gc-blobs [--data-dir <dir>] [--dry-run] [--json]
-boruna evidence serve <bundle-dir/> [--port <port>]
 boruna evidence rotate-kek <target> --old-kek <hex> --new-kek <hex> [options]
 ```
 
@@ -416,20 +415,6 @@ boruna evidence gc-blobs [--data-dir <dir>] [--dry-run] [--json]
 ```
 
 An orphan is a blob file no longer referenced by any run checkpoint. Reports `{deleted, skipped, bytes_freed}`. Use `--dry-run` to report without deleting.
-
-### evidence serve
-
-Start a local web UI to browse an evidence bundle.
-
-```bash
-boruna evidence serve <bundle-dir/> [--port <port>]
-```
-
-Serves a read-only inspector at `http://localhost:<port>` (default: 4444). Requires the `serve` feature:
-
-```bash
-cargo run --features boruna-cli/serve --bin boruna -- evidence serve ./bundles/my-run/
-```
 
 ### evidence rotate-kek
 

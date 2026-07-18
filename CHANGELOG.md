@@ -6,11 +6,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-07-18
+
+Removes the entire HTTP / serving / distributed-execution layer. Boruna is now a
+**local deterministic engine + CLI** — no HTTP server. The compiler, VM,
+orchestrator engine, evidence bundles, deterministic replay, and every local CLI
+command are unchanged. Breaking, hence the major bump: public CLI commands and a
+build feature were removed.
+
 ### Removed
 
-- Removed the HTTP serving layer — coordinator, distributed workers, workflow
-  dashboard, evidence web viewer, and approval console. Boruna is now
-  local-engine + CLI only.
+- **The HTTP serving / distributed-execution layer** — the coordinator
+  (distributed HTTP server), distributed workers, active-active HA, coordinator
+  mTLS, the workflow dashboard, the evidence web viewer, and the approval console.
+- **The `serve` cargo feature** and its server dependencies (axum, hyper, tower,
+  reqwest, rustls, …).
+- **CLI commands** `coordinator`, `dashboard`, `worker`, and `evidence serve`; and
+  the `--coordinator` / `--coord-token` flags on
+  `workflow run/approve/reject/trigger`. Approval and trigger gates are still
+  handled **locally** via `boruna workflow approve/reject/trigger` + `resume`.
+- Net: ~11,000 lines removed.
+
+### Kept
+
+- The local engine (`boruna-orchestrator`, `boruna-vm`, `boruna-compiler`),
+  evidence bundles, deterministic replay, capability-policy enforcement, and every
+  local CLI command (`run`, `workflow …`, `evidence verify/inspect`, `lang`,
+  `template`, `migrate`, `framework`, `policy`, `metrics`), plus the MCP server.
+- The `http` feature — the VM's outbound `net.fetch` capability for workflow steps
+  (a workflow capability, not a server).
 
 ## [2.0.0] — 2026-07-17
 

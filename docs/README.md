@@ -20,9 +20,6 @@ Task-oriented walkthroughs:
 
 - [Your First Workflow](./guides/first-workflow.md) — build a two-step workflow from scratch
 - [LLM Integration](./guides/llm-integration.md) — Bring Your Own Handler model: how to wire OpenAI / Anthropic / vLLM / custom routers via the `CapabilityHandler` trait
-- [Coordinator HA](./guides/coord-ha.md) — multi-coord deployment topologies, health endpoint, worker URL failover
-- [Coordinator mTLS](./guides/coord-mtls.md) — X.509 client certs, cert generation recipe, identity reconciliation
-- [Worker Capability Tagging](./guides/worker-capability-tagging.md) — heterogeneous fleet placement
 - [Migration](./guides/migration.md) — `boruna migrate` for upgrading legacy bundles and workflow files
 
 ## Standard Libraries
