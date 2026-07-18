@@ -238,6 +238,19 @@ mod tests {
         assert_eq!(result, 0);
     }
 
+    #[test]
+    fn test_std_guard_compiles() {
+        let src = load_library_source(&libs_dir(), "std-guard").unwrap();
+        assert!(verify_compiles(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_guard_runs() {
+        let src = load_library_source(&libs_dir(), "std-guard").unwrap();
+        let result = run_library(&src).unwrap();
+        assert_eq!(result, 0); // all true-cases hold, all false-cases fail
+    }
+
     // ── Determinism Tests ──
 
     #[test]
@@ -297,6 +310,12 @@ mod tests {
     #[test]
     fn test_std_json_determinism() {
         let src = load_library_source(&libs_dir(), "std-json").unwrap();
+        assert!(verify_determinism(&src).is_ok());
+    }
+
+    #[test]
+    fn test_std_guard_determinism() {
+        let src = load_library_source(&libs_dir(), "std-guard").unwrap();
         assert!(verify_determinism(&src).is_ok());
     }
 }

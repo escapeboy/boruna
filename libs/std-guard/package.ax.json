@@ -1,0 +1,8 @@
+{
+  "name": "std.guard",
+  "version": "1.0.0",
+  "description": "Deterministic output-content validators for guarding effects on model/LLM output",
+  "dependencies": {},
+  "required_capabilities": [],
+  "exposed_modules": ["core"]
+}

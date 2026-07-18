@@ -429,6 +429,7 @@ fn test_stdlib_all_compile_and_run() {
         "std-storage",
         "std-notifications",
         "std-testing",
+        "std-guard",
     ];
     for name in &lib_names {
         let src = stdlib::load_library_source(&libs_dir, name)
@@ -452,6 +453,7 @@ fn test_stdlib_determinism() {
         "std-db",
         "std-notifications",
         "std-testing",
+        "std-guard",
     ];
     for name in &lib_names {
         let src = stdlib::load_library_source(&libs_dir, name)
