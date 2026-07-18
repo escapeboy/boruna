@@ -88,6 +88,12 @@ struct RunLimitsParams {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
+struct SymbolsParams {
+    /// The .ax source code to extract top-level symbols from
+    source: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
 struct CheckParams {
     /// The .ax source code to check
     source: String,
@@ -193,6 +199,21 @@ impl BorunaMcpServer {
         validate_source(&params.source)?;
         let source = params.source;
         let result = tokio::task::spawn_blocking(move || tools::compile::parse_ast(&source))
+            .await
+            .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    #[tool(
+        description = "Extract the top-level SYMBOLS (functions, records, enums) from .ax source with their EXACT declared signatures. For each function: parameter names+types, return type, declared capability set (the !{...} annotation), and requires/ensures clause arity. For records: field names+types. For enums: variant names+payload types. Use this to ground on the real .ax API surface (exact typed signatures) instead of guessing — Boruna is a new language with little training data. Returns success=true with a `symbols` array; a parse failure returns success=false, error_kind='parse_error' as a successful tool response."
+    )]
+    async fn boruna_symbols(
+        &self,
+        Parameters(params): Parameters<SymbolsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_source(&params.source)?;
+        let source = params.source;
+        let result = tokio::task::spawn_blocking(move || tools::symbols::extract_symbols(&source))
             .await
             .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
         Ok(CallToolResult::success(vec![Content::text(result)]))
