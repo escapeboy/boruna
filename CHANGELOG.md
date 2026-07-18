@@ -6,6 +6,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-07-18
+
+Additive feature release — no breaking changes. Closes the two credibility gaps in
+Boruna's tamper-evidence story identified during the adjacent-market research:
+external witnessing (so the record isn't just "trust the recorder") and privacy
+(so a sealed bundle can carry redactable data). Together they compose — a redaction
+preserves `audit_log_hash`, so an out-of-band anchor distinguishes an authorized
+redaction from a tamper.
+
+### Added
+
+- **Transparency-log anchoring** — `boruna evidence anchor <dir>` submits the
+  bundle's attestation to a Sigstore **Rekor** log and stores the inclusion proof +
+  signed entry timestamp back into the bundle, giving an external witness and a
+  trusted timestamp. `--rekor-url` points at a **private Rekor** for air-gapped use;
+  `--offline` emits the entry payload for out-of-band submission; `--verify` checks a
+  stored proof (RFC 6962 Merkle inclusion math) with no network. Network is opt-in,
+  behind the `rekor` cargo feature (`ureq`); the default build stays network-free.
+  Keyless (Fulcio) signing is design-noted (`orchestrator/docs/keyless-signing.md`).
+- **Verifiable redaction** — `boruna evidence redact <dir> --event <i> [--field <f>]`
+  removes PII from a sealed bundle without breaking verification. The audit chain now
+  commits to a per-entry content hash (`entry_hash = SHA-256(seq ‖ prev ‖
+  content_sha256)`, bundle format `1.1`, back-compatible with `1.0`), so redacted
+  content is replaced by its commitment and the chain still verifies. `audit_log_hash`
+  is invariant under redaction but changes under tampering, so a redaction is an
+  authorized, recorded transformation while a content edit is detected. `evidence
+  verify` reports which entries are redacted. Encrypted bundles must be decrypted first.
+
 ## [3.1.0] — 2026-07-18
 
 Additive feature release — no breaking changes. Deepens Boruna's two moats:
