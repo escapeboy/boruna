@@ -28,3 +28,6 @@ llm_cache/
 # Local Claude Code agent state (worktrees, transcripts)
 /.claude/
 /.claire/
+
+# local evidence/run artifacts
+.boruna/
