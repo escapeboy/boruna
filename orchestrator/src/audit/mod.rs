@@ -1,3 +1,4 @@
+pub mod attestation;
 pub mod encryption;
 pub mod evidence;
 pub mod fingerprint;
