@@ -3,6 +3,7 @@ pub mod encryption;
 pub mod evidence;
 pub mod fingerprint;
 pub mod log;
+pub mod otel;
 pub mod report;
 pub mod rotate;
 pub mod storage;

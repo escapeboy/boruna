@@ -998,6 +998,24 @@ enum EvidenceCommand {
         #[arg(long, value_name = "FORMAT", default_value = "md")]
         format: String,
     },
+    /// Export the bundle's execution as OpenTelemetry spans in OTLP/JSON —
+    /// the file format any OTel collector ingests. No SDK dependency, no
+    /// network: emit the document and POST it to a collector (or pipe it
+    /// through the `otlpjson` file receiver) to surface the run in Jaeger,
+    /// Tempo, Honeycomb, Datadog, etc.
+    ///
+    /// The root span carries tamper-evidence attributes (`boruna.bundle_hash`,
+    /// `boruna.audit_log_hash`, `boruna.signature.keyid`) so a span in a
+    /// tracing backend links back to a record verifiable with
+    /// `boruna evidence verify`. `llm.*` capability calls are emitted as
+    /// `gen_ai.*` spans (OTel GenAI semantic conventions).
+    Otel {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Write the OTLP/JSON document to this file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4175,6 +4193,17 @@ fn run_evidence(
             let format = ReportFormat::parse(&format)?;
             let report = generate_report(&dir, framework, format)?;
             println!("{report}");
+        }
+        EvidenceCommand::Otel { dir, out } => {
+            let doc = boruna_orchestrator::audit::otel::bundle_to_otlp_json(&dir)?;
+            match out {
+                Some(path) => {
+                    fs::write(&path, &doc)
+                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    println!("OTLP/JSON spans written to {}", path.display());
+                }
+                None => println!("{doc}"),
+            }
         }
     }
     Ok(())
