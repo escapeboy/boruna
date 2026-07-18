@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Environment fingerprint captured at runtime (no secrets).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnvFingerprint {
     pub boruna_version: String,
     pub rust_version: String,

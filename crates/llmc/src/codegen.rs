@@ -586,6 +586,19 @@ impl Emitter {
                             fe.code.push(Op::DebugMsg);
                             return Ok(());
                         }
+                        // guard-and-seal: run a deterministic boolean
+                        // check on a value, fail closed on false, and seal
+                        // the verdict into the evidence trail as an
+                        // `output` ContractCheck. Stack the VM expects
+                        // (top → bottom): [label, passed, value] — so emit
+                        // value, then passed, then label.
+                        "__builtin_guard" if args.len() == 3 => {
+                            self.emit_expr(&args[0], fe)?; // value
+                            self.emit_expr(&args[1], fe)?; // passed
+                            self.emit_expr(&args[2], fe)?; // label
+                            fe.code.push(Op::GuardSeal);
+                            return Ok(());
+                        }
                         // 0.3-S14: builtin `step_input(name)` reads a
                         // workflow step's resolved upstream output.
                         // Emits `Op::CapCall(StepInput, 1)` which

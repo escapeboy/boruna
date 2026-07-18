@@ -1,7 +1,10 @@
+pub mod attestation;
 pub mod encryption;
 pub mod evidence;
 pub mod fingerprint;
 pub mod log;
+pub mod otel;
+pub mod report;
 pub mod rotate;
 pub mod storage;
 #[cfg(feature = "azure")]
@@ -19,6 +22,7 @@ pub use encryption::{
 pub use evidence::*;
 pub use fingerprint::*;
 pub use log::*;
+pub use report::{generate_report, ComplianceFramework, ReportFormat};
 pub use verify::*;
 
 /// Evidence bundle format version emitted by the current build.

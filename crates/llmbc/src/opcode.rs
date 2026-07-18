@@ -95,6 +95,20 @@ pub enum Op {
         index: u32,
     },
 
+    /// Guard-and-seal an output value against a deterministic check.
+    ///
+    /// Stack layout (top → bottom): `[label, passed, value]`. Pops the
+    /// `label` (String) and the `passed` (Bool) verdict, leaving `value`
+    /// on the stack unchanged so the guard is transparent on the happy
+    /// path. The VM seals the verdict into the evidence trail as a
+    /// `ContractCheck` event with `kind: "output"` (for BOTH outcomes),
+    /// then, if `passed` is falsy, traps fail-closed with
+    /// `VmError::ContractViolation` carrying the label. This proves "the
+    /// guardrail ran on this value and returned this verdict" for a
+    /// sealed run. Emitted only by codegen for the `__builtin_guard`
+    /// builtin.
+    GuardSeal,
+
     /// Capability call: cap_id, arg_count. Args on stack.
     CapCall(u32, u8),
 
@@ -294,6 +308,7 @@ impl Op {
             Op::ReceiveMsg => 0x11,
             Op::Assert { .. } => 0x12,
             Op::CapCall(_, _) => 0x13,
+            Op::GuardSeal => 0x15,
             Op::Add => 0x20,
             Op::Sub => 0x21,
             Op::Mul => 0x22,

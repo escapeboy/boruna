@@ -952,6 +952,70 @@ enum EvidenceCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Emit (or verify) an in-toto Statement + DSSE envelope for the
+    /// bundle's runtime provenance, for interop with the supply-chain
+    /// ecosystem (`cosign verify-blob`, `in-toto-verify`). Additive —
+    /// does NOT touch the native bundle format. Writes
+    /// `attestation.intoto.dsse.json` into the bundle directory.
+    Attest {
+        /// Evidence bundle directory (must contain `manifest.json`).
+        dir: PathBuf,
+        /// Verify the existing `attestation.intoto.dsse.json` instead of
+        /// producing one. Checks the DSSE ed25519 signature over the PAE.
+        #[arg(long)]
+        verify: bool,
+        /// ed25519 signing seed (32 bytes as 64 hex chars) used to sign
+        /// the DSSE PAE. This is the SAME key machinery as manifest
+        /// signing — supply the same seed you signed the bundle with.
+        /// Falls back to `BORUNA_BUNDLE_SIGNING_KEY`. Required (only)
+        /// when producing an attestation.
+        #[arg(long, value_name = "HEX")]
+        signing_key: Option<String>,
+        /// With `--verify`: pin the trusted ed25519 public key (64 hex
+        /// chars). A valid signature MUST be made by this key, else
+        /// verification fails. Without a pin, a self-consistent
+        /// signature is accepted.
+        #[arg(long, value_name = "HEX")]
+        verify_key: Option<String>,
+        /// Output path for the DSSE envelope. Defaults to
+        /// `<dir>/attestation.intoto.dsse.json`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Generate a human-readable COMPLIANCE evidence-mapping report that
+    /// maps a bundle's actual contents to the specific regulatory
+    /// obligation each one helps satisfy. Verifies the bundle first and
+    /// stamps the verdict at the top; a tampered/unverifiable bundle
+    /// produces a report that says so loudly. This is a technical mapping,
+    /// NOT a certificate of compliance.
+    Report {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Regulatory framework to map against.
+        #[arg(long, value_name = "FRAMEWORK")]
+        framework: String,
+        /// Output rendering: `md` (default) or `html`.
+        #[arg(long, value_name = "FORMAT", default_value = "md")]
+        format: String,
+    },
+    /// Export the bundle's execution as OpenTelemetry spans in OTLP/JSON —
+    /// the file format any OTel collector ingests. No SDK dependency, no
+    /// network: emit the document and POST it to a collector (or pipe it
+    /// through the `otlpjson` file receiver) to surface the run in Jaeger,
+    /// Tempo, Honeycomb, Datadog, etc.
+    ///
+    /// The root span carries tamper-evidence attributes (`boruna.bundle_hash`,
+    /// `boruna.audit_log_hash`, `boruna.signature.keyid`) so a span in a
+    /// tracing backend links back to a record verifiable with
+    /// `boruna evidence verify`. `llm.*` capability calls are emitted as
+    /// `gen_ai.*` spans (OTel GenAI semantic conventions).
+    Otel {
+        /// Evidence bundle directory.
+        dir: PathBuf,
+        /// Write the OTLP/JSON document to this file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4108,6 +4172,109 @@ fn run_evidence(
         } => {
             evidence_diff::evidence_diff(&bundle_a, &bundle_b, json)?;
         }
+        EvidenceCommand::Attest {
+            dir,
+            verify,
+            signing_key,
+            verify_key,
+            output,
+        } => {
+            run_evidence_attest(dir, verify, signing_key, verify_key, output)?;
+        }
+        EvidenceCommand::Report {
+            dir,
+            framework,
+            format,
+        } => {
+            use boruna_orchestrator::audit::report::{
+                generate_report, ComplianceFramework, ReportFormat,
+            };
+            let framework = ComplianceFramework::parse(&framework)?;
+            let format = ReportFormat::parse(&format)?;
+            let report = generate_report(&dir, framework, format)?;
+            println!("{report}");
+        }
+        EvidenceCommand::Otel { dir, out } => {
+            let doc = boruna_orchestrator::audit::otel::bundle_to_otlp_json(&dir)?;
+            match out {
+                Some(path) => {
+                    fs::write(&path, &doc)
+                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    println!("OTLP/JSON spans written to {}", path.display());
+                }
+                None => println!("{doc}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `boruna evidence attest <dir>` — emit or verify an in-toto Statement
+/// wrapped in a DSSE envelope for a bundle's runtime provenance.
+/// Additive interop: reads the (plaintext) manifest, reuses the existing
+/// ed25519 signing key, and writes `attestation.intoto.dsse.json`. With
+/// `--verify`, it checks the DSSE signature over the PAE instead.
+fn run_evidence_attest(
+    dir: PathBuf,
+    verify: bool,
+    signing_key: Option<String>,
+    verify_key: Option<String>,
+    output: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use boruna_orchestrator::audit::attestation::{
+        attest, parse_seed_hex, verify_envelope, DsseEnvelope,
+    };
+    use boruna_orchestrator::audit::evidence::BundleManifest;
+
+    let out_path = output.unwrap_or_else(|| dir.join("attestation.intoto.dsse.json"));
+
+    if verify {
+        let raw = fs::read_to_string(&out_path)
+            .map_err(|e| format!("cannot read {}: {e}", out_path.display()))?;
+        let envelope: DsseEnvelope =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid DSSE envelope: {e}"))?;
+        match verify_envelope(&envelope, verify_key.as_deref()) {
+            Ok(stmt) => {
+                println!("attestation is VALID");
+                println!("  predicateType: {}", stmt.predicate_type);
+                println!("  subjects:      {}", stmt.subject.len());
+                println!(
+                    "  invocationId:  {}",
+                    stmt.predicate.run_details.metadata.invocation_id
+                );
+            }
+            Err(e) => {
+                eprintln!("attestation INVALID: {e}");
+                process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // Produce mode: read the manifest and sign a fresh envelope.
+    let manifest_json = fs::read_to_string(dir.join("manifest.json"))
+        .map_err(|e| format!("cannot read manifest.json: {e}"))?;
+    let manifest: BundleManifest =
+        serde_json::from_str(&manifest_json).map_err(|e| format!("invalid manifest.json: {e}"))?;
+
+    let seed_hex = signing_key
+        .or_else(|| std::env::var("BORUNA_BUNDLE_SIGNING_KEY").ok())
+        .ok_or_else(|| {
+            "no signing key: pass --signing-key <64-hex> or set BORUNA_BUNDLE_SIGNING_KEY"
+                .to_string()
+        })?;
+    let seed = parse_seed_hex(&seed_hex).map_err(|e| e.to_string())?;
+
+    let envelope = attest(&manifest, env!("CARGO_PKG_VERSION"), &seed)
+        .map_err(|e| format!("attestation failed: {e}"))?;
+    let json = serde_json::to_string_pretty(&envelope)
+        .map_err(|e| format!("cannot serialize envelope: {e}"))?;
+    fs::write(&out_path, json).map_err(|e| format!("cannot write {}: {e}", out_path.display()))?;
+
+    println!("attestation written to {}", out_path.display());
+    println!("  payloadType: {}", envelope.payload_type);
+    if let Some(sig) = envelope.signatures.first() {
+        println!("  keyid:       {}", sig.keyid);
     }
     Ok(())
 }

@@ -12,6 +12,8 @@ Core ideas that make Boruna work:
 - [Determinism](./concepts/determinism.md) — why same inputs → same outputs, and how it's enforced
 - [Capabilities](./concepts/capabilities.md) — declaring and gating side effects
 - [Evidence Bundles](./concepts/evidence-bundles.md) — tamper-evident audit logs and replay
+- [Evidence Bundle Threat Model](./concepts/threat-model.md) — what a bundle proves and does not prove (tamper-evidence vs. tamper-proofing vs. non-repudiation)
+- [Runtime Execution Provenance](./concepts/runtime-execution-provenance.md) — the provenance category Boruna occupies vs. SLSA, in-toto, Sigstore, C2PA, TEE attestation
 - [Bundle Storage](./concepts/bundle-storage.md) — local + remote (S3/GCS/Azure) destinations for evidence bundles
 
 ## Guides

@@ -628,6 +628,29 @@ impl Vm {
                         });
                     }
                 }
+                Op::GuardSeal => {
+                    // Stack (top → bottom): [label, passed, value]. Pop the
+                    // label and the boolean verdict; leave `value` on the
+                    // stack so the guard is transparent on pass.
+                    let label_val = self.pop()?;
+                    let label = match label_val {
+                        Value::String(s) => s,
+                        other => format!("{other}"),
+                    };
+                    let passed = self.pop()?.is_truthy();
+                    // Seal the verdict for BOTH outcomes: a passing run
+                    // proves the guardrail ran and approved this value; a
+                    // failing run pins the exact guard that rejected it,
+                    // right before the fail-closed trap below.
+                    self.event_log.log_output_check(&label, passed);
+                    if !passed {
+                        return Err(VmError::ContractViolation {
+                            message: format!("output guard `{label}` failed"),
+                            counterexample: Vec::new(),
+                        });
+                    }
+                    // `value` remains on the stack as the guard's result.
+                }
                 Op::CapCall(cap_id, arg_count) => {
                     let cap =
                         Capability::from_id(cap_id).ok_or(VmError::UnknownCapability(cap_id))?;

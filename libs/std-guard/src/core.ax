@@ -1,0 +1,200 @@
+// std.guard — Deterministic output-content validators.
+//
+// Boruna gates ACTIONS via capabilities, but by default trusts the CONTENT
+// a model/LLM produces. std.guard provides pure, deterministic checks a
+// workflow can run on a string BEFORE letting it drive an effect — mirroring
+// the deterministic (non-ML) validators from Guardrails AI.
+//
+// Every function here is pure and deterministic: same input -> same output,
+// no capabilities, no side effects. All string matching is exact/structural;
+// there is no regex and no ML classification.
+
+// A richer result carrier for callers that want a reason string alongside the
+// boolean verdict (mirrors std.validation's ValidationResult shape).
+type GuardResult { passed: Bool, reason: String }
+
+fn guard_pass() -> GuardResult {
+    GuardResult { passed: true, reason: "" }
+}
+
+fn guard_fail(reason: String) -> GuardResult {
+    GuardResult { passed: false, reason: reason }
+}
+
+// Wrap a raw boolean verdict into a GuardResult with an explanatory reason
+// used only when the check fails.
+fn to_guard(passed: Bool, reason: String) -> GuardResult {
+    if passed {
+        guard_pass()
+    } else {
+        guard_fail(reason)
+    }
+}
+
+// ── Length / emptiness ──
+
+// Non-empty after trimming surrounding whitespace. Whitespace-only strings
+// are treated as empty, since a blank model answer should not drive an effect.
+fn is_non_empty(s: String) -> Bool {
+    __builtin_string_len(__builtin_string_trim(s)) > 0
+}
+
+fn min_length(s: String, n: Int) -> Bool {
+    __builtin_string_len(s) >= n
+}
+
+fn max_length(s: String, n: Int) -> Bool {
+    __builtin_string_len(s) <= n
+}
+
+fn length_between(s: String, lo: Int, hi: Int) -> Bool {
+    let len: Int = __builtin_string_len(s)
+    len >= lo && len <= hi
+}
+
+// ── Numeric range (parse-then-compare; false on parse failure) ──
+
+// Parse s as an integer and confirm lo <= value <= hi. Any non-integer input
+// (empty, floats, words) fails the guard rather than throwing.
+fn is_in_range(s: String, lo: Int, hi: Int) -> Bool {
+    match __builtin_int_parse(s) {
+        Some(n) => n >= lo && n <= hi,
+        None => false,
+    }
+}
+
+// Float variant of is_in_range. Non-numeric input fails the guard.
+fn is_in_range_float(s: String, lo: Float, hi: Float) -> Bool {
+    match __builtin_float_parse(s) {
+        Some(f) => f >= lo && f <= hi,
+        None => false,
+    }
+}
+
+// ── Structural string matchers (exact, case-sensitive) ──
+
+fn matches_prefix(s: String, prefix: String) -> Bool {
+    __builtin_string_starts_with(s, prefix)
+}
+
+fn matches_suffix(s: String, suffix: String) -> Bool {
+    __builtin_string_ends_with(s, suffix)
+}
+
+fn matches_contains(s: String, needle: String) -> Bool {
+    __builtin_string_contains(s, needle)
+}
+
+// ── Allow-list / ban-list ──
+
+// True when target appears exactly in items. Linear scan (no loops-free
+// requirement: uses a bounded while like std.json).
+fn list_contains_str(items: List<String>, target: String) -> Bool {
+    let n: Int = list_len(items)
+    let i: Int = 0
+    let found: Bool = false
+    while i < n {
+        let item: String = list_get(items, i)
+        found = found || (item == target)
+        i = i + 1
+    }
+    found
+}
+
+// Allow-list: s must be one of the permitted options (exact match).
+fn is_one_of(s: String, options: List<String>) -> Bool {
+    list_contains_str(options, s)
+}
+
+// Ban-list: s must NOT be one of the banned values (exact match).
+fn not_in_banlist(s: String, banned: List<String>) -> Bool {
+    if list_contains_str(banned, s) {
+        false
+    } else {
+        true
+    }
+}
+
+// ── Content heuristics ──
+
+// Case-insensitive substring test: does haystack contain needle ignoring case?
+fn contains_ci(haystack: String, needle: String) -> Bool {
+    let h: String = __builtin_string_to_lower(haystack)
+    let n: String = __builtin_string_to_lower(needle)
+    __builtin_string_contains(h, n)
+}
+
+// Heuristic: does the output read like a model refusal / boilerplate apology
+// rather than a real answer? Case-insensitive substring match against a fixed
+// phrase set. This is a heuristic, not a classifier: it can miss novel
+// phrasings (false negatives) and can fire on legitimate text that quotes a
+// refusal (false positives). Use it as a cheap pre-filter, not a proof.
+fn looks_like_refusal(s: String) -> Bool {
+    let lo: String = __builtin_string_to_lower(s)
+    __builtin_string_contains(lo, "i cannot")
+        || __builtin_string_contains(lo, "i can't")
+        || __builtin_string_contains(lo, "i'm sorry")
+        || __builtin_string_contains(lo, "i am sorry")
+        || __builtin_string_contains(lo, "as an ai")
+        || __builtin_string_contains(lo, "i am unable")
+        || __builtin_string_contains(lo, "i'm unable")
+        || __builtin_string_contains(lo, "cannot assist")
+        || __builtin_string_contains(lo, "cannot help with")
+        || __builtin_string_contains(lo, "unable to help")
+}
+
+// Cheap STRUCTURAL check that s could be JSON: after trimming, it starts with
+// `{` and ends with `}`, or starts with `[` and ends with `]`. This does NOT
+// parse or validate JSON — it will accept malformed input like "{ bad" -> no,
+// (that ends with 'd'), but WILL accept "{not valid json}" and reject a valid
+// bare JSON number/string/`true`. Treat a true result as "worth trying to
+// parse", never as "this is valid JSON". For real validation, parse it.
+fn is_probably_json(s: String) -> Bool {
+    let t: String = __builtin_string_trim(s)
+    let n: Int = __builtin_string_len(t)
+    if n < 2 {
+        false
+    } else {
+        let is_obj: Bool = __builtin_string_starts_with(t, "{") && __builtin_string_ends_with(t, "}")
+        let is_arr: Bool = __builtin_string_starts_with(t, "[") && __builtin_string_ends_with(t, "]")
+        is_obj || is_arr
+    }
+}
+
+fn main() -> Int {
+    // Exercise every validator with at least one true and one false case.
+    let allow: List<String> = ["approve", "reject"]
+    let ban: List<String> = ["DROP TABLE"]
+
+    let checks_true: Bool = is_non_empty("hello")
+        && min_length("hello", 3)
+        && max_length("hi", 5)
+        && length_between("abc", 1, 5)
+        && is_in_range("42", 0, 100)
+        && is_in_range_float("2.5", 0.0, 10.0)
+        && matches_prefix("prefix-body", "prefix-")
+        && matches_suffix("body.json", ".json")
+        && matches_contains("needle in haystack", "needle")
+        && is_one_of("approve", allow)
+        && not_in_banlist("safe value", ban)
+        && contains_ci("HELLO World", "hello")
+        && looks_like_refusal("I'm sorry, I cannot do that")
+        && is_probably_json("{\"ok\": true}")
+
+    let checks_false: Bool = is_non_empty("   ")
+        || min_length("hi", 5)
+        || max_length("toolong", 3)
+        || is_in_range("not-a-number", 0, 100)
+        || is_in_range_float("abc", 0.0, 10.0)
+        || is_one_of("nope", allow)
+        || (not_in_banlist("DROP TABLE", ban) == false && false)
+        || looks_like_refusal("Here is your answer: 42")
+        || is_probably_json("just some prose")
+
+    // checks_true must hold and checks_false must not; collapse to 0.
+    if checks_true && (checks_false == false) {
+        0
+    } else {
+        1
+    }
+}

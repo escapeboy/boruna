@@ -48,6 +48,12 @@ pub enum Event {
     /// exactly which one failed (`passed: false`, immediately before the
     /// run traps with `VmError::ContractViolation`). `kind` is
     /// `"requires"`/`"ensures"`; `index` is the 0-based clause position.
+    ///
+    /// Also reused by the guard-and-seal builtin (`Op::GuardSeal`) with
+    /// `kind: "output"`, `function` = the guard label, and `index: 0` —
+    /// so a fail-closed output check on an (e.g. model-produced) value
+    /// seals its verdict through the same evidence path without a new
+    /// event variant or format bump.
     ContractCheck {
         function: String,
         kind: String,
@@ -149,6 +155,22 @@ impl EventLog {
             function: function.to_string(),
             kind: kind.as_str().to_string(),
             index,
+            passed,
+        });
+    }
+
+    /// Record that a guard-and-seal output check was evaluated. Reuses
+    /// the `ContractCheck` event with `kind: "output"` (so no new event
+    /// variant, no format version bump, and the orchestrator's evidence
+    /// bundle seals it transparently). `label` is the guard's name,
+    /// carried in the `function` field; `index` is always 0 (output
+    /// checks are standalone, not part of a numbered clause list). Called
+    /// by the VM at every `Op::GuardSeal` site for both pass and fail.
+    pub fn log_output_check(&mut self, label: &str, passed: bool) {
+        self.events.push(Event::ContractCheck {
+            function: label.to_string(),
+            kind: "output".to_string(),
+            index: 0,
             passed,
         });
     }

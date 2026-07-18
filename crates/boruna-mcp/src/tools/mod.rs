@@ -4,6 +4,7 @@ pub mod compile;
 pub mod framework;
 pub mod policy;
 pub mod run;
+pub mod sealed;
 pub mod symbols;
 pub mod template;
 pub mod workflow;
@@ -119,6 +120,27 @@ mod protocol_version_tests {
     fn run_compile_failure_carries_protocol_version() {
         let out = run::run_source("@@@ not valid", None, 1_000_000, false, None, None);
         assert_protocol_version(&out, "run compile failure");
+    }
+
+    // ── run_sealed ──
+
+    #[test]
+    fn run_sealed_success_carries_protocol_version() {
+        let out = sealed::run_sealed("fn main() -> Int { 1 + 2 }\n", None, 1_000_000);
+        assert_protocol_version(&out, "run_sealed success");
+    }
+
+    #[test]
+    fn run_sealed_compile_failure_carries_protocol_version() {
+        let out = sealed::run_sealed("@@@ not valid", None, 1_000_000);
+        assert_protocol_version(&out, "run_sealed compile failure");
+    }
+
+    #[test]
+    fn run_sealed_invalid_policy_carries_protocol_version() {
+        let bad = serde_json::json!(42);
+        let out = sealed::run_sealed("fn main() -> Int { 1 }\n", Some(&bad), 1_000_000);
+        assert_protocol_version(&out, "run_sealed invalid_policy");
     }
 
     // ── check / repair ──

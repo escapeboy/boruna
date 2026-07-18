@@ -271,6 +271,53 @@ mod tests {
     }
 
     #[test]
+    fn test_guard_builtin_emits_guard_seal_opcode() {
+        use boruna_bytecode::Op;
+        let module = compile(
+            "m",
+            "fn main() -> Int { __builtin_guard(42, true, \"ok\") }",
+        )
+        .unwrap();
+        let main = module.functions.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main.code.iter().any(|op| matches!(op, Op::GuardSeal)),
+            "expected a GuardSeal opcode from __builtin_guard"
+        );
+    }
+
+    #[test]
+    fn test_guard_builtin_pass_returns_value_and_seals() {
+        use boruna_vm::replay::Event;
+        let src = "fn main() -> Int { __builtin_guard(42, true, \"json-shape\") }";
+        let module = compile("test", src).expect("compile");
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        assert_eq!(vm.run().unwrap(), Value::Int(42));
+        assert!(vm.event_log().events().iter().any(|e| matches!(
+            e,
+            Event::ContractCheck { function, kind, passed, .. }
+                if function == "json-shape" && kind == "output" && *passed
+        )));
+    }
+
+    #[test]
+    fn test_guard_builtin_fail_traps_closed() {
+        use boruna_vm::replay::Event;
+        use boruna_vm::VmError;
+        let src = "fn main() -> Int { __builtin_guard(42, false, \"json-shape\") }";
+        let module = compile("test", src).expect("compile");
+        let gateway = CapabilityGateway::new(Policy::allow_all());
+        let mut vm = Vm::new(module, gateway);
+        let err = vm.run().expect_err("false guard must trap");
+        assert!(matches!(err, VmError::ContractViolation { .. }));
+        // The failed verdict is sealed even though the run trapped.
+        assert!(vm.event_log().events().iter().any(|e| matches!(
+            e,
+            Event::ContractCheck { kind, passed, .. } if kind == "output" && !*passed
+        )));
+    }
+
+    #[test]
     fn test_e2e_for_loop_sums_list() {
         let src = "fn main() -> Int {\n    let mut total = 0\n    for x in [1, 2, 3, 4, 5] {\n        total = total + x\n    }\n    total\n}";
         assert_eq!(run_source(src), Value::Int(15));
