@@ -6,6 +6,54 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-07-18
+
+Additive feature release — no breaking changes. Deepens Boruna's two moats:
+**verifiable/auditable evidence** (standards interop, compliance reporting,
+observability export, sealed contract/guard verdicts) and **agent authoring**
+(exact-signature lookup, a run-and-seal execution cell, an agent corpus). Ideas
+were mined from adjacent tooling (Temporal/LangGraph/Langfuse/Credo AI/SLSA/
+in-toto/Sigstore) and from the `agentlanguages.dev` peer catalogue, then mapped
+onto Boruna's determinism + evidence model.
+
+### Added
+
+- **In-toto + DSSE attestation** — `boruna evidence attest <dir>` emits the
+  bundle as an in-toto Statement (`predicateType https://boruna.dev/runtime-provenance/v1`)
+  wrapped in a DSSE envelope signed with the bundle's ed25519 key; `--verify`
+  checks it. Makes runtime-execution provenance consumable by the supply-chain
+  ecosystem (`cosign`, `in-toto-verify`). Additive — the native bundle is unchanged.
+  Predicate schema: `docs/spec/runtime-provenance-predicate-1.0.md`.
+- **Compliance-mapping report** — `boruna evidence report --framework eu-ai-act|nist|iso42001`
+  verifies a bundle, then maps its contents to the specific obligation each helps
+  satisfy (EU AI Act Art. 12/19/26, NIST AI RMF, ISO/IEC 42001), honestly flagging
+  gaps. A technical mapping, not a certificate of compliance.
+- **OpenTelemetry export** — `boruna evidence otel <dir>` emits the run as OTLP/JSON
+  spans (no SDK dep, no network) with tamper-evidence attributes
+  (`boruna.bundle_hash`, `audit_log_hash`, `signature.keyid`) and `gen_ai.*` spans
+  for `llm.*` calls, so a run surfaces in any OTel backend while linking back to a
+  verifiable record.
+- **Sealed contract + guard verdicts** — `requires`/`ensures` contract checks now
+  record a `ContractCheck` event (pass and fail) into the hash-chained evidence log.
+  New `__builtin_guard(value, passed, label)` runs a deterministic output check,
+  traps fail-closed on violation, and seals the verdict — so "the guardrail ran on
+  this model output and returned this verdict" becomes a replayable, tamper-evident fact.
+- **`std-guard` standard library** (14th lib) — pure, deterministic output validators
+  (length/range/allow-list/ban-list/refusal-heuristic/json-shape).
+- **MCP tools** (now 14) — `boruna_symbols` (exact typed signatures for `.ax` source)
+  and `boruna_run_sealed` (compile + run + replay-verify → a verifiable execution record).
+- **Quickfix-coverage CI gate** — every auto-fixable diagnostic must ship a repair
+  strategy or be explicitly allow-listed.
+- **Agent corpus & docs** — `llms.txt`, an `.ax` teaching primer, a static agent
+  portal manifest, an evidence threat model, and a runtime-execution-provenance
+  positioning doc.
+
+### Fixed
+
+- **`docs/reference/ax-language.md` syntax drift** — corrected to the real grammar
+  (records use `type`, enum variants are unit or single-payload, match arms use bare
+  variant names), verified with `boruna lang check`.
+
 ## [3.0.0] — 2026-07-18
 
 Removes the entire HTTP / serving / distributed-execution layer. Boruna is now a
