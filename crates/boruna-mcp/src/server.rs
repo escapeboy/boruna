@@ -88,6 +88,21 @@ struct RunLimitsParams {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
+struct RunSealedParams {
+    /// The .ax source code to run and seal
+    source: String,
+    /// Capability policy — SAME shape as `boruna_run`. Either the string
+    /// shorthand "allow-all" / "deny-all" (default: "allow-all") or a Policy
+    /// object (see docs/reference/policy-schema.md). Invalid values return
+    /// success=false with error_kind="invalid_policy" or a policy.* kind.
+    #[serde(default)]
+    policy: Option<serde_json::Value>,
+    /// Maximum execution steps (default: 10000000). Deterministic ceiling,
+    /// applied to both the original and the replay run.
+    max_steps: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
 struct SymbolsParams {
     /// The .ax source code to extract top-level symbols from
     source: String,
@@ -331,6 +346,27 @@ impl BorunaMcpServer {
             .await
             .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?
         };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    // ── Run-and-Seal Tool ──
+
+    #[tool(
+        description = "Compile and execute .ax source, then return a VERIFIABLE execution record — not just the result. The run is executed once to capture the VM EventLog (capability calls/results, actor events, UI emits, and requires/ensures contract checks), then RE-EXECUTED a second time with the recorded capability results fed back through a replay handler; the two logs are compared with ReplayEngine::verify_full. The response carries `replay_verified` (true only when every event recurs identically), `result`, `steps`, an ordered `capability_calls` list, the full `event_log`, and `event_log_sha256` — a SHA-256 digest of the canonical log that acts as a stable seal handle. `policy` uses the SAME shape as boruna_run. IMPORTANT: the 'seal' here is a replay-verified event log, NOT a signed evidence bundle — a signed, hash-chained bundle is a workflow-directory artifact produced by the orchestrator (`boruna workflow run --record` / `boruna evidence verify`); the response documents this in seal.note. Use this to call Boruna as a deterministic, auditable execution cell from an external agent framework. Domain errors (compile/parse failures, runtime_error, capability_denied, invalid_policy) are returned as success=false JSON."
+    )]
+    async fn boruna_run_sealed(
+        &self,
+        Parameters(params): Parameters<RunSealedParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_source(&params.source)?;
+        let source = params.source;
+        let policy = params.policy;
+        let max_steps = params.max_steps.unwrap_or(10_000_000);
+        let result = tokio::task::spawn_blocking(move || {
+            tools::sealed::run_sealed(&source, policy.as_ref(), max_steps)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(format!("task join error: {e}"), None))?;
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 

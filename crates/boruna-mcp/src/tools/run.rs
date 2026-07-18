@@ -600,7 +600,7 @@ pub(crate) fn parse_policy(value: Option<&JsonValue>) -> Result<Policy, ParsePol
     }
 }
 
-fn format_value(value: &Value) -> serde_json::Value {
+pub(crate) fn format_value(value: &Value) -> serde_json::Value {
     match value {
         Value::Int(n) => serde_json::json!(n),
         Value::Float(f) => serde_json::json!(f),
