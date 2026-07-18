@@ -28,7 +28,7 @@ fn main() -> Int {
 | `List<T>` | Ordered list | `[1, 2, 3]` |
 | `Map<K, V>` | Key-value map | `{"a": 1, "b": 2}` |
 | Records | Named fields | `Point { x: 1, y: 2 }` |
-| Enums | Tagged union | `Shape::Circle { radius: 5 }` |
+| Enums | Tagged union | `Shape::Circle(5)` |
 
 ## Variables
 
@@ -115,10 +115,10 @@ enforced.
 
 ## Records
 
-Define named record types:
+Define named record types with the `type` keyword:
 
 ```ax
-record Point {
+type Point {
     x: Int,
     y: Int,
 }
@@ -135,21 +135,24 @@ let p2: Point = Point { ..p, y: 10 }
 
 ## Enums
 
+Each variant is either a unit variant or carries a single payload value. Construct a
+value with the `EnumName::Variant(payload)` form (unit variants take no parentheses):
+
 ```ax
 enum Shape {
-    Circle { radius: Float },
-    Rectangle { width: Float, height: Float },
+    Circle(Float),
+    Square(Float),
 }
 
-let s: Shape = Shape::Circle { radius: 5.0 }
+let s: Shape = Shape::Circle(5.0)
 ```
 
 ## Pattern matching
 
 ```ax
 let result: String = match s {
-    Shape::Circle { radius } => "circle"
-    Shape::Rectangle { width, height } => "rectangle"
+    Circle(radius) => "circle"
+    Square(side) => "square"
     _ => "unknown"
 }
 ```
@@ -245,7 +248,7 @@ Point { x: 1, y: 2 }
 Point { ..point, x: 10 }
 
 // Enum variant
-Shape::Circle { radius: 5.0 }
+Shape::Circle(5.0)
 
 // Pattern match
 match x {
