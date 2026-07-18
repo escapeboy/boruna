@@ -4,6 +4,21 @@ This roadmap describes what Boruna is working toward. It is realistic, not aspir
 
 Last refreshed: 2026-05-17 (after the v1.4.0 release).
 
+## v3.0.0 — HTTP / distributed layer removed
+
+As of **v3.0.0**, Boruna's entire HTTP / serving / distributed-execution layer has been
+removed: the distributed **coordinator**, distributed **workers**, active-active **HA**,
+and coordinator **mTLS**; the three web UIs (**workflow dashboard**, **evidence web
+viewer**, **approval console**); the `serve` cargo feature and its server dependencies;
+and the `coordinator`, `dashboard`, `worker`, and `evidence serve` CLI commands plus the
+`--coordinator` / `--coord-token` flags.
+
+Boruna is now a **local deterministic engine + CLI**. The historical 0.4.0 / 0.5.0
+milestones below record distributed-execution work that shipped at the time and has since
+been removed — they are retained as history, not as descriptions of current capabilities.
+Approval and external-trigger gates remain, handled locally via `boruna workflow
+approve/reject/trigger` plus `resume`.
+
 ## Current: 1.4.0 — SHIPPED (2026-05-17)
 
 Workspace version is `1.4.0`. Fourth feature minor on the 1.x LTS line. Agent-native CLI inspection surfaces (`boruna doctor`, `boruna size`, `boruna workflow graph`, `boruna lang codes`, `boruna skills` — all `--json`-capable, motivated by a competitive review of `vercel-labs/zero`); the `boruna-lsp` language server for `.ax` files (diagnostics, completion, formatting); three compliance example workflows (SOC 2 audit, HIPAA data pipeline, financial review). See the [CHANGELOG](../CHANGELOG.md#140--2026-05-17) for the full list.
@@ -99,12 +114,12 @@ Two sub-themes: (a) finish what `0.5-S2*` started so distributed mode is product
 
 - [x] **`workflow run --submit-only`** + **`coordinator wait`** — end-to-end multi-wave (0.5-S2e/f)
 - [x] **0.5-S3 — Authentication** — shared-secret bearer token. MUST land before any non-loopback bind is recommended. Gating for production deployments.
-- [x] **W6-A — mTLS + per-worker client certificates** — additive opt-in mTLS surface on the coord HTTP routes. Cert subject CN drives worker identity; mismatch returns `coord.identity_mismatch`. Bearer auth path remains unchanged for LTS compatibility. See [`docs/guides/coord-mtls.md`](guides/coord-mtls.md) and [`docs/design-coord-mtls.md`](design-coord-mtls.md).
+- [x] **W6-A — mTLS + per-worker client certificates** — additive opt-in mTLS surface on the coord HTTP routes. Cert subject CN drives worker identity; mismatch returns `coord.identity_mismatch`. Bearer auth path remains unchanged for LTS compatibility. See [`docs/design-coord-mtls.md`](design-coord-mtls.md).
 - [x] **0.5-S4 — `workflow run --coordinator <url>`** — combines submit + wait in one command for CI workflows
 - [x] **0.5-S5 — Distributed retry policies** — wires `RetryPolicy` through the wait driver so failed steps with retry budget transition Failed → Pending instead of permanent Failed
 - [x] **0.5-S6 — Distributed approval-gate / external-trigger** — generalizes the operator-bridge protocol from 0.3-S15 to work in distributed mode
 - [x] **0.5-S7 — Output blob references** — large step outputs (>64 KiB) stored in content-addressed blob store; inline/blob routing in runner; BlobStore read-side restore (post1/output-blob-refs)
-- [x] **Coordinator HA / failover** (sprint `W2`) — multi-coord active-active against shared SQLite, worker URL failover at registration, `/api/health` for LB probes; deployment guide at [`guides/coord-ha.md`](./guides/coord-ha.md). The ADR 002 "coord restart = all leases void" assumption was audited and confirmed already-safe (threshold-based sweep preserves healthy leases under concurrent coords).
+- [x] **Coordinator HA / failover** (sprint `W2`) — multi-coord active-active against shared SQLite, worker URL failover at registration, `/api/health` for LB probes. The ADR 002 "coord restart = all leases void" assumption was audited and confirmed already-safe (threshold-based sweep preserves healthy leases under concurrent coords).
 - [x] **Worker capability tagging / placement** (sprint `W3-A`) — workers advertise a SUBSET of the coord's capability set via `--advertise-caps`; coord filters claims to caps the worker covers. Backwards-compatible (omitted flag = full fleet). New `coord.unknown_capability` error_kind.
 - [x] **Blob GC sweep** (sprint `W3-B`) — `boruna evidence gc-blobs` reclaims orphan blobs in `<data-dir>/blobs/`. Closes the 0.5-S7 accepted limitation around manual cleanup.
 - [x] **Rolling upgrades** — per-capability version negotiation via `--advertise-cap-versions cap=ver`; coordinator filters by version compatibility (`post1/scheduler-registry-rolling`)
