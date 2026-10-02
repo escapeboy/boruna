@@ -128,6 +128,27 @@ document conforming to schema_version 1:
           "description": "Optional gate condition expression (kind=\"approval_gate\"). Informational; not currently enforced by the runner.",
           "type": ["string", "null"]
         },
+        "confidence_gate": {
+          "description": "Optional calibrated auto-approval (kind=\"approval_gate\"). Additive in 1.x. When the score clears the threshold the gate completes without a human; otherwise it pauses as usual. See docs/design-conformal-gating.md.",
+          "type": "object",
+          "required": ["source_step", "calibration", "alpha_permille"],
+          "properties": {
+            "source_step": {
+              "description": "A source step in the gate's depends_on (or with an edge into the gate). Its `result` must be an Int in 0..=1000 (permille); anything else escalates to a human.",
+              "type": "string"
+            },
+            "calibration": {
+              "description": "Calibration file, relative to the workflow directory, no `..`. JSON: {\"version\":1,\"examples\":[{\"score\":0..1000,\"correct\":bool}]}.",
+              "type": "string"
+            },
+            "alpha_permille": {
+              "description": "Largest allowed chance that a wrong answer skips a human, in permille.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 999
+            }
+          }
+        },
         "description": {
           "description": "Optional human-readable description (kind=\"external_trigger\").",
           "type": ["string", "null"]
@@ -239,6 +260,10 @@ A step's `kind` discriminates which fields are required:
 - **`kind: "approval_gate"`** — pause the run until an operator
   records an approval/rejection via `boruna workflow approve`.
   Requires `required_role`. Optional `condition` is informational.
+  Optional `confidence_gate` lets the gate complete without a human when
+  a calibrated confidence score is high enough (see
+  `docs/design-conformal-gating.md`). It is not supported with
+  `--submit-only` or the coordinator, which reject it at submit time.
 - **`kind: "external_trigger"`** — pause the run until an external
   event arrives via `boruna workflow trigger <run-id> <step-id>`.
   Optional `description` is operator-facing only.

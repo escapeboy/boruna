@@ -40,3 +40,6 @@ Out (deferred): conformal-prediction confidence sets; numeric grant caps (Lumen)
 ## Tests
 - bytecode: transitive reach through a call; cycle-safety; a pure function is false.
 - evidence: `model_invoking_steps.json` written + checksummed; empty → no file.
+
+> Update 2026-10-02: the deferred conformal-prediction item shipped as calibrated confidence for
+> approval gates. See [design-conformal-gating.md](design-conformal-gating.md).

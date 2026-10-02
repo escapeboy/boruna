@@ -3024,6 +3024,14 @@ fn run_workflow(
                     ),
                 });
 
+                // Confidence-gate decisions (if any) go into the audit chain and the bundle.
+                for g in &result.confidence_gates {
+                    audit.append(boruna_orchestrator::workflow::confidence_gate::audit_event(
+                        g,
+                    ));
+                }
+                builder.add_confidence_gates(&result.confidence_gates)?;
+
                 for (id, sr) in &result.step_results {
                     match &sr.status {
                         boruna_orchestrator::workflow::StepStatus::Completed => {

@@ -8,6 +8,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Calibrated confidence for approval gates** — borrowed from conformal prediction
+  (Quasar; the agentlanguages.dev review). An `approval_gate` can carry a `confidence_gate`
+  (`source_step`, `calibration`, `alpha_permille`). When the upstream step's `Int` score
+  (permille) reaches the threshold computed from the calibration file, the gate completes
+  without a human. Otherwise it pauses as before. The guarantee: a wrong answer is
+  auto-approved with probability at most `alpha`. Too few wrong calibration examples means
+  the threshold is `never`. The decision, score, threshold and the exact calibration file
+  go into the evidence bundle (`confidence_gates.json`, `confidence/<step>.calibration.json`)
+  and the hash-chained audit log; `boruna evidence verify` recomputes every decision, so a
+  changed decision, a swapped calibration or a dropped file is rejected.
+  `boruna confidence threshold` shows the threshold before wiring it up. Works in-process
+  (sequential, concurrent waves, resume). `--submit-only` and the coordinator reject
+  workflows that use it. Existing workflow hashes are unchanged. See
+  `docs/design-conformal-gating.md` and `examples/workflows/confidence_gated_review`.
 - **Agent docs that cannot drift** — borrowed from Vow and Lume (agentlanguages.dev review).
   `boruna skills get cli` now ends with a command reference generated from the installed
   binary. Half of the top-level commands (12 of 24) were absent from the hand-written text.

@@ -191,6 +191,12 @@ struct PersistedRunMetadata {
     /// with a typed `Validation` error.
     #[serde(default)]
     workflow_def: Option<crate::workflow::definition::WorkflowDef>,
+    /// Calibration file text used by each evaluated confidence gate, by gate step id.
+    /// Kept so the evidence bundle can embed the exact bytes the decision was computed
+    /// from; the decision itself is in the hash-chained audit log. Defaulted so older
+    /// databases parse cleanly.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    confidence_calibrations: BTreeMap<String, String>,
 }
 
 /// Per-tick result of [`WorkflowRunner::advance_run_one_tick`].
@@ -394,6 +400,36 @@ impl WorkflowRunner {
         Ok(result)
     }
 
+    /// The coordinator's wait driver (`advance_run_one_tick`) does not evaluate confidence
+    /// gates: it would pause every such gate for a human. Rather than quietly behave
+    /// differently from an in-process run, refuse the submission with a clear error.
+    #[cfg(feature = "persist-sqlite")]
+    fn reject_confidence_gates_for_coordinator(def: &WorkflowDef) -> Result<(), WorkflowRunError> {
+        let gated: Vec<&str> = def
+            .steps
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s.kind,
+                    StepKind::ApprovalGate {
+                        confidence_gate: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(|(id, _)| id.as_str())
+            .collect();
+        if gated.is_empty() {
+            return Ok(());
+        }
+        Err(WorkflowRunError::Validation(format!(
+            "step(s) {} use confidence_gate, which is not supported with --submit-only or the \
+             coordinator yet (they would always pause for a human). Run the workflow in-process, \
+             or remove confidence_gate",
+            gated.join(", ")
+        )))
+    }
+
     /// Run with persistence. Opens (or creates) a `RunCheckpointStore` at
     /// `data_dir/runs.db`, inserts a row at run-start, writes a checkpoint
     /// at every step transition, and updates the terminal run status when
@@ -409,6 +445,9 @@ impl WorkflowRunner {
         options: &RunOptions,
         data_dir: &Path,
     ) -> Result<WorkflowRunResult, WorkflowRunError> {
+        if options.submit_only {
+            Self::reject_confidence_gates_for_coordinator(def)?;
+        }
         let (store, run_id) = Self::prepare_persistent_run(def, options, data_dir)?;
         if options.submit_only {
             // Sprint 0.5-S2e: submit-only mode. Insert the
@@ -458,6 +497,7 @@ impl WorkflowRunner {
                 status: WorkflowStatus::Running,
                 step_results: BTreeMap::new(),
                 total_duration_ms: 0,
+                confidence_gates: Vec::new(),
             });
         }
         Self::execute_after_insert(def, options, data_dir, &store, run_id)
@@ -511,6 +551,7 @@ impl WorkflowRunner {
             audit_log: Vec::new(),
             step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
             workflow_def: Self::embed_workflow_def_for_metadata(def, options)?,
+            confidence_calibrations: BTreeMap::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -668,6 +709,8 @@ impl WorkflowRunner {
             )
         })?;
 
+        Self::reject_confidence_gates_for_coordinator(def)?;
+
         // Every Source-kind step in the def must be covered by an
         // entry in `step_sources`; missing entries would mean the
         // remote cluster has no .ax to compile when a worker claims
@@ -731,6 +774,7 @@ impl WorkflowRunner {
             audit_log: Vec::new(),
             step_sources,
             workflow_def: Some(def.clone()),
+            confidence_calibrations: BTreeMap::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -1412,6 +1456,7 @@ impl WorkflowRunner {
             audit_log: Vec::new(),
             step_sources: Self::collect_step_sources(def, &options.workflow_dir)?,
             workflow_def: Self::embed_workflow_def_for_metadata(def, options)?,
+            confidence_calibrations: BTreeMap::new(),
         };
         let metadata_json = serde_json::to_string(&metadata)
             .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
@@ -2003,6 +2048,7 @@ impl WorkflowRunner {
                 status: WorkflowStatus::Failed,
                 step_results: prior_results,
                 total_duration_ms: 0,
+                confidence_gates: Vec::new(),
             });
         }
 
@@ -2186,6 +2232,7 @@ impl WorkflowRunner {
             status: workflow_status,
             step_results,
             total_duration_ms: 0,
+            confidence_gates: Vec::new(),
         })
     }
 
@@ -2236,6 +2283,7 @@ impl WorkflowRunner {
         let run_start = Instant::now();
         let mut step_results: BTreeMap<String, StepResult> = prior_results.clone();
         let mut workflow_status = WorkflowStatus::Running;
+        let mut gate_evals: Vec<crate::workflow::definition::GateEvaluation> = Vec::new();
         let max_concurrency = options.concurrency.max(1);
 
         'outer: for level in levels {
@@ -2254,6 +2302,17 @@ impl WorkflowRunner {
                     .get(id)
                     .ok_or_else(|| WorkflowRunError::Internal(format!("step not found: {id}")))?;
                 match &step_def.kind {
+                    StepKind::ApprovalGate { .. }
+                        if try_auto_approve_gate(
+                            id,
+                            step_def,
+                            options,
+                            run_id,
+                            data_store,
+                            &mut step_results,
+                            &mut gate_evals,
+                            Some(store),
+                        )? => {}
                     StepKind::ApprovalGate { .. } | StepKind::ExternalTrigger { .. } => {
                         pauses.push(id.as_str())
                     }
@@ -2675,6 +2734,7 @@ impl WorkflowRunner {
             status: workflow_status,
             step_results,
             total_duration_ms: run_start.elapsed().as_millis() as u64,
+            confidence_gates: gate_evals,
         })
     }
 
@@ -2692,6 +2752,7 @@ impl WorkflowRunner {
         let run_start = Instant::now();
         let mut step_results: BTreeMap<String, StepResult> = prior_results.clone();
         let mut workflow_status = WorkflowStatus::Running;
+        let mut gate_evals: Vec<crate::workflow::definition::GateEvaluation> = Vec::new();
 
         for step_id in order {
             // Skip already-completed steps on resume.
@@ -2722,6 +2783,19 @@ impl WorkflowRunner {
 
             match &step_def.kind {
                 StepKind::ApprovalGate { required_role, .. } => {
+                    if try_auto_approve_gate(
+                        step_id,
+                        step_def,
+                        options,
+                        run_id,
+                        data_store,
+                        &mut step_results,
+                        &mut gate_evals,
+                        #[cfg(feature = "persist-sqlite")]
+                        store,
+                    )? {
+                        continue;
+                    }
                     let cp = StepResult {
                         step_id: step_id.clone(),
                         status: StepStatus::AwaitingApproval,
@@ -2956,6 +3030,7 @@ impl WorkflowRunner {
             status: workflow_status,
             step_results,
             total_duration_ms: run_start.elapsed().as_millis() as u64,
+            confidence_gates: gate_evals,
         })
     }
 
@@ -3734,6 +3809,155 @@ fn append_audit_event(
     Err(WorkflowRunError::Internal(format!(
         "CAS retry budget exhausted appending audit event to run '{run_id}'"
     )))
+}
+
+/// True when this run's audit chain already holds a decision for the gate. A resumed run
+/// keeps that outcome instead of evaluating again: the gate paused for a human then.
+#[cfg(feature = "persist-sqlite")]
+fn has_gate_record(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+) -> Result<bool, WorkflowRunError> {
+    let metadata_json = store
+        .get_run_metadata(run_id)
+        .map_err(WorkflowRunError::from)?
+        .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+    let metadata: PersistedRunMetadata = serde_json::from_str(&metadata_json).map_err(|e| {
+        WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+    })?;
+    Ok(
+        crate::workflow::confidence_gate::records_from_audit(&metadata.audit_log)
+            .iter()
+            .any(|r| r.step_id == step_id),
+    )
+}
+
+/// Append a gate decision to the audit chain and keep the calibration text, in one CAS
+/// write so the two cannot disagree.
+#[cfg(feature = "persist-sqlite")]
+fn record_confidence_gate(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    eval: &GateEvaluation,
+) -> Result<(), WorkflowRunError> {
+    const CAS_RETRY_BUDGET: usize = 5;
+    for _ in 0..CAS_RETRY_BUDGET {
+        let metadata_json = store
+            .get_run_metadata(run_id)
+            .map_err(WorkflowRunError::from)?
+            .ok_or_else(|| WorkflowRunError::RunNotFound(run_id.to_string()))?;
+        let mut metadata: PersistedRunMetadata =
+            serde_json::from_str(&metadata_json).map_err(|e| {
+                WorkflowRunError::Internal(format!("corrupt metadata_json for run '{run_id}': {e}"))
+            })?;
+        let mut audit = crate::audit::AuditLog::from_entries(metadata.audit_log);
+        audit.append(crate::workflow::confidence_gate::audit_event(eval));
+        metadata.audit_log = audit.into_entries();
+        metadata
+            .confidence_calibrations
+            .insert(eval.record.step_id.clone(), eval.calibration.clone());
+        let updated = serde_json::to_string(&metadata)
+            .map_err(|e| WorkflowRunError::Internal(format!("metadata serialize: {e}")))?;
+        if store
+            .compare_and_swap_metadata(run_id, &metadata_json, &updated, now_unix_ms())
+            .map_err(WorkflowRunError::from)?
+        {
+            return Ok(());
+        }
+    }
+    Err(WorkflowRunError::Internal(format!(
+        "CAS retry budget exhausted recording confidence gate for run '{run_id}'"
+    )))
+}
+
+/// Evaluate a gate's confidence rule and, when it auto-approves, complete the step the
+/// same way a human approval does (empty-map output, `Completed`). Returns `true` when the
+/// gate was completed here and the caller must not pause. A gate without a
+/// `confidence_gate`, or one that escalates, returns `false` and pauses as before.
+///
+/// Every execution path calls this one function so they cannot drift apart.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "persist-sqlite"), allow(unused_variables))]
+fn try_auto_approve_gate(
+    step_id: &str,
+    step_def: &StepDef,
+    options: &RunOptions,
+    run_id: &str,
+    data_store: &mut DataStore,
+    step_results: &mut BTreeMap<String, StepResult>,
+    gate_evals: &mut Vec<GateEvaluation>,
+    #[cfg(feature = "persist-sqlite")] store: Option<&RunCheckpointStore>,
+) -> Result<bool, WorkflowRunError> {
+    use crate::confidence::Decision;
+    let StepKind::ApprovalGate {
+        confidence_gate: Some(cg),
+        ..
+    } = &step_def.kind
+    else {
+        return Ok(false);
+    };
+
+    #[cfg(feature = "persist-sqlite")]
+    if let Some(s) = store {
+        if has_gate_record(s, run_id, step_id)? {
+            return Ok(false);
+        }
+    }
+
+    let source = data_store.resolve_input(&format!("{}.result", cg.source_step));
+    let eval =
+        crate::workflow::confidence_gate::evaluate(step_id, cg, &options.workflow_dir, source)?;
+    #[cfg(feature = "persist-sqlite")]
+    if let Some(s) = store {
+        record_confidence_gate(s, run_id, &eval)?;
+    }
+    let auto = eval.record.decision == Decision::AutoApproved;
+    gate_evals.push(eval);
+    if !auto {
+        return Ok(false);
+    }
+
+    let synthetic = boruna_bytecode::Value::Map(BTreeMap::new());
+    let output_hash = DataStore::hash_value(&synthetic);
+    data_store
+        .store_output(step_id, "result", &synthetic)
+        .map_err(|e| WorkflowRunError::Io(e.to_string()))?;
+    #[cfg(feature = "persist-sqlite")]
+    if let Some(s) = store {
+        let output_json = serde_json::to_string(&synthetic)
+            .map_err(|e| WorkflowRunError::Internal(format!("synthetic output serialize: {e}")))?;
+        let (routed_json, routed_blob_ref) = route_output(output_json, s.blob_store());
+        s.upsert_step_checkpoint(&StepCheckpoint {
+            run_id: run_id.to_string(),
+            step_id: step_id.to_string(),
+            status: PersistStepStatus::Completed,
+            output_json: routed_json,
+            output_hash: Some(output_hash.clone()),
+            started_at_ms: None,
+            ended_at_ms: Some(now_unix_ms()),
+            error_msg: None,
+            attempt_count: 1,
+            worker_id: None,
+            lease_expires_at_ms: None,
+            claim_id: 0,
+            output_blob_ref: routed_blob_ref,
+        })
+        .map_err(WorkflowRunError::from)?;
+    }
+    step_results.insert(
+        step_id.to_string(),
+        StepResult {
+            step_id: step_id.to_string(),
+            status: StepStatus::Completed,
+            output_hash: Some(output_hash),
+            duration_ms: 0,
+            capabilities_used: vec![],
+            error: None,
+            attempt_count: 1,
+        },
+    );
+    Ok(true)
 }
 
 /// Compute a SHA-256 hash of a string for audit-event fields like
@@ -4666,6 +4890,14 @@ pub fn create_bundle(
     builder
         .add_model_invocations(&model_invoking_steps)
         .map_err(|e| WorkflowRunError::Io(format!("bundle add_model_invocations: {e}")))?;
+    let gate_evals = crate::workflow::confidence_gate::evaluations_from_run(
+        &metadata.audit_log,
+        &metadata.confidence_calibrations,
+    )
+    .map_err(WorkflowRunError::Internal)?;
+    builder
+        .add_confidence_gates(&gate_evals)
+        .map_err(|e| WorkflowRunError::Io(format!("bundle add_confidence_gates: {e}")))?;
 
     // Hash-chained audit log from metadata. We verify the chain at
     // bundle-creation time so that direct sqlite3 tamper of
@@ -6079,6 +6311,7 @@ mod tests {
             step.kind = StepKind::ApprovalGate {
                 required_role: "ops".into(),
                 condition: None,
+                confidence_gate: None,
             };
         }
         let data_dir = tempfile::tempdir().unwrap();
@@ -6227,6 +6460,7 @@ mod tests {
                         kind: StepKind::ApprovalGate {
                             required_role: "reviewer".into(),
                             condition: None,
+                            confidence_gate: None,
                         },
                         capabilities: vec![],
                         inputs: BTreeMap::new(),
@@ -7898,6 +8132,7 @@ mod tests {
                             kind: StepKind::ApprovalGate {
                                 required_role: "reviewer".into(),
                                 condition: None,
+                                confidence_gate: None,
                             },
                             capabilities: vec![],
                             inputs: BTreeMap::new(),
@@ -10095,6 +10330,7 @@ mod tests {
                             kind: StepKind::ApprovalGate {
                                 required_role: "ops".into(),
                                 condition: None,
+                                confidence_gate: None,
                             },
                             capabilities: vec![],
                             inputs: BTreeMap::new(),
@@ -10337,6 +10573,7 @@ mod tests {
                             kind: StepKind::ApprovalGate {
                                 required_role: "ops".into(),
                                 condition: None,
+                                confidence_gate: None,
                             },
                             capabilities: vec![],
                             inputs: BTreeMap::new(),
@@ -10354,6 +10591,7 @@ mod tests {
                             kind: StepKind::ApprovalGate {
                                 required_role: "ops".into(),
                                 condition: None,
+                                confidence_gate: None,
                             },
                             capabilities: vec![],
                             inputs: BTreeMap::new(),

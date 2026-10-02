@@ -1,0 +1,11 @@
+// Step 1: produce the model's confidence for its answer, in permille (0..=1000).
+//
+// A real workflow would derive this from the model output (for example from the
+// agreement between several samples) and keep it in its own step. The confidence gate
+// reads this step's result, which must be an Int in 0..=1000.
+//
+// Demo mode returns a fixed score so the example is deterministic.
+
+fn main() -> Int {
+    870
+}

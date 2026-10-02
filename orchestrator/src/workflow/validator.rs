@@ -5,6 +5,15 @@ use crate::workflow::definition::{StepKind, WorkflowDef};
 /// Validates a workflow definition for structural and semantic correctness.
 pub struct WorkflowValidator;
 
+/// True for a non-empty relative path with no `..`, root, or drive-prefix component.
+pub fn is_safe_relative_path(p: &str) -> bool {
+    use std::path::{Component, Path};
+    !p.is_empty()
+        && Path::new(p)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 /// A validation error.
 #[derive(Debug, Clone)]
 pub struct ValidationError {
@@ -21,6 +30,7 @@ pub enum ValidationErrorKind {
     UnknownInput,
     InvalidCapability,
     DuplicateEdge,
+    InvalidConfidenceGate,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -118,6 +128,57 @@ impl WorkflowValidator {
                         message: format!("step '{id}' has empty source path"),
                     });
                 }
+            }
+        }
+
+        // Validate confidence gates: the score source must be a direct predecessor Source
+        // step, alpha must be certifiable, and the calibration path must stay inside the
+        // workflow directory.
+        for (id, step) in &def.steps {
+            let StepKind::ApprovalGate {
+                confidence_gate: Some(gate),
+                ..
+            } = &step.kind
+            else {
+                continue;
+            };
+            let mut bad = |msg: String| {
+                errors.push(ValidationError {
+                    kind: ValidationErrorKind::InvalidConfidenceGate,
+                    message: format!("gate '{id}': {msg}"),
+                });
+            };
+            if !(1..=999).contains(&gate.alpha_permille) {
+                bad(format!(
+                    "alpha_permille {} is out of range, must be 1..=999",
+                    gate.alpha_permille
+                ));
+            }
+            match def.steps.get(&gate.source_step) {
+                None => bad(format!("source_step '{}' does not exist", gate.source_step)),
+                Some(src) if !matches!(src.kind, StepKind::Source { .. }) => bad(format!(
+                    "source_step '{}' must be a source step",
+                    gate.source_step
+                )),
+                Some(_) => {
+                    let direct = step.depends_on.contains(&gate.source_step)
+                        || def
+                            .edges
+                            .iter()
+                            .any(|(from, to)| from == &gate.source_step && to == id);
+                    if !direct {
+                        bad(format!(
+                            "source_step '{}' must be listed in depends_on (or an edge into the gate)",
+                            gate.source_step
+                        ));
+                    }
+                }
+            }
+            if !is_safe_relative_path(&gate.calibration) {
+                bad(format!(
+                    "calibration path '{}' must be a relative path without '..'",
+                    gate.calibration
+                ));
             }
         }
 
@@ -584,6 +645,7 @@ mod tests {
                         kind: StepKind::ApprovalGate {
                             required_role: "reviewer".into(),
                             condition: None,
+                            confidence_gate: None,
                         },
                         capabilities: vec![],
                         inputs: BTreeMap::new(),
@@ -600,5 +662,92 @@ mod tests {
             edges: vec![("approve".into(), "store".into())],
         };
         assert!(WorkflowValidator::validate(&def).is_ok());
+    }
+
+    fn gated(cg: &str) -> WorkflowDef {
+        WorkflowDef::from_json(&format!(
+            r#"{{"schema_version":1,"name":"w","version":"1",
+              "steps":{{
+                "classify":{{"kind":"source","source":"c.ax"}},
+                "other":{{"kind":"source","source":"o.ax"}},
+                "gate":{{"kind":"approval_gate","required_role":"r","depends_on":["classify"],
+                         "confidence_gate":{cg}}}
+              }},"edges":[["classify","gate"]]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn gate_errors(cg: &str) -> Vec<String> {
+        match WorkflowValidator::validate(&gated(cg)) {
+            Ok(()) => vec![],
+            Err(errs) => errs
+                .into_iter()
+                .filter(|e| e.kind == ValidationErrorKind::InvalidConfidenceGate)
+                .map(|e| e.message)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn confidence_gate_accepts_a_well_formed_definition() {
+        assert!(gate_errors(
+            r#"{"source_step":"classify","calibration":"cal/c.json","alpha_permille":50}"#
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn confidence_gate_rejects_bad_alpha() {
+        for a in [0, 1000, 5000] {
+            let errs = gate_errors(&format!(
+                r#"{{"source_step":"classify","calibration":"c.json","alpha_permille":{a}}}"#
+            ));
+            assert!(
+                errs.iter().any(|m| m.contains("alpha_permille")),
+                "{a}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_gate_rejects_unknown_non_source_and_non_dependency_sources() {
+        let errs =
+            gate_errors(r#"{"source_step":"nope","calibration":"c.json","alpha_permille":50}"#);
+        assert!(
+            errs.iter().any(|m| m.contains("does not exist")),
+            "{errs:?}"
+        );
+        let errs =
+            gate_errors(r#"{"source_step":"gate","calibration":"c.json","alpha_permille":50}"#);
+        assert!(
+            errs.iter().any(|m| m.contains("must be a source step")),
+            "{errs:?}"
+        );
+        // `other` exists and is a source step, but the gate does not depend on it.
+        let errs =
+            gate_errors(r#"{"source_step":"other","calibration":"c.json","alpha_permille":50}"#);
+        assert!(errs.iter().any(|m| m.contains("depends_on")), "{errs:?}");
+    }
+
+    #[test]
+    fn confidence_gate_rejects_paths_that_leave_the_workflow_directory() {
+        for path in ["../c.json", "/etc/passwd", "a/../../c.json", ""] {
+            let errs = gate_errors(&format!(
+                r#"{{"source_step":"classify","calibration":"{path}","alpha_permille":50}}"#
+            ));
+            assert!(
+                errs.iter().any(|m| m.contains("relative path")),
+                "{path}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_relative_path_helper() {
+        assert!(is_safe_relative_path("c.json"));
+        assert!(is_safe_relative_path("./cal/c.json"));
+        assert!(!is_safe_relative_path("../c.json"));
+        assert!(!is_safe_relative_path("/abs.json"));
+        assert!(!is_safe_relative_path(""));
     }
 }

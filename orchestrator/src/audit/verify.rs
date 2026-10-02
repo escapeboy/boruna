@@ -326,6 +326,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
 
     // 4. Verify audit log chain integrity (decrypt-then-parse).
     let mut redacted_entries: Vec<u64> = Vec::new();
+    let mut audit_gate_records: Vec<crate::confidence::GateRecord> = Vec::new();
     let audit_path = bundle_dir.join("audit_log.json");
     match std::fs::read(&audit_path) {
         Ok(raw) => {
@@ -356,6 +357,10 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                                 ));
                             }
                             redacted_entries = audit_log.redacted_sequences();
+                            audit_gate_records =
+                                crate::workflow::confidence_gate::records_from_audit(
+                                    audit_log.entries(),
+                                );
                         }
                         Err(e) => {
                             errors.push(format!("invalid audit_log.json: {e}"));
@@ -369,6 +374,16 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
         }
         Err(_) => errors.push("missing audit_log.json".into()),
     }
+
+    // 4b. Confidence gates: recompute each recorded decision from the embedded calibration
+    //     file and cross-check it against the hash-chained audit log.
+    verify_confidence_gates(
+        bundle_dir,
+        envelope.as_ref(),
+        &audit_gate_records,
+        !redacted_entries.is_empty(),
+        &mut errors,
+    );
 
     // 5. Verify required files exist
     for required in &[
@@ -388,6 +403,109 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
         valid: errors.is_empty(),
         errors,
         redacted_entries,
+    }
+}
+
+/// Read a bundle file, decrypting in memory when the bundle is encrypted.
+fn read_plain(
+    bundle_dir: &Path,
+    name: &str,
+    envelope: Option<&Envelope>,
+) -> Result<Vec<u8>, String> {
+    let raw =
+        std::fs::read(bundle_dir.join(name)).map_err(|e| format!("cannot read {name}: {e}"))?;
+    match envelope {
+        Some(env) => env
+            .decrypt_file(name, &raw)
+            .map_err(|e| format!("decrypt {name}: {e}")),
+        None => Ok(raw),
+    }
+}
+
+/// Check `confidence_gates.json` against its embedded calibration files and the audit chain.
+///
+/// Each gate record must (1) match the calibration file's hash, (2) recompute to the same
+/// threshold and decision, and (3) appear unchanged in the audit chain. Decisions found in
+/// the audit chain with no `confidence_gates.json` at all are also an error, so the file
+/// cannot be dropped to hide a gate.
+fn verify_confidence_gates(
+    bundle_dir: &Path,
+    envelope: Option<&Envelope>,
+    audit_records: &[crate::confidence::GateRecord],
+    audit_has_redactions: bool,
+    errors: &mut Vec<String>,
+) {
+    use crate::confidence::{CalibrationSet, GateRecord};
+    let gates_file = "confidence_gates.json";
+    if !bundle_dir.join(gates_file).exists() {
+        if !audit_records.is_empty() {
+            errors.push(format!(
+                "evidence.confidence_gate: the audit log records {} gate decision(s) but \
+                 {gates_file} is missing",
+                audit_records.len()
+            ));
+        }
+        return;
+    }
+    let bytes = match read_plain(bundle_dir, gates_file, envelope) {
+        Ok(b) => b,
+        Err(e) => {
+            errors.push(format!("evidence.confidence_gate: {e}"));
+            return;
+        }
+    };
+    let records: Vec<GateRecord> = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            errors.push(format!(
+                "evidence.confidence_gate: invalid {gates_file}: {e}"
+            ));
+            return;
+        }
+    };
+    for rec in &records {
+        let cal_name = format!("confidence/{}.calibration.json", rec.step_id);
+        let raw = match read_plain(bundle_dir, &cal_name, envelope) {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(format!("evidence.confidence_gate: {e}"));
+                continue;
+            }
+        };
+        let set = match std::str::from_utf8(&raw)
+            .map_err(|e| e.to_string())
+            .and_then(|t| CalibrationSet::from_json(t).map_err(|e| e.to_string()))
+        {
+            Ok(set) => set,
+            Err(e) => {
+                errors.push(format!(
+                    "evidence.confidence_gate: gate '{}': bad calibration: {e}",
+                    rec.step_id
+                ));
+                continue;
+            }
+        };
+        if let Err(msg) = rec.verify(&set, &raw) {
+            errors.push(format!("evidence.confidence_gate: {msg}"));
+        }
+        if !audit_has_redactions && !audit_records.iter().any(|a| a == rec) {
+            errors.push(format!(
+                "evidence.confidence_gate: gate '{}' in {gates_file} has no matching decision \
+                 in the audit chain",
+                rec.step_id
+            ));
+        }
+    }
+    if !audit_has_redactions {
+        for a in audit_records {
+            if !records.iter().any(|r| r == a) {
+                errors.push(format!(
+                    "evidence.confidence_gate: the audit chain records a decision for gate '{}' \
+                     that {gates_file} does not contain",
+                    a.step_id
+                ));
+            }
+        }
     }
 }
 

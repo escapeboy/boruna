@@ -35,7 +35,10 @@ my_workflow/
 ## Step kinds
 
 - `source` — a step backed by a `.ax` source file.
-- `approval_gate` — pauses for a human decision by `required_role`.
+- `approval_gate` — pauses for a human decision by `required_role`. With a
+  `confidence_gate` it completes on its own when a calibrated score is high
+  enough; inspect a calibration with `boruna confidence threshold <file>
+  --alpha-permille N --score S`.
 - `external_trigger` — waits for an external event.
 
 ## Dependencies
