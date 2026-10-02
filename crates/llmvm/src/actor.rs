@@ -277,7 +277,7 @@ impl ActorSystem {
         // Sort for deterministic delivery order
         self.pending_messages
             .sort_by_key(|&(from, to, _)| (to, from));
-        let messages: Vec<_> = self.pending_messages.drain(..).collect();
+        let messages: Vec<_> = std::mem::take(&mut self.pending_messages);
         for (from, to, payload) in messages {
             self.event_log.log_message_send(from, to, &payload);
             if let Some(actor) = self
