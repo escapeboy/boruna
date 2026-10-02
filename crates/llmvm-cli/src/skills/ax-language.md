@@ -88,4 +88,5 @@ non-determinism enters only through declared capabilities.
 
 - `boruna skills get cli` — the command surface.
 - `boruna skills get diagnostics` — error codes and the repair loop.
-- `boruna check <file>.ax` equivalents: `boruna lang check <file>.ax --json`.
+- Type-check a file: `boruna lang check <file>.ax --json`.
+- All skills as loadable files: `boruna skills emit <dir>`; only the sections you need: `boruna skills pack "<query>" --budget 1500`.

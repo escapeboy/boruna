@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use boruna_bytecode::Module;
 use boruna_framework::runtime::AppMessage;
@@ -437,6 +437,22 @@ enum SkillsCommand {
         /// Skill name (see `boruna skills list`).
         name: String,
         /// Output the skill as JSON ({ name, summary, content }).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write every skill as `<DIR>/<name>/SKILL.md` for an agent to load.
+    Emit {
+        /// Output directory (created if missing).
+        dir: PathBuf,
+    },
+    /// Return only the skill sections relevant to a query, within a token budget.
+    Pack {
+        /// Free-text query, e.g. "approval gate".
+        query: String,
+        /// Maximum estimated tokens (chars / 4).
+        #[arg(long, default_value_t = 2000)]
+        budget: usize,
+        /// Output the pack as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -1388,7 +1404,21 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Skills(cmd) => match cmd {
             SkillsCommand::List { json } => skills::run_list(json),
             SkillsCommand::Get { name, json } => {
-                if !skills::run_get(&name, json) {
+                if !skills::run_get(&name, json, &Cli::command()) {
+                    process::exit(1);
+                }
+            }
+            SkillsCommand::Emit { dir } => {
+                if !skills::run_emit(&dir, &Cli::command()) {
+                    process::exit(1);
+                }
+            }
+            SkillsCommand::Pack {
+                query,
+                budget,
+                json,
+            } => {
+                if !skills::run_pack(&query, budget, json, &Cli::command()) {
                     process::exit(1);
                 }
             }
