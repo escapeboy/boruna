@@ -77,3 +77,23 @@ fn pack_without_match_exits_1_and_names_the_query() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("zzzqqq"));
 }
+
+#[cfg(unix)]
+#[test]
+fn emit_refuses_to_write_through_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let victim = dir.path().join("victim.txt");
+    std::fs::write(&victim, "keep").unwrap();
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(out_dir.join("ax-language")).unwrap();
+    std::os::unix::fs::symlink(&victim, out_dir.join("ax-language").join("SKILL.md")).unwrap();
+    let out = boruna(&["skills", "emit", out_dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+}
+
+#[test]
+fn pack_rejects_zero_budget() {
+    let out = boruna(&["skills", "pack", "approval", "--budget", "0"]);
+    assert!(!out.status.success());
+}

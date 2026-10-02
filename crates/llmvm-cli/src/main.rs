@@ -450,8 +450,8 @@ enum SkillsCommand {
         /// Free-text query, e.g. "approval gate".
         query: String,
         /// Maximum estimated tokens (chars / 4).
-        #[arg(long, default_value_t = 2000)]
-        budget: usize,
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(1..))]
+        budget: u64,
         /// Output the pack as JSON.
         #[arg(long)]
         json: bool,
@@ -1418,7 +1418,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 budget,
                 json,
             } => {
-                if !skills::run_pack(&query, budget, json, &Cli::command()) {
+                if !skills::run_pack(&query, budget as usize, json, &Cli::command()) {
                     process::exit(1);
                 }
             }

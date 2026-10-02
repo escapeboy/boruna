@@ -158,6 +158,12 @@ pub fn emit(
         let folder = dir.join(skill.name);
         std::fs::create_dir_all(&folder)?;
         let path = folder.join("SKILL.md");
+        if path.is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "{} is a symlink; refusing to write through it",
+                path.display()
+            )));
+        }
         let doc = format!(
             "---\nname: boruna-{}\ndescription: {}\n---\n\n{}",
             skill.name,
@@ -430,7 +436,8 @@ mod tests {
     fn is_word(w: &str) -> bool {
         !w.is_empty()
             && w.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-            && w.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+            && w.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     }
 
     #[test]
