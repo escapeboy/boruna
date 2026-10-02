@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent docs that cannot drift** — borrowed from Vow and Lume (agentlanguages.dev review).
+  `boruna skills get cli` now ends with a command reference generated from the installed
+  binary. Half of the top-level commands (12 of 24) were absent from the hand-written text.
+  `boruna skills emit <dir>` writes the skills as `SKILL.md` folders; `boruna skills pack
+  "<query>" --budget N` returns only the relevant sections, deterministically.
+- A unit test fails when a hand-written skill names a `boruna <command>` that does not exist.
+
+### Fixed
+
+- `ax-language` skill pointed agents at `boruna check`, which does not exist. The command is
+  `boruna lang check`.
+
 ## [3.2.0] — 2026-07-18
 
 Additive feature release — no breaking changes. Closes the two credibility gaps in

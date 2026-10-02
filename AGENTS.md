@@ -57,6 +57,8 @@ commands designed for agents. Every one accepts `--json`:
 | Command | Use |
 |---------|-----|
 | `boruna skills list` / `boruna skills get <name>` | Self-describing docs — learn `.ax` and the toolchain from the binary alone |
+| `boruna skills pack "<query>" --budget 1500` | Only the doc sections relevant to a query, instead of whole files |
+| `boruna skills emit <dir>` | Write the skills as `SKILL.md` folders an agent can load |
 | `boruna lang codes` | Resolve any `E0NN` diagnostic code seen in `lang check --json` output |
 | `boruna doctor` | Verify the environment before relying on the toolchain |
 | `boruna workflow graph <dir>` | Read a workflow's DAG (nodes, edges, topo order) before editing it |

@@ -222,13 +222,27 @@ learn Boruna from the installed binary alone.
 ```bash
 boruna skills list [--json]
 boruna skills get <name> [--json]
+boruna skills emit <dir>
+boruna skills pack "<query>" [--budget <tokens>] [--json]
 
 Subcommands:
   list   List available skill documents
   get    Print one skill document (ax-language, cli, workflows, diagnostics)
+  emit   Write every skill as <dir>/<name>/SKILL.md (name + description frontmatter)
+  pack   Return only the sections relevant to a query, within a token budget
 ```
 
 `skills get` exits 1 on an unknown skill name and lists the available names.
+
+The `cli` skill ends with a command reference generated from the installed binary, so it
+lists exactly the commands and flags that exist. A unit test fails when a hand-written
+skill names a `boruna <command>` that does not exist.
+
+`skills emit` is idempotent and overwrites existing files. `skills pack` ranks sections
+by keyword overlap with the query (ties broken by skill name and position), so the same
+query always returns the same bytes. `--budget` is an estimate (characters / 4, default
+2000); the best section is truncated rather than dropped if it alone exceeds it. Exits 1
+when nothing matches.
 
 ---
 
