@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod audit;
 pub mod cli;
+pub mod confidence;
 pub mod conflict;
 pub mod engine;
 #[cfg(feature = "persist-sqlite")]

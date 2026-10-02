@@ -15,6 +15,7 @@ use boruna_vm::capability_gateway::{CapabilityGateway, Policy, ReplayHandler};
 use boruna_vm::replay::EventLog;
 use boruna_vm::vm::Vm;
 
+mod confidence_cmd;
 mod doctor;
 mod evidence_diff;
 mod format;
@@ -152,9 +153,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Embedded, agent-curated documentation (list, get).
+    /// Embedded, agent-curated documentation (list, get, emit, pack).
     #[command(subcommand)]
     Skills(SkillsCommand),
+    /// Calibrated confidence for approval gates (threshold).
+    #[command(subcommand)]
+    Confidence(ConfidenceCommand),
     /// Trace-to-test tools (record, generate, run, minimize).
     #[command(subcommand)]
     Trace2tests(Trace2TestsCommand),
@@ -421,6 +425,25 @@ enum LiterateCommand {
         /// Print each block extracted as it happens.
         #[arg(long)]
         verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfidenceCommand {
+    /// Show the auto-approve threshold a calibration file gives for a target
+    /// false approval rate, and optionally the decision for one score.
+    Threshold {
+        /// Calibration file (JSON: {"version":1,"examples":[{"score":0..1000,"correct":bool}]}).
+        file: PathBuf,
+        /// Largest allowed share of wrong answers that skip a human, in permille (1..=999).
+        #[arg(long)]
+        alpha_permille: u32,
+        /// Also report the decision for this confidence score (permille, 0..=1000).
+        #[arg(long)]
+        score: Option<u32>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1401,6 +1424,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let resolved = maybe_resolve_imports(&source)?;
             size::run(&name, &resolved, json)?;
         }
+        Command::Confidence(ConfidenceCommand::Threshold {
+            file,
+            alpha_permille,
+            score,
+            json,
+        }) => confidence_cmd::run_threshold(&file, alpha_permille, score, json)?,
         Command::Skills(cmd) => match cmd {
             SkillsCommand::List { json } => skills::run_list(json),
             SkillsCommand::Get { name, json } => {
