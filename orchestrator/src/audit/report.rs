@@ -132,11 +132,13 @@ struct BundleFacts {
     audit_event_count: Option<usize>,
     /// Human-readable approval-gate (human-oversight) records, if any.
     approvals: Vec<String>,
+    /// Confidence-gate decisions (calibrated auto-approval), if any.
+    gate_decisions: Vec<crate::confidence::GateRecord>,
 }
 
 impl BundleFacts {
     fn from_bundle(bundle_dir: &Path, manifest: &BundleManifest) -> Self {
-        let (audit_event_count, approvals) = read_audit_facts(bundle_dir);
+        let (audit_event_count, approvals, gate_decisions) = read_audit_facts(bundle_dir);
         let env = &manifest.env_fingerprint;
         BundleFacts {
             run_id: manifest.run_id.clone(),
@@ -161,20 +163,27 @@ impl BundleFacts {
             has_model_invocations: bundle_dir.join("model_invoking_steps.json").exists(),
             audit_event_count,
             approvals,
+            gate_decisions,
         }
     }
 }
 
 /// Read the audit log for the event count and any approval-gate records.
 /// Degrades gracefully: on any read/parse failure returns `(None, [])`.
-fn read_audit_facts(bundle_dir: &Path) -> (Option<usize>, Vec<String>) {
+fn read_audit_facts(
+    bundle_dir: &Path,
+) -> (
+    Option<usize>,
+    Vec<String>,
+    Vec<crate::confidence::GateRecord>,
+) {
     let raw = match std::fs::read_to_string(bundle_dir.join("audit_log.json")) {
         Ok(s) => s,
-        Err(_) => return (None, Vec::new()),
+        Err(_) => return (None, Vec::new(), Vec::new()),
     };
     let log = match AuditLog::from_json(&raw) {
         Ok(l) => l,
-        Err(_) => return (None, Vec::new()),
+        Err(_) => return (None, Vec::new(), Vec::new()),
     };
     let mut approvals = Vec::new();
     for entry in log.entries() {
@@ -195,7 +204,8 @@ fn read_audit_facts(bundle_dir: &Path) -> (Option<usize>, Vec<String>) {
             _ => {}
         }
     }
-    (Some(log.entries().len()), approvals)
+    let gates = crate::workflow::confidence_gate::records_from_audit(log.entries());
+    (Some(log.entries().len()), approvals, gates)
 }
 
 /// Generate a compliance evidence-mapping report for a bundle.
@@ -338,7 +348,16 @@ fn eu_ai_act_obligations(f: &BundleFacts) -> Vec<Obligation> {
     });
 
     // Art. 14 — human oversight (approval-gate records).
-    if f.approvals.is_empty() {
+    //
+    // A confidence gate that auto-approved is NOT human oversight: that case was waved through
+    // on a calibrated score. It is listed, and the row is at most PARTIAL while any exist.
+    use crate::confidence::Decision;
+    let auto: Vec<&crate::confidence::GateRecord> = f
+        .gate_decisions
+        .iter()
+        .filter(|g| g.decision == Decision::AutoApproved)
+        .collect();
+    if f.approvals.is_empty() && f.gate_decisions.is_empty() {
         out.push(Obligation {
             reference: "Art. 14".to_string(),
             title: "Human oversight".to_string(),
@@ -354,19 +373,51 @@ fn eu_ai_act_obligations(f: &BundleFacts) -> Vec<Obligation> {
             ),
         });
     } else {
+        let mut lines: Vec<String> = f.approvals.clone();
+        for g in &f.gate_decisions {
+            let score = g
+                .score_permille
+                .map_or("no valid score".to_string(), |v| v.to_string());
+            lines.push(match g.decision {
+                Decision::AutoApproved => format!(
+                    "step `{}`: confidence gate AUTO-APPROVED (score {score}, threshold {}, \
+                     alpha {} permille). No human reviewed this case.",
+                    g.step_id, g.threshold_permille, g.alpha_permille
+                ),
+                Decision::Escalated => format!(
+                    "step `{}`: confidence gate sent the case to a human (score {score}, \
+                     threshold {})",
+                    g.step_id, g.threshold_permille
+                ),
+            });
+        }
+        let (coverage, gap) = if auto.is_empty() {
+            (Coverage::Provided, None)
+        } else {
+            (
+                Coverage::Partial,
+                Some(format!(
+                    "{} gate(s) completed without a human. For those cases there is no \
+                     human-oversight record. The calibration bounds how often a wrong answer is \
+                     waved through (at most alpha); it does not replace a reviewer. Whether this \
+                     meets Art. 14 for your system is for you to decide.",
+                    auto.len()
+                )),
+            )
+        };
         out.push(Obligation {
             reference: "Art. 14".to_string(),
             title: "Human oversight".to_string(),
-            coverage: Coverage::Provided,
+            coverage,
             provides: format!(
-                "Approval-gate records in the audit log evidence human oversight:\n{}",
-                f.approvals
+                "Approval-gate records in the audit log:\n{}",
+                lines
                     .iter()
                     .map(|a| format!("- {a}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
-            gap: None,
+            gap,
         });
     }
 
@@ -869,6 +920,56 @@ mod tests {
             report.contains("GRANTED by `alice`"),
             "approval record not surfaced:\n{report}"
         );
+    }
+
+    fn gate_report(decision: crate::confidence::Decision, score: Option<u32>) -> String {
+        use crate::confidence::GateRecord;
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-report-gate", "gate-wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"g"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+        let mut audit = AuditLog::new();
+        audit.append(crate::workflow::confidence_gate::audit_event_for_record(
+            &GateRecord {
+                step_id: "review".into(),
+                source_step: "score".into(),
+                alpha_permille: 100,
+                calibration_sha256: "0".repeat(64),
+                calibration_examples: 200,
+                threshold_permille: 673,
+                score_permille: score,
+                decision,
+            },
+        ));
+        builder.finalize(&audit).unwrap();
+        generate_report(
+            &dir.path().join("run-report-gate"),
+            ComplianceFramework::EuAiAct,
+            ReportFormat::Markdown,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn auto_approved_gate_is_listed_and_is_not_claimed_as_human_oversight() {
+        let report = gate_report(crate::confidence::Decision::AutoApproved, Some(870));
+        assert!(report.contains("AUTO-APPROVED"), "{report}");
+        assert!(report.contains("No human reviewed this case"), "{report}");
+        assert!(report.contains("completed without a human"), "{report}");
+        // It must not be presented as full evidence, nor as "no approval step exists".
+        let art14 = report.split("Art. 14").nth(1).expect("Art. 14 row");
+        assert!(art14.contains("PARTIAL"), "{art14}");
+        assert!(!art14.contains("add an approval step"), "{art14}");
+    }
+
+    #[test]
+    fn escalated_gate_is_listed_as_sent_to_a_human() {
+        let report = gate_report(crate::confidence::Decision::Escalated, None);
+        assert!(report.contains("sent the case to a human"), "{report}");
+        assert!(report.contains("no valid score"), "{report}");
+        let art14 = report.split("Art. 14").nth(1).expect("Art. 14 row");
+        assert!(!art14.contains("completed without a human"), "{art14}");
     }
 
     #[test]

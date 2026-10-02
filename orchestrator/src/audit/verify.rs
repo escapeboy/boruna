@@ -327,6 +327,8 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
     // 4. Verify audit log chain integrity (decrypt-then-parse).
     let mut redacted_entries: Vec<u64> = Vec::new();
     let mut audit_gate_records: Vec<crate::confidence::GateRecord> = Vec::new();
+    let mut audit_content_hashes: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let audit_path = bundle_dir.join("audit_log.json");
     match std::fs::read(&audit_path) {
         Ok(raw) => {
@@ -361,6 +363,12 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                                 crate::workflow::confidence_gate::records_from_audit(
                                     audit_log.entries(),
                                 );
+                            audit_content_hashes = audit_log
+                                .entries()
+                                .iter()
+                                .filter(|e| !e.content_sha256.is_empty())
+                                .map(|e| e.content_sha256.clone())
+                                .collect();
                         }
                         Err(e) => {
                             errors.push(format!("invalid audit_log.json: {e}"));
@@ -381,7 +389,7 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
         bundle_dir,
         envelope.as_ref(),
         &audit_gate_records,
-        !redacted_entries.is_empty(),
+        &audit_content_hashes,
         &mut errors,
     );
 
@@ -432,7 +440,7 @@ fn verify_confidence_gates(
     bundle_dir: &Path,
     envelope: Option<&Envelope>,
     audit_records: &[crate::confidence::GateRecord],
-    audit_has_redactions: bool,
+    audit_content_hashes: &std::collections::BTreeSet<String>,
     errors: &mut Vec<String>,
 ) {
     use crate::confidence::{CalibrationSet, GateRecord};
@@ -488,23 +496,28 @@ fn verify_confidence_gates(
         if let Err(msg) = rec.verify(&set, &raw) {
             errors.push(format!("evidence.confidence_gate: {msg}"));
         }
-        if !audit_has_redactions && !audit_records.iter().any(|a| a == rec) {
+        // The chain commits to SHA-256 of the event JSON, and keeps that hash even when the
+        // entry is redacted. Recompute it from this record: a match proves the record is what
+        // the run committed, with or without redaction elsewhere in the log.
+        let committed = crate::audit::log::AuditLog::content_hash(
+            &crate::workflow::confidence_gate::audit_event_for_record(rec),
+        );
+        if !audit_content_hashes.contains(&committed) {
             errors.push(format!(
-                "evidence.confidence_gate: gate '{}' in {gates_file} has no matching decision \
-                 in the audit chain",
+                "evidence.confidence_gate: gate '{}' in {gates_file} does not match any \
+                 decision committed in the audit chain",
                 rec.step_id
             ));
         }
     }
-    if !audit_has_redactions {
-        for a in audit_records {
-            if !records.iter().any(|r| r == a) {
-                errors.push(format!(
-                    "evidence.confidence_gate: the audit chain records a decision for gate '{}' \
-                     that {gates_file} does not contain",
-                    a.step_id
-                ));
-            }
+    // The other direction: a readable decision in the chain that the file leaves out.
+    for a in audit_records {
+        if !records.iter().any(|r| r == a) {
+            errors.push(format!(
+                "evidence.confidence_gate: the audit chain records a decision for gate '{}' \
+                 that {gates_file} does not contain",
+                a.step_id
+            ));
         }
     }
 }
@@ -1212,5 +1225,62 @@ mod tests {
         build_valid_bundle(dir.path());
         let bundle_dir = dir.path().join("run-verify-001");
         assert!(verify_bundle(&bundle_dir).valid);
+    }
+
+    /// A gate record whose audit entry was redacted is still bound by the chain's content
+    /// hash. Forging the score (with a decision that is consistent with it) must be caught
+    /// even though no readable audit record exists for the gate.
+    #[test]
+    fn forged_gate_record_is_rejected_even_when_its_audit_entry_is_redacted() {
+        use crate::confidence::{
+            calibration_sha256, decide, risk_threshold, CalibrationSet, GateRecord,
+        };
+        use crate::workflow::confidence_gate::audit_event_for_record;
+
+        let ex: Vec<serde_json::Value> = (0..100u32)
+            .map(|i| serde_json::json!({"score": i * 10, "correct": i * 10 >= 500}))
+            .collect();
+        let cal =
+            serde_json::to_string(&serde_json::json!({"version": 1, "examples": ex})).unwrap();
+        let set = CalibrationSet::from_json(&cal).unwrap();
+        let threshold = risk_threshold(&set, 50).unwrap();
+        let record = |score: u32| GateRecord {
+            step_id: "gate".into(),
+            source_step: "classify".into(),
+            alpha_permille: 50,
+            calibration_sha256: calibration_sha256(cal.as_bytes()),
+            calibration_examples: set.examples.len(),
+            threshold_permille: threshold,
+            score_permille: Some(score),
+            decision: decide(threshold, Some(score)),
+        };
+
+        let run = |written: &GateRecord, committed: &GateRecord| -> Vec<String> {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("confidence")).unwrap();
+            std::fs::write(
+                dir.path().join("confidence_gates.json"),
+                serde_json::to_string(&vec![written]).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("confidence/gate.calibration.json"), &cal).unwrap();
+            // The chain committed to `committed`; its entry is redacted, so no readable
+            // record is passed, only the content hash.
+            let hashes: std::collections::BTreeSet<String> =
+                [AuditLog::content_hash(&audit_event_for_record(committed))].into();
+            let mut errors = Vec::new();
+            verify_confidence_gates(dir.path(), None, &[], &hashes, &mut errors);
+            errors
+        };
+
+        // The record the run really committed verifies.
+        assert!(run(&record(870), &record(870)).is_empty());
+        // The same file with the score forged to 999 (decision still consistent) is caught.
+        let errs = run(&record(999), &record(870));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("does not match any decision committed")),
+            "{errs:?}"
+        );
     }
 }

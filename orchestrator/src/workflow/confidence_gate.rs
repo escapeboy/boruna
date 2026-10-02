@@ -47,26 +47,30 @@ pub fn evaluate(
         )));
     }
     let path = std::path::Path::new(workflow_dir).join(&gate.calibration);
-    let meta = std::fs::metadata(&path).map_err(|e| {
-        WorkflowRunError::Io(format!(
-            "gate '{step_id}': cannot read calibration '{}': {e}",
-            path.display()
-        ))
-    })?;
-    if meta.len() > MAX_CALIBRATION_BYTES {
+    // Read at most cap + 1 bytes in one go, so a file that grows after a separate size
+    // check cannot slip past the cap.
+    let raw = {
+        use std::io::Read;
+        let io_err = |e: std::io::Error| {
+            WorkflowRunError::Io(format!(
+                "gate '{step_id}': cannot read calibration '{}': {e}",
+                path.display()
+            ))
+        };
+        let file = std::fs::File::open(&path).map_err(io_err)?;
+        let mut buf = Vec::new();
+        file.take(MAX_CALIBRATION_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(io_err)?;
+        buf
+    };
+    if raw.len() as u64 > MAX_CALIBRATION_BYTES {
         return Err(WorkflowRunError::Validation(format!(
-            "gate '{step_id}': calibration '{}' is {} bytes, over the {} byte cap",
+            "gate '{step_id}': calibration '{}' is over the {} byte cap",
             path.display(),
-            meta.len(),
             MAX_CALIBRATION_BYTES
         )));
     }
-    let raw = std::fs::read(&path).map_err(|e| {
-        WorkflowRunError::Io(format!(
-            "gate '{step_id}': cannot read calibration '{}': {e}",
-            path.display()
-        ))
-    })?;
     let text = std::str::from_utf8(&raw).map_err(|e| {
         WorkflowRunError::Validation(format!("gate '{step_id}': calibration is not UTF-8: {e}"))
     })?;
@@ -95,10 +99,16 @@ pub fn evaluate(
 /// variant so older readers still parse the log; the decision field holds the full
 /// [`GateRecord`] as compact JSON, so the hash chain commits to it.
 pub fn audit_event(eval: &GateEvaluation) -> AuditEvent {
+    audit_event_for_record(&eval.record)
+}
+
+/// Same event, built from the record alone. `evidence verify` uses it to recompute the
+/// content hash the chain committed to, which survives redaction of the entry.
+pub fn audit_event_for_record(record: &GateRecord) -> AuditEvent {
     AuditEvent::PolicyEvaluated {
-        step_id: eval.record.step_id.clone(),
+        step_id: record.step_id.clone(),
         rule: AUDIT_RULE.to_string(),
-        decision: serde_json::to_string(&eval.record)
+        decision: serde_json::to_string(record)
             .expect("GateRecord serializes: plain data, no maps with non-string keys"),
     }
 }
@@ -202,6 +212,24 @@ mod tests {
         assert!(evaluate("g", &gate("bad.json"), wd, Ok(Value::Int(900))).is_err());
         assert!(evaluate("g", &gate("../escape.json"), wd, Ok(Value::Int(900))).is_err());
         assert!(evaluate("g", &gate("/etc/passwd"), wd, Ok(Value::Int(900))).is_err());
+    }
+
+    #[test]
+    fn oversized_calibration_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b' '; (MAX_CALIBRATION_BYTES + 1) as usize];
+        std::fs::write(dir.path().join("big.json"), big).unwrap();
+        let err = evaluate(
+            "g",
+            &gate("big.json"),
+            dir.path().to_str().unwrap(),
+            Ok(Value::Int(900)),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, WorkflowRunError::Validation(ref m) if m.contains("cap")),
+            "{err:?}"
+        );
     }
 
     #[test]

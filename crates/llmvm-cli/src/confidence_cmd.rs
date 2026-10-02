@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use boruna_orchestrator::confidence::{
-    calibration_sha256, calibration_share, decide, risk_threshold, CalibrationSet, Decision, NEVER,
+    calibration_sha256, calibration_share, decide, min_wrong_examples, risk_threshold,
+    CalibrationSet, Decision, NEVER,
 };
 
 /// Print the threshold a calibration file gives for `alpha_permille`, and optionally the
@@ -20,7 +21,7 @@ pub fn run_threshold(
     let threshold = risk_threshold(&set, alpha_permille)?;
     let wrong = set.examples.iter().filter(|e| !e.correct).count();
     let (accepted, wrong_accepted) = calibration_share(&set, threshold);
-    let needed_wrong = (1000 / alpha_permille).saturating_sub(1) as usize;
+    let needed_wrong = min_wrong_examples(alpha_permille);
     let decision = score.map(|s| decide(threshold, Some(s)));
     let never = threshold == NEVER;
 

@@ -20,7 +20,7 @@
 //! calibrated.
 //!
 //! The calibration set needs enough wrong examples to certify `alpha`: at least
-//! `1000 / alpha_permille - 1` of them (19 for 5%). With fewer, or with none, the threshold is
+//! `ceil(1000 / alpha_permille) - 1` of them (19 for 5%, 33 for 3%). With fewer, or with none, the threshold is
 //! `NEVER` and every case goes to a human.
 
 use serde::{Deserialize, Serialize};
@@ -131,6 +131,15 @@ pub fn risk_threshold(set: &CalibrationSet, alpha_permille: u32) -> Result<u32, 
         }
     }
     Ok(NEVER)
+}
+
+/// Fewest wrong calibration examples that can certify `alpha_permille`. With `w` wrong
+/// examples the best case is zero of them at or above the threshold, which needs
+/// `1 * 1000 <= alpha_permille * (w + 1)`, so `w >= ceil(1000 / alpha_permille) - 1`.
+pub fn min_wrong_examples(alpha_permille: u32) -> usize {
+    (MAX_SCORE as usize)
+        .div_ceil(alpha_permille.max(1) as usize)
+        .saturating_sub(1)
 }
 
 /// What the calibration set itself looks like at a threshold: how many examples would be
@@ -266,6 +275,45 @@ mod tests {
         let mut pairs: Vec<(u32, bool)> = (0..19u32).map(|i| (i * 10, false)).collect();
         pairs.extend((0..90u32).map(|i| (500 + i * 5, true)));
         assert_ne!(risk_threshold(&set(&pairs), 50).unwrap(), NEVER);
+    }
+
+    #[test]
+    fn minimum_wrong_examples_is_exact_for_every_alpha() {
+        // Wrong examples all score 0; one correct example scores 1000. The only passing
+        // threshold is 1000, which needs zero wrong at or above it.
+        for alpha in 1..=999u32 {
+            let min = min_wrong_examples(alpha);
+            let build = |wrong: usize| {
+                let mut ex: Vec<Example> = (0..wrong)
+                    .map(|_| Example {
+                        score: 0,
+                        correct: false,
+                    })
+                    .collect();
+                ex.push(Example {
+                    score: 1000,
+                    correct: true,
+                });
+                CalibrationSet {
+                    version: CALIBRATION_VERSION,
+                    examples: ex,
+                }
+            };
+            assert_ne!(
+                risk_threshold(&build(min), alpha).unwrap(),
+                NEVER,
+                "alpha {alpha}"
+            );
+            assert_eq!(
+                risk_threshold(&build(min - 1), alpha).unwrap(),
+                NEVER,
+                "alpha {alpha}"
+            );
+        }
+        assert_eq!(min_wrong_examples(50), 19);
+        assert_eq!(min_wrong_examples(30), 33);
+        assert_eq!(min_wrong_examples(70), 14);
+        assert_eq!(min_wrong_examples(999), 1);
     }
 
     #[test]

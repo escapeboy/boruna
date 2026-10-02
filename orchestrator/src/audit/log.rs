@@ -403,7 +403,7 @@ impl AuditLog {
     /// Content commitment for an event: `SHA-256(event_json)`. This is
     /// what the entry (and thus the chain) binds, so the event bytes can
     /// be redacted later without disturbing the chain.
-    fn content_hash(event: &AuditEvent) -> String {
+    pub(crate) fn content_hash(event: &AuditEvent) -> String {
         let event_json = serde_json::to_string(event).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(event_json.as_bytes());

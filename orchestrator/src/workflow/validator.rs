@@ -148,6 +148,9 @@ impl WorkflowValidator {
                     message: format!("gate '{id}': {msg}"),
                 });
             };
+            if id.contains('/') || id.contains('\\') || id.contains("..") {
+                bad("step id is used as a file name in the evidence bundle and must not contain '/', '\\' or '..'".to_string());
+            }
             if !(1..=999).contains(&gate.alpha_permille) {
                 bad(format!(
                     "alpha_permille {} is out of range, must be 1..=999",
@@ -749,5 +752,23 @@ mod tests {
         assert!(!is_safe_relative_path("../c.json"));
         assert!(!is_safe_relative_path("/abs.json"));
         assert!(!is_safe_relative_path(""));
+    }
+
+    #[test]
+    fn confidence_gate_step_id_must_be_a_safe_file_name() {
+        let def = WorkflowDef::from_json(
+            r#"{"schema_version":1,"name":"w","version":"1",
+              "steps":{
+                "classify":{"kind":"source","source":"c.ax"},
+                "rev/../x":{"kind":"approval_gate","required_role":"r","depends_on":["classify"],
+                         "confidence_gate":{"source_step":"classify","calibration":"c.json","alpha_permille":50}}
+              },"edges":[["classify","rev/../x"]]}"#,
+        )
+        .unwrap();
+        let errs = WorkflowValidator::validate(&def).unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| e.kind == ValidationErrorKind::InvalidConfidenceGate
+                && e.message.contains("file name")));
     }
 }

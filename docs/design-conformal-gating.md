@@ -34,7 +34,7 @@ guarantee is gone. Recalibrate from recent labelled cases.
 | Question | Decision | Why |
 |---|---|---|
 | Criterion | Conformal p-value over the wrong calibration examples: threshold is the smallest score `t` with `(wrong_at_or_above_t + 1) / (wrong_total + 1) <= alpha` | Exact, finite-sample, integer arithmetic, replayable. A first draft used all examples and a "wrong and approved" loss. A hand check showed it would approve the top slice even when every calibration answer was wrong, so it was replaced |
-| Too few wrong examples | Threshold `never` | Needs `1000 / alpha_permille - 1` wrong examples (19 at 5%). No wrong examples at all also means `never`, not "approve everything" |
+| Too few wrong examples | Threshold `never` | Needs `ceil(1000 / alpha_permille) - 1` wrong examples (19 at 5%, 33 at 3%). No wrong examples at all also means `never`, not "approve everything" |
 | Score type | `Int` permille 0..=1000 in the source step's `result` | `Record` fields are positional, floats are not reproducible across machines, and a step output is one value. Put the confidence in its own step |
 | Bad or missing score | Escalate to a human | Fail closed |
 | Bad or missing calibration file | Fail the run | A typo must not silently disable a gate |

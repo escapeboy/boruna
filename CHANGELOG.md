@@ -18,6 +18,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   go into the evidence bundle (`confidence_gates.json`, `confidence/<step>.calibration.json`)
   and the hash-chained audit log; `boruna evidence verify` recomputes every decision, so a
   changed decision, a swapped calibration or a dropped file is rejected.
+  `evidence report --framework eu-ai-act` lists auto-approved gates and marks Art. 14 as
+  PARTIAL, since a gate that completed on a score is not human oversight.
   `boruna confidence threshold` shows the threshold before wiring it up. Works in-process
   (sequential, concurrent waves, resume). `--submit-only` and the coordinator reject
   workflows that use it. Existing workflow hashes are unchanged. See
