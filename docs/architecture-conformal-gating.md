@@ -37,13 +37,30 @@ llmvm-cli                boruna confidence threshold; workflow run --record adds
 - `evidence verify` recomputes the decision from the embedded calibration file and
   cross-checks the audit chain both ways, so a flipped decision, a swapped calibration, or a
   dropped `confidence_gates.json` is rejected.
-- Redaction does not open a hole. The cross-check uses the chain's content hash, which a
-  redacted entry keeps. A gate record carries no personal data, so redacting its entry and then
-  dropping the record would hide an auto-approval; when the workflow declares confidence gates,
-  every redacted policy entry must be accounted for by a record in `confidence_gates.json`.
+- Gate decisions cannot be redacted. A redacted audit entry is only a content hash: its event
+  is a non-authoritative placeholder, so it cannot be told apart from a hidden gate decision.
+  Gate records carry no personal data, so `boruna evidence redact` refuses them and
+  `evidence verify` rejects any redacted policy entry (`PolicyEvaluated`). Only this feature
+  emits that event. The cross-check also uses the chain's content hash, so a forged score or
+  threshold is caught either way.
 
 ## Known limits
 
 - The CLI's `--record` bundle for a resumed run lists only the gates evaluated in that call.
   Use `boruna evidence create <run-id>` for a complete bundle, which rebuilds from the audit chain.
 - `confidence_gate` is rejected with `--submit-only` and `coordinator`.
+
+## What verification does not protect against
+
+`evidence verify` is a consistency check plus tamper evidence, not a lock.
+
+- Someone who can write the whole bundle directory and recompute every hash can rebuild
+  everything, including the audit chain (unkeyed SHA-256). Only an external anchor stops that:
+  an anchored or signed `bundle_hash`, or an anchored `audit_log_hash` for the chain.
+- An anchored `audit_log_hash` alone does not cover files outside the chain, and a redaction
+  marker is not bound by the chain. A person with write access who hand-marks an entry as
+  redacted and rewrites its placeholder to another event type is not caught by `verify`
+  (the bundle's own `redact` command refuses gate decisions). Anchor `bundle_hash` or sign the
+  manifest if the bundle can pass through untrusted hands.
+- `manifest.workflow_hash` is not compared with `workflow.json` (also true before this
+  feature).

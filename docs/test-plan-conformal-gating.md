@@ -10,6 +10,13 @@
 | CLI | `crates/llmvm-cli/tests/cli_confidence.rs` | `confidence threshold` JSON, decision, never, bad inputs |
 | CI | `examples/workflows/confidence_gated_review` | Validated, run and bundle-verified by the existing example loop |
 
+| Verify | `orchestrator/src/audit/verify.rs`, `audit/log.rs` | Forged record rejected, any redacted policy entry rejected (with or without a record file), duplicate records rejected, gate entries refused by `redact`, other entries still redactable |
+
+Attacks replayed by hand against the real binary across three independent review rounds:
+flipped decision, swapped or edited calibration, dropped file (with and without recomputed
+manifest), forged score under an unrelated redaction, dropped record behind a redacted gate
+entry, and the same with the declaration stripped from `workflow.json`. All rejected.
+
 Mutation check done by hand: making `decide` ignore the threshold fails four tests
 (runner, wiring, maths unit, empirical rate).
 

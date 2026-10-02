@@ -114,20 +114,28 @@ pub fn risk_threshold(set: &CalibrationSet, alpha_permille: u32) -> Result<u32, 
     let wrong_total = set.examples.iter().filter(|e| !e.correct).count() as u64;
     let budget = u64::from(alpha_permille) * (wrong_total + 1);
 
-    // Candidates: accept everything (0) and each distinct example score.
-    let mut candidates: Vec<u32> = set.examples.iter().map(|e| e.score).collect();
-    candidates.push(0);
-    candidates.sort_unstable();
-    candidates.dedup();
+    // Wrong examples per distinct score, ascending. A threshold equal to a score has every
+    // wrong example at that score or higher above it, which is a suffix sum. One pass
+    // instead of rescanning the set per candidate keeps this O(n log n).
+    let mut wrong_at: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for e in &set.examples {
+        *wrong_at.entry(e.score).or_insert(0) += u64::from(!e.correct);
+    }
+    let scores: Vec<(u32, u64)> = wrong_at.into_iter().collect();
+    let mut suffix = vec![0u64; scores.len() + 1];
+    for i in (0..scores.len()).rev() {
+        suffix[i] = suffix[i + 1] + scores[i].1;
+    }
 
-    for lambda in candidates {
-        let wrong_above = set
-            .examples
-            .iter()
-            .filter(|e| e.score >= lambda && !e.correct)
-            .count() as u64;
-        if (wrong_above + 1) * u64::from(MAX_SCORE) <= budget {
-            return Ok(lambda);
+    // Candidates, ascending: accept everything (0), then each distinct example score. The
+    // first that passes approves the most.
+    let passes = |wrong_above: u64| (wrong_above + 1) * u64::from(MAX_SCORE) <= budget;
+    if passes(wrong_total) {
+        return Ok(0);
+    }
+    for (i, (score, _)) in scores.iter().enumerate() {
+        if passes(suffix[i]) {
+            return Ok(*score);
         }
     }
     Ok(NEVER)

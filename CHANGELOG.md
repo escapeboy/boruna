@@ -17,7 +17,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   the threshold is `never`. The decision, score, threshold and the exact calibration file
   go into the evidence bundle (`confidence_gates.json`, `confidence/<step>.calibration.json`)
   and the hash-chained audit log; `boruna evidence verify` recomputes every decision, so a
-  changed decision, a swapped calibration or a dropped file is rejected.
+  changed decision, a swapped calibration or a dropped file is rejected. Gate decisions
+  cannot be redacted (`evidence redact` refuses them and `verify` rejects a redacted policy
+  entry), because a redacted entry could hide one. The limits of verification are in
+  `docs/architecture-conformal-gating.md`.
   `evidence report --framework eu-ai-act` lists auto-approved gates and marks Art. 14 as
   PARTIAL, since a gate that completed on a score is not human oversight.
   `boruna confidence threshold` shows the threshold before wiring it up. Works in-process
