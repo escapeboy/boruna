@@ -1398,7 +1398,14 @@ mod tests {
         let hashes: std::collections::BTreeSet<String> =
             [AuditLog::content_hash(&audit_event_for_record(&rec))].into();
         let mut errors = Vec::new();
-        verify_confidence_gates(dir.path(), None, &[rec.clone()], &hashes, &[], &mut errors);
+        verify_confidence_gates(
+            dir.path(),
+            None,
+            std::slice::from_ref(&rec),
+            &hashes,
+            &[],
+            &mut errors,
+        );
         assert!(
             errors.iter().any(|e| e.contains("more than one record")),
             "{errors:?}"
