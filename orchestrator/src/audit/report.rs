@@ -204,7 +204,18 @@ fn read_audit_facts(
             _ => {}
         }
     }
-    let gates = crate::workflow::confidence_gate::records_from_audit(log.entries());
+    let mut gates = crate::workflow::confidence_gate::records_from_audit(log.entries());
+    // A gate's audit entry may have been redacted. The bundle's own record file still names
+    // the decision (and `evidence verify` ties it to the chain), so read it too.
+    if let Ok(raw) = std::fs::read_to_string(bundle_dir.join("confidence_gates.json")) {
+        if let Ok(from_file) = serde_json::from_str::<Vec<crate::confidence::GateRecord>>(&raw) {
+            for rec in from_file {
+                if !gates.contains(&rec) {
+                    gates.push(rec);
+                }
+            }
+        }
+    }
     (Some(log.entries().len()), approvals, gates)
 }
 
@@ -961,6 +972,44 @@ mod tests {
         let art14 = report.split("Art. 14").nth(1).expect("Art. 14 row");
         assert!(art14.contains("PARTIAL"), "{art14}");
         assert!(!art14.contains("add an approval step"), "{art14}");
+    }
+
+    #[test]
+    fn auto_approval_is_still_reported_when_its_audit_entry_is_redacted() {
+        use crate::confidence::{Decision, GateRecord};
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder =
+            EvidenceBundleBuilder::new(dir.path(), "run-report-red", "gate-wf").unwrap();
+        builder.add_workflow_def(r#"{"name":"g"}"#).unwrap();
+        builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+        let rec = GateRecord {
+            step_id: "review".into(),
+            source_step: "score".into(),
+            alpha_permille: 100,
+            calibration_sha256: "0".repeat(64),
+            calibration_examples: 200,
+            threshold_permille: 673,
+            score_permille: Some(870),
+            decision: Decision::AutoApproved,
+        };
+        let eval = crate::workflow::definition::GateEvaluation {
+            record: rec,
+            calibration: "{}".into(),
+        };
+        builder.add_confidence_gates(&[eval.clone()]).unwrap();
+        let mut audit = AuditLog::new();
+        audit.append(crate::workflow::confidence_gate::audit_event(&eval));
+        audit.redact_entry(0, None, None).unwrap();
+        builder.finalize(&audit).unwrap();
+        let report = generate_report(
+            &dir.path().join("run-report-red"),
+            ComplianceFramework::EuAiAct,
+            ReportFormat::Markdown,
+        )
+        .unwrap();
+        assert!(report.contains("AUTO-APPROVED"), "{report}");
+        let art14 = report.split("Art. 14").nth(1).expect("Art. 14 row");
+        assert!(art14.contains("PARTIAL"), "{art14}");
     }
 
     #[test]

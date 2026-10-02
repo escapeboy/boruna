@@ -245,7 +245,7 @@ impl EvidenceBundleBuilder {
         sorted.sort_by(|a, b| a.record.step_id.cmp(&b.record.step_id));
         for g in &sorted {
             let id = &g.record.step_id;
-            if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+            if !crate::workflow::confidence_gate::is_safe_step_file_name(id) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("gate step id '{id}' is not a safe file name"),

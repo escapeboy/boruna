@@ -37,6 +37,10 @@ llmvm-cli                boruna confidence threshold; workflow run --record adds
 - `evidence verify` recomputes the decision from the embedded calibration file and
   cross-checks the audit chain both ways, so a flipped decision, a swapped calibration, or a
   dropped `confidence_gates.json` is rejected.
+- Redaction does not open a hole. The cross-check uses the chain's content hash, which a
+  redacted entry keeps. A gate record carries no personal data, so redacting its entry and then
+  dropping the record would hide an auto-approval; when the workflow declares confidence gates,
+  every redacted policy entry must be accounted for by a record in `confidence_gates.json`.
 
 ## Known limits
 

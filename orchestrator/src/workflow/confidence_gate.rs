@@ -21,6 +21,11 @@ pub const AUDIT_RULE: &str = "confidence_gate";
 /// more than a gate needs and is well under it.
 const MAX_CALIBRATION_BYTES: u64 = 4 * 1024 * 1024;
 
+/// True when a gate step id can be used as a file name inside the evidence bundle.
+pub fn is_safe_step_file_name(id: &str) -> bool {
+    !id.is_empty() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
+}
+
 /// The score a source step reported, if its `result` is an `Int` in `0..=1000`.
 pub fn score_from_value(v: &Value) -> Option<u32> {
     match v {

@@ -148,7 +148,7 @@ impl WorkflowValidator {
                     message: format!("gate '{id}': {msg}"),
                 });
             };
-            if id.contains('/') || id.contains('\\') || id.contains("..") {
+            if !crate::workflow::confidence_gate::is_safe_step_file_name(id) {
                 bad("step id is used as a file name in the evidence bundle and must not contain '/', '\\' or '..'".to_string());
             }
             if !(1..=999).contains(&gate.alpha_permille) {
