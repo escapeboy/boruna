@@ -230,6 +230,41 @@ impl EvidenceBundleBuilder {
         self.write_file("model_invoking_steps.json", &json)
     }
 
+    /// Store the confidence-gate decisions as `confidence_gates.json` (sorted by step id)
+    /// and each gate's exact calibration file as `confidence/<step>.calibration.json`, so
+    /// `evidence verify` can recompute every decision. Checksummed and hash-covered like
+    /// every other component. No-op when there are no gates.
+    pub fn add_confidence_gates(
+        &mut self,
+        gates: &[crate::workflow::definition::GateEvaluation],
+    ) -> std::io::Result<()> {
+        if gates.is_empty() {
+            return Ok(());
+        }
+        let mut sorted: Vec<&crate::workflow::definition::GateEvaluation> = gates.iter().collect();
+        sorted.sort_by(|a, b| a.record.step_id.cmp(&b.record.step_id));
+        for g in &sorted {
+            let id = &g.record.step_id;
+            if !crate::workflow::confidence_gate::is_safe_step_file_name(id) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("gate step id '{id}' is not a safe file name"),
+                ));
+            }
+        }
+        let records: Vec<&crate::confidence::GateRecord> =
+            sorted.iter().map(|g| &g.record).collect();
+        let json = serde_json::to_string_pretty(&records).map_err(std::io::Error::other)?;
+        self.write_file("confidence_gates.json", &json)?;
+        for g in sorted {
+            self.write_file(
+                &format!("confidence/{}.calibration.json", g.record.step_id),
+                &g.calibration,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Finalize the bundle: write audit log, env fingerprint, and manifest.
     pub fn finalize(mut self, audit_log: &AuditLog) -> std::io::Result<BundleManifest> {
         let completed_at = chrono::Utc::now().to_rfc3339();
@@ -325,6 +360,10 @@ impl EvidenceBundleBuilder {
         }
         if self.bundle_dir.join("model_invoking_steps.json").exists() {
             components.push("model_invoking_steps.json".to_string());
+        }
+        if self.bundle_dir.join("confidence_gates.json").exists() {
+            components.push("confidence_gates.json".to_string());
+            components.push("confidence/".to_string());
         }
         components.sort();
 

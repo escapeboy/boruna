@@ -1,3 +1,4 @@
+pub mod confidence_gate;
 pub mod data_flow;
 pub mod definition;
 pub mod runner;

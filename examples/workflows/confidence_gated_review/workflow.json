@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "confidence-gated-review",
+  "version": "1.0.0",
+  "description": "A step reports a confidence score. A calibrated gate lets confident answers through without a human and sends the rest to a reviewer.",
+  "steps": {
+    "score": {
+      "kind": "source",
+      "source": "steps/score.ax",
+      "capabilities": [],
+      "outputs": { "result": "Int" }
+    },
+    "review": {
+      "kind": "approval_gate",
+      "required_role": "reviewer",
+      "depends_on": ["score"],
+      "confidence_gate": {
+        "source_step": "score",
+        "calibration": "calibration.json",
+        "alpha_permille": 100
+      }
+    },
+    "publish": {
+      "kind": "source",
+      "source": "steps/publish.ax",
+      "capabilities": [],
+      "depends_on": ["review"],
+      "outputs": { "result": "Int" }
+    }
+  },
+  "edges": [["score", "review"], ["review", "publish"]]
+}

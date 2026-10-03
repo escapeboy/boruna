@@ -1,0 +1,5 @@
+// Step 3: runs once the gate has completed, either automatically or after a human approval.
+
+fn main() -> Int {
+    1
+}

@@ -84,6 +84,10 @@ pub enum RedactError {
     FieldNotFound(String),
     /// Re-serialization of the placeholder event failed.
     Serde(String),
+    /// The entry is a confidence-gate decision. Those carry no personal data and are never
+    /// redacted: a redacted entry cannot be told apart from any other, so allowing it would
+    /// let a gate decision be hidden.
+    Protected(usize),
 }
 
 impl std::fmt::Display for RedactError {
@@ -100,6 +104,11 @@ impl std::fmt::Display for RedactError {
                 write!(f, "field `{name}` not found in the event")
             }
             RedactError::Serde(e) => write!(f, "placeholder serialization failed: {e}"),
+            RedactError::Protected(i) => write!(
+                f,
+                "entry {i} is a confidence-gate decision; gate decisions carry no personal \
+                 data and cannot be redacted"
+            ),
         }
     }
 }
@@ -304,6 +313,13 @@ impl AuditLog {
         if entry.redacted.is_some() {
             return Err(RedactError::AlreadyRedacted(index));
         }
+        if matches!(
+            &entry.event,
+            AuditEvent::PolicyEvaluated { rule, .. }
+                if rule == crate::workflow::confidence_gate::AUDIT_RULE
+        ) {
+            return Err(RedactError::Protected(index));
+        }
 
         let mut value =
             serde_json::to_value(&entry.event).map_err(|e| RedactError::Serde(e.to_string()))?;
@@ -403,7 +419,7 @@ impl AuditLog {
     /// Content commitment for an event: `SHA-256(event_json)`. This is
     /// what the entry (and thus the chain) binds, so the event bytes can
     /// be redacted later without disturbing the chain.
-    fn content_hash(event: &AuditEvent) -> String {
+    pub(crate) fn content_hash(event: &AuditEvent) -> String {
         let event_json = serde_json::to_string(event).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(event_json.as_bytes());
@@ -791,5 +807,31 @@ mod tests {
         assert!(restored.verify().is_ok());
         assert_eq!(restored.redacted_sequences(), vec![1]);
         assert_eq!(restored.hash(), log.hash());
+    }
+
+    #[test]
+    fn confidence_gate_decisions_cannot_be_redacted() {
+        let mut log = AuditLog::new();
+        log.append(AuditEvent::PolicyEvaluated {
+            step_id: "gate".into(),
+            rule: crate::workflow::confidence_gate::AUDIT_RULE.into(),
+            decision: "{}".into(),
+        });
+        log.append(AuditEvent::PolicyEvaluated {
+            step_id: "other".into(),
+            rule: "some_other_rule".into(),
+            decision: "allow".into(),
+        });
+        assert_eq!(
+            log.redact_entry(0, None, None),
+            Err(RedactError::Protected(0))
+        );
+        assert_eq!(
+            log.redact_entry(0, Some("decision"), None),
+            Err(RedactError::Protected(0))
+        );
+        // Only gate decisions are protected.
+        assert!(log.redact_entry(1, None, None).is_ok());
+        assert!(log.verify().is_ok());
     }
 }

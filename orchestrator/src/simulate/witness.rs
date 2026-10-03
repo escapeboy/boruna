@@ -159,6 +159,7 @@ mod tests {
             status,
             step_results: BTreeMap::new(),
             total_duration_ms: 0,
+            confidence_gates: Vec::new(),
         }
     }
 

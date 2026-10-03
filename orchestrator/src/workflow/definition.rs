@@ -229,6 +229,11 @@ pub enum StepKind {
         required_role: String,
         #[serde(default)]
         condition: Option<String>,
+        /// Let the gate complete without a human when a calibrated confidence
+        /// score is high enough. Absent = the gate always pauses (unchanged).
+        /// Skipped when absent so existing workflow hashes stay the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confidence_gate: Option<ConfidenceGate>,
     },
     #[serde(rename = "external_trigger")]
     ExternalTrigger {
@@ -239,6 +244,22 @@ pub enum StepKind {
         #[serde(default)]
         description: Option<String>,
     },
+}
+
+/// Calibrated auto-approval for an approval gate. See `docs/design-conformal-gating.md`.
+///
+/// When the gate becomes ready, the runner reads `source_step`'s `result` (an `Int` in
+/// permille, 0..=1000) and compares it with the threshold computed from the calibration
+/// file at `alpha_permille`. At or above the threshold the gate completes as approved.
+/// Below it, or for a missing or invalid score, the gate pauses for a human as usual.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfidenceGate {
+    /// Step whose `result` is the confidence score. Must be a direct dependency of the gate.
+    pub source_step: String,
+    /// Calibration file, relative to the workflow directory.
+    pub calibration: String,
+    /// Largest share of wrong answers allowed to skip a human, in permille (1..=999).
+    pub alpha_permille: u32,
 }
 
 /// Retry policy for a step.
@@ -330,6 +351,14 @@ pub enum WorkflowStatus {
     Paused,
 }
 
+/// One evaluated confidence gate: the decision record plus the exact calibration file
+/// text it was computed from, so the evidence bundle can carry both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEvaluation {
+    pub record: crate::confidence::GateRecord,
+    pub calibration: String,
+}
+
 /// Result of an entire workflow run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowRunResult {
@@ -338,4 +367,8 @@ pub struct WorkflowRunResult {
     pub status: WorkflowStatus,
     pub step_results: BTreeMap<String, StepResult>,
     pub total_duration_ms: u64,
+    /// Confidence gates evaluated during this call, in step order. Empty for workflows
+    /// without a `confidence_gate`, and then absent from the serialized result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub confidence_gates: Vec<GateEvaluation>,
 }

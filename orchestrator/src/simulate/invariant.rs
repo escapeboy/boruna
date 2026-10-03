@@ -521,6 +521,7 @@ mod tests {
             status: WorkflowStatus::Completed,
             step_results: sr,
             total_duration_ms: 250,
+            confidence_gates: Vec::new(),
         }
     }
 

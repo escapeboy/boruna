@@ -326,6 +326,10 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
 
     // 4. Verify audit log chain integrity (decrypt-then-parse).
     let mut redacted_entries: Vec<u64> = Vec::new();
+    let mut audit_gate_records: Vec<crate::confidence::GateRecord> = Vec::new();
+    let mut audit_content_hashes: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut redacted_policy_seqs: Vec<u64> = Vec::new();
     let audit_path = bundle_dir.join("audit_log.json");
     match std::fs::read(&audit_path) {
         Ok(raw) => {
@@ -356,6 +360,28 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
                                 ));
                             }
                             redacted_entries = audit_log.redacted_sequences();
+                            audit_gate_records =
+                                crate::workflow::confidence_gate::records_from_audit(
+                                    audit_log.entries(),
+                                );
+                            redacted_policy_seqs = audit_log
+                                .entries()
+                                .iter()
+                                .filter(|e| {
+                                    e.redacted.is_some()
+                                        && matches!(
+                                            e.event,
+                                            crate::audit::log::AuditEvent::PolicyEvaluated { .. }
+                                        )
+                                })
+                                .map(|e| e.sequence)
+                                .collect();
+                            audit_content_hashes = audit_log
+                                .entries()
+                                .iter()
+                                .filter(|e| !e.content_sha256.is_empty())
+                                .map(|e| e.content_sha256.clone())
+                                .collect();
                         }
                         Err(e) => {
                             errors.push(format!("invalid audit_log.json: {e}"));
@@ -369,6 +395,17 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
         }
         Err(_) => errors.push("missing audit_log.json".into()),
     }
+
+    // 4b. Confidence gates: recompute each recorded decision from the embedded calibration
+    //     file and cross-check it against the hash-chained audit log.
+    verify_confidence_gates(
+        bundle_dir,
+        envelope.as_ref(),
+        &audit_gate_records,
+        &audit_content_hashes,
+        &redacted_policy_seqs,
+        &mut errors,
+    );
 
     // 5. Verify required files exist
     for required in &[
@@ -388,6 +425,147 @@ pub fn verify_bundle_with_opts(bundle_dir: &Path, opts: &VerifyOptions) -> Verif
         valid: errors.is_empty(),
         errors,
         redacted_entries,
+    }
+}
+
+/// Read a bundle file, decrypting in memory when the bundle is encrypted.
+fn read_plain(
+    bundle_dir: &Path,
+    name: &str,
+    envelope: Option<&Envelope>,
+) -> Result<Vec<u8>, String> {
+    let raw =
+        std::fs::read(bundle_dir.join(name)).map_err(|e| format!("cannot read {name}: {e}"))?;
+    match envelope {
+        Some(env) => env
+            .decrypt_file(name, &raw)
+            .map_err(|e| format!("decrypt {name}: {e}")),
+        None => Ok(raw),
+    }
+}
+
+/// Check `confidence_gates.json` against its embedded calibration files and the audit chain.
+///
+/// Each gate record must (1) match the calibration file's hash, (2) recompute to the same
+/// threshold and decision, and (3) match a decision the audit chain committed to. That match
+/// uses the chain's content hash, which survives redaction of the entry.
+///
+/// Omission is checked too. A readable audit decision missing from the file is an error, and
+/// so is a missing file. A redacted `PolicyEvaluated` entry is always an error: a redacted
+/// entry is only a hash, so it cannot be told apart from a gate decision, gate decisions carry
+/// no personal data, and `boruna evidence redact` refuses them. Only this feature emits
+/// `PolicyEvaluated`; if another one is added, give it a way to be told apart before allowing
+/// its redaction.
+fn verify_confidence_gates(
+    bundle_dir: &Path,
+    envelope: Option<&Envelope>,
+    audit_records: &[crate::confidence::GateRecord],
+    audit_content_hashes: &std::collections::BTreeSet<String>,
+    redacted_policy_seqs: &[u64],
+    errors: &mut Vec<String>,
+) {
+    use crate::confidence::{CalibrationSet, GateRecord};
+    use crate::workflow::confidence_gate::{audit_event_for_record, is_safe_step_file_name};
+    let gates_file = "confidence_gates.json";
+
+    let mut records: Vec<GateRecord> = Vec::new();
+    if bundle_dir.join(gates_file).exists() {
+        match read_plain(bundle_dir, gates_file, envelope) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(r) => records = r,
+                Err(e) => {
+                    errors.push(format!(
+                        "evidence.confidence_gate: invalid {gates_file}: {e}"
+                    ));
+                    return;
+                }
+            },
+            Err(e) => {
+                errors.push(format!("evidence.confidence_gate: {e}"));
+                return;
+            }
+        }
+    } else if !audit_records.is_empty() {
+        errors.push(format!(
+            "evidence.confidence_gate: the audit log records {} gate decision(s) but \
+             {gates_file} is missing",
+            audit_records.len()
+        ));
+    }
+
+    for rec in &records {
+        if !is_safe_step_file_name(&rec.step_id) {
+            errors.push(format!(
+                "evidence.confidence_gate: gate step id '{}' is not a safe file name",
+                rec.step_id
+            ));
+            continue;
+        }
+        let cal_name = format!("confidence/{}.calibration.json", rec.step_id);
+        let raw = match read_plain(bundle_dir, &cal_name, envelope) {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(format!("evidence.confidence_gate: {e}"));
+                continue;
+            }
+        };
+        let set = match std::str::from_utf8(&raw)
+            .map_err(|e| e.to_string())
+            .and_then(|t| CalibrationSet::from_json(t).map_err(|e| e.to_string()))
+        {
+            Ok(set) => set,
+            Err(e) => {
+                errors.push(format!(
+                    "evidence.confidence_gate: gate '{}': bad calibration: {e}",
+                    rec.step_id
+                ));
+                continue;
+            }
+        };
+        if let Err(msg) = rec.verify(&set, &raw) {
+            errors.push(format!("evidence.confidence_gate: {msg}"));
+        }
+        // The chain commits to SHA-256 of the event JSON, and keeps that hash even when the
+        // entry is redacted. Recompute it from this record: a match proves the record is what
+        // the run committed, with or without redaction elsewhere in the log.
+        let committed = crate::audit::log::AuditLog::content_hash(&audit_event_for_record(rec));
+        if !audit_content_hashes.contains(&committed) {
+            errors.push(format!(
+                "evidence.confidence_gate: gate '{}' in {gates_file} does not match any \
+                 decision committed in the audit chain",
+                rec.step_id
+            ));
+        }
+    }
+
+    // The other direction: a readable decision in the chain that the file leaves out.
+    for a in audit_records {
+        if !records.iter().any(|r| r == a) {
+            errors.push(format!(
+                "evidence.confidence_gate: the audit chain records a decision for gate '{}' \
+                 that {gates_file} does not contain",
+                a.step_id
+            ));
+        }
+    }
+
+    // One evaluation per gate per run.
+    let mut seen = std::collections::BTreeSet::new();
+    for rec in &records {
+        if !seen.insert(rec.step_id.as_str()) {
+            errors.push(format!(
+                "evidence.confidence_gate: {gates_file} has more than one record for gate '{}'",
+                rec.step_id
+            ));
+        }
+    }
+
+    for seq in redacted_policy_seqs {
+        errors.push(format!(
+            "evidence.confidence_gate: audit entry {seq} is a redacted policy entry. \
+             Confidence-gate decisions carry no personal data and are never redacted, so this \
+             entry may be a hidden gate decision"
+        ));
     }
 }
 
@@ -1094,5 +1272,143 @@ mod tests {
         build_valid_bundle(dir.path());
         let bundle_dir = dir.path().join("run-verify-001");
         assert!(verify_bundle(&bundle_dir).valid);
+    }
+
+    /// A gate record whose audit entry was redacted is still bound by the chain's content
+    /// hash. Forging the score (with a decision that is consistent with it) must be caught
+    /// even though no readable audit record exists for the gate.
+    #[test]
+    fn forged_gate_record_is_rejected_even_when_its_audit_entry_is_redacted() {
+        use crate::confidence::{
+            calibration_sha256, decide, risk_threshold, CalibrationSet, GateRecord,
+        };
+        use crate::workflow::confidence_gate::audit_event_for_record;
+
+        let ex: Vec<serde_json::Value> = (0..100u32)
+            .map(|i| serde_json::json!({"score": i * 10, "correct": i * 10 >= 500}))
+            .collect();
+        let cal =
+            serde_json::to_string(&serde_json::json!({"version": 1, "examples": ex})).unwrap();
+        let set = CalibrationSet::from_json(&cal).unwrap();
+        let threshold = risk_threshold(&set, 50).unwrap();
+        let record = |score: u32| GateRecord {
+            step_id: "gate".into(),
+            source_step: "classify".into(),
+            alpha_permille: 50,
+            calibration_sha256: calibration_sha256(cal.as_bytes()),
+            calibration_examples: set.examples.len(),
+            threshold_permille: threshold,
+            score_permille: Some(score),
+            decision: decide(threshold, Some(score)),
+        };
+
+        let run = |written: &GateRecord, committed: &GateRecord| -> Vec<String> {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("confidence")).unwrap();
+            std::fs::write(
+                dir.path().join("confidence_gates.json"),
+                serde_json::to_string(&vec![written]).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("confidence/gate.calibration.json"), &cal).unwrap();
+            // The chain committed to `committed`; its entry is redacted, so no readable
+            // record is passed, only the content hash.
+            let hashes: std::collections::BTreeSet<String> =
+                [AuditLog::content_hash(&audit_event_for_record(committed))].into();
+            let mut errors = Vec::new();
+            verify_confidence_gates(dir.path(), None, &[], &hashes, &[], &mut errors);
+            errors
+        };
+
+        // The record the run really committed verifies.
+        assert!(run(&record(870), &record(870)).is_empty());
+        // The same file with the score forged to 999 (decision still consistent) is caught.
+        let errs = run(&record(999), &record(870));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("does not match any decision committed")),
+            "{errs:?}"
+        );
+    }
+
+    /// A redacted entry is only a hash, so a redacted policy entry could be a hidden gate
+    /// decision. It is rejected whatever else the bundle says (including a workflow.json that
+    /// no longer declares any gate), and records dropped behind it cannot make it pass.
+    #[test]
+    fn a_redacted_policy_entry_is_always_rejected() {
+        let run = |seqs: &[u64], with_file: bool| -> Vec<String> {
+            let dir = tempfile::tempdir().unwrap();
+            if with_file {
+                std::fs::write(dir.path().join("confidence_gates.json"), "[]").unwrap();
+            }
+            let mut errors = Vec::new();
+            verify_confidence_gates(
+                dir.path(),
+                None,
+                &[],
+                &std::collections::BTreeSet::new(),
+                seqs,
+                &mut errors,
+            );
+            errors
+        };
+        for with_file in [true, false] {
+            let errs = run(&[2], with_file);
+            assert!(
+                errs.iter()
+                    .any(|e| e.contains("entry 2 is a redacted policy entry")),
+                "{with_file}: {errs:?}"
+            );
+        }
+        assert!(run(&[], true).is_empty());
+        assert!(run(&[], false).is_empty());
+    }
+
+    #[test]
+    fn two_records_for_one_gate_are_rejected() {
+        use crate::confidence::{
+            calibration_sha256, decide, risk_threshold, CalibrationSet, GateRecord,
+        };
+        use crate::workflow::confidence_gate::audit_event_for_record;
+        let ex: Vec<serde_json::Value> = (0..100u32)
+            .map(|i| serde_json::json!({"score": i * 10, "correct": i * 10 >= 500}))
+            .collect();
+        let cal =
+            serde_json::to_string(&serde_json::json!({"version": 1, "examples": ex})).unwrap();
+        let set = CalibrationSet::from_json(&cal).unwrap();
+        let t = risk_threshold(&set, 50).unwrap();
+        let rec = GateRecord {
+            step_id: "gate".into(),
+            source_step: "c".into(),
+            alpha_permille: 50,
+            calibration_sha256: calibration_sha256(cal.as_bytes()),
+            calibration_examples: set.examples.len(),
+            threshold_permille: t,
+            score_permille: Some(870),
+            decision: decide(t, Some(870)),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("confidence")).unwrap();
+        std::fs::write(
+            dir.path().join("confidence_gates.json"),
+            serde_json::to_string(&vec![&rec, &rec]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("confidence/gate.calibration.json"), &cal).unwrap();
+        let hashes: std::collections::BTreeSet<String> =
+            [AuditLog::content_hash(&audit_event_for_record(&rec))].into();
+        let mut errors = Vec::new();
+        verify_confidence_gates(
+            dir.path(),
+            None,
+            std::slice::from_ref(&rec),
+            &hashes,
+            &[],
+            &mut errors,
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("more than one record")),
+            "{errors:?}"
+        );
     }
 }

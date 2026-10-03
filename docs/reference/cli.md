@@ -214,6 +214,23 @@ artifact byte size. Nothing is written to disk.
 
 ---
 
+## `boruna confidence`
+
+Calibrated confidence for approval gates. See `docs/design-conformal-gating.md`.
+
+```bash
+boruna confidence threshold <calibration.json> --alpha-permille <1..999> [--score <0..1000>] [--json]
+```
+
+Reads a labelled calibration set and prints the score at or above which a gate may skip a
+human, so that a wrong answer is auto-approved with probability at most `alpha`. Also
+prints how the calibration set itself would have behaved at that threshold, and the
+decision for `--score` when given. When the set has too few wrong examples to certify
+`alpha` (at least `ceil(1000 / alpha_permille) - 1` are needed), the threshold is `never` and
+every case goes to a human. Exits 1 on an invalid file or alpha.
+
+---
+
 ## `boruna skills`
 
 Embedded, agent-curated documentation — compiled into the binary so an agent can
