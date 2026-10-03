@@ -20,13 +20,15 @@ boruna workflow run <workflow-dir> --policy path/to/policy.json
 boruna workflow run <workflow-dir> --policy allow-all --record
 boruna workflow run <workflow-dir> --record --evidence-dir ./evidence
 ```
-Produces an evidence bundle directory containing:
-- `manifest.json` — bundle metadata with checksums
+Produces an evidence bundle directory `<evidence-dir>/<run-id>/` containing:
+- `manifest.json` — bundle hash, audit log hash, policy/workflow hashes and per-file checksums
+- `bundle.json` — bundle format version, Boruna version, run ID, workflow hash
 - `workflow.json` — workflow definition snapshot
 - `policy.json` — policy snapshot
 - `audit_log.json` — hash-chained audit entries
 - `env_fingerprint.json` — runtime environment info
-- `outputs/<step_id>/result.json` — per-step output data
+
+Per-step outputs are not written by `workflow run --record`. `boruna evidence create` builds a bundle from a persisted run in `--data-dir` and does include per-step outputs.
 
 ## Verifying Evidence
 
@@ -44,6 +46,20 @@ boruna evidence inspect <bundle-dir> --json
 ```
 Displays bundle manifest details.
 
+Other `boruna evidence` subcommands (see `boruna evidence --help` and [CLI reference](reference/cli.md)):
+
+| Command | Purpose |
+|---------|---------|
+| `create` | Build a bundle from a persisted run in `--data-dir` |
+| `diff` | Compare two bundles |
+| `redact` | Verifiably redact one audit-log entry (e.g. PII) without breaking verification |
+| `attest` | Emit or verify an in-toto Statement + DSSE envelope |
+| `anchor` | Anchor a signed bundle in a Sigstore Rekor transparency log |
+| `report` | Compliance evidence-mapping report (not a certificate of compliance) |
+| `otel` | Export the run as OpenTelemetry spans in OTLP/JSON |
+| `rotate-kek` | Rotate the key-encryption key on encrypted bundles |
+| `gc-blobs` | Remove orphan blobs from the data dir |
+
 ## Replay
 
 For single-file execution:
@@ -60,11 +76,12 @@ For workflow-level replay, re-run the workflow in mock mode using recorded outpu
 - CLI output shows per-step status, duration, and errors
 - Evidence bundles capture all execution details
 - Audit log provides ordered event history
+- `boruna metrics export --data-dir <dir>` prints Prometheus text metrics from the persistent run store: `boruna_workflow_runs_total{workflow,status}`, `boruna_workflow_runs_in_flight{workflow}`, `boruna_workflow_step_completions_total{workflow,step,status}`. There is no HTTP endpoint; write the output to a file for `node_exporter`'s textfile collector (see `docs/design-prometheus-metrics.md`)
+- `boruna evidence otel <bundle-dir>` exports a recorded run as OpenTelemetry spans in OTLP/JSON. It makes no network calls; send the file to a collector yourself
 
 ### Planned (Gap)
 - Structured JSON logging via `tracing` crate
-- Metrics (latency per step, cache hit rate, budget consumption)
-- OpenTelemetry trace export
+- Metrics for per-step latency, cache hit rate and budget consumption
 
 ## CI Integration
 
@@ -88,4 +105,4 @@ cargo build --release --bin boruna
 # Binary at: target/release/boruna
 ```
 
-Daemon/service mode is documented as a P2 gap in `ENTERPRISE_GAPS.md`.
+Daemon/service mode is documented as a P2 gap in [`archive/ENTERPRISE_GAPS.md`](archive/ENTERPRISE_GAPS.md).

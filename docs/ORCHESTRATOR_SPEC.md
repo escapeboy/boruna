@@ -55,7 +55,7 @@ The engine uses topological sort to determine execution order:
 3. When a node passes, decrement successors' in-degree.
 4. Nodes reaching in-degree 0 become `ready`.
 
-Concurrency is bounded by `max_parallel` (default: 4). Retry policy: transient failures (exit code > 128) retry up to 2 times with 1s delay. Permanent failures (exit code 1) do not retry.
+Concurrency is bounded by `max_parallel` (the CLI uses 4). There is no automatic retry: a failed gate leaves the node `failed`, and re-running it is a manual step.
 
 ## 3. Roles
 
@@ -95,7 +95,7 @@ A node can only reach `passed` if both steps succeed. The Implementer and Review
   },
   "patches": [
     {
-      "file": "crates/boruna-bytecode/src/opcode.rs",
+      "file": "crates/llmbc/src/opcode.rs",
       "hunks": [
         {
           "start_line": 45,
@@ -148,7 +148,7 @@ For MVP, locking operates at the crate/module level:
 
 | Lock Target | Granularity | Example |
 |------------|-------------|---------|
-| Crate | Entire crate directory | `crates/boruna-bytecode` |
+| Crate | Entire crate directory | `crates/llmbc` |
 | Example | Example directory | `examples/admin_crud` |
 | Doc | Single file | `docs/language-guide.md` |
 
@@ -157,7 +157,7 @@ For MVP, locking operates at the crate/module level:
 1. When a node transitions to `running`, locks are acquired for all `outputs`.
 2. If any lock is held by another node, the requesting node becomes `blocked`.
 3. Locks are released when the node reaches `passed` or `failed`.
-4. Stale locks (node stuck in `running` > timeout) can be force-released via `boruna-orch status --force-unlock <node-id>`.
+4. There is no stale-lock timeout and no CLI command to force-release a lock. The library exposes `LockTable::force_release(module)` for callers that need it.
 
 ### 5.3 Conflict Detection
 
@@ -174,8 +174,8 @@ Every patch bundle must pass these gates in order:
 |------|---------|---------------|
 | 1. Compile | `cargo build --workspace` | Exit code 0 |
 | 2. Test | `cargo test --workspace` | All tests pass |
-| 3. Replay | `cargo run -- framework trace-hash <file>` | Hash matches expected |
-| 4. Lint (optional) | `cargo clippy --workspace` | No errors |
+| 3. Replay | `cargo run -p boruna-cli -- framework trace-hash <file>` | Hash matches expected |
+| 4. Lint (optional) | `cargo clippy --workspace` | No errors (no adapter yet; not run by `apply`/`review`) |
 
 Gate results are recorded per-node:
 
@@ -233,8 +233,13 @@ trait GateAdapter {
 Built-in adapters:
 - `CompileAdapter` — runs `cargo build --workspace`
 - `TestAdapter` — runs `cargo test --workspace`, parses test counts
-- `ReplayAdapter` — runs `cargo run -- framework trace-hash`, compares hashes
-- `DiagAdapter` — runs `cargo run -- framework diag`, captures JSON output
+- `ReplayAdapter` — runs `cargo run -p boruna-cli -- framework trace-hash`, compares hashes
+- `DiagAdapter` — runs `cargo run -p boruna-cli -- framework diag`, captures JSON output (informational, always passes)
+- `PackageVerifyAdapter` — runs `cargo run -p boruna-pkg -- verify`
+- `PackageResolveAdapter` — runs `cargo run -p boruna-pkg -- resolve`
+- `LlmMockGateAdapter` — fails if `LLM_BACKEND=external`, otherwise runs `cargo test -p boruna-effect`
+
+`apply` and `review` build their gate list from the bundle's `expected_checks`: `CompileAdapter`, `TestAdapter` and `ReplayAdapter` (the CLI passes no expected hashes, so the replay gate reports `skip`). The other adapters are library API and are not wired into the CLI.
 
 ## 10. Non-Goals (MVP)
 
