@@ -168,6 +168,19 @@ jobs:
         shell: bash
         run: cargo test --workspace --locked --no-fail-fast
 
+      - name: Diagnose a failing subcommand (Windows only)
+        if: always() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set +e
+          for args in "lang codes" "doctor --json" "size --json"; do
+            echo "== boruna $args"
+            ./target/debug/boruna.exe $args >/tmp/out.txt 2>/tmp/err.txt
+            echo "exit code: $?"
+            echo "stdout bytes: $(wc -c </tmp/out.txt)"
+            head -c 600 /tmp/err.txt
+          done
+
       - name: Smoke test (version, workflow run, evidence verify)
         shell: bash
         run: |
