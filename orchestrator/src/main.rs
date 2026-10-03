@@ -7,7 +7,11 @@ use boruna_orchestrator::cli;
 use boruna_orchestrator::engine::Role;
 
 #[derive(Parser)]
-#[command(name = "boruna-orch", about = "Boruna Multi-Agent Orchestrator")]
+#[command(
+    name = "boruna-orch",
+    version,
+    about = "Boruna Multi-Agent Orchestrator"
+)]
 struct Cli {
     /// Workspace root directory (default: current directory)
     #[arg(long, default_value = ".")]

@@ -127,6 +127,80 @@ jobs:
       # API but fake-gcs-server only implements the GCS JSON API. Run manually with a real
       # GCS endpoint and GOOGLE_SERVICE_ACCOUNT_KEY set.
 
+  platforms:
+    # Boruna ships binaries for macOS (arm64, x86_64), Windows (x64, arm64) and Linux
+    # (x86_64, arm64). The jobs above run on one Linux x86_64 machine, so this one builds,
+    # tests and runs a real workflow on each of the other platforms, natively. Without it a
+    # Unix-only assumption (a device path, a file mode, a path separator) only shows up when a
+    # user on that platform hits it.
+    name: Platform (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macOS arm64, os: macos-14 }
+          - { name: macOS x86_64, os: macos-15-intel }
+          - { name: Windows x86_64, os: windows-latest }
+          - { name: Windows arm64, os: windows-11-arm }
+          - { name: Linux arm64, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: platform-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: platform-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build
+        shell: bash
+        run: cargo build --workspace --locked
+
+      - name: Run tests
+        shell: bash
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Diagnose a failing subcommand (Windows only)
+        if: always() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set +e
+          for args in "lang codes" "doctor --json" "size --json"; do
+            echo "== boruna $args"
+            ./target/debug/boruna.exe $args >/tmp/out.txt 2>/tmp/err.txt
+            echo "exit code: $?"
+            echo "stdout bytes: $(wc -c </tmp/out.txt)"
+            head -c 600 /tmp/err.txt
+          done
+
+      - name: Packaging tools used by release.yml (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir pkgcheck && cp target/debug/boruna.exe pkgcheck/
+          pwsh -NoProfile -Command "Compress-Archive -Path 'pkgcheck' -DestinationPath 'pkgcheck.zip'"
+          sha256sum pkgcheck.zip
+
+      - name: Smoke test (version, workflow run, evidence verify)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -q --locked --bin boruna -- --version
+          out="$(mktemp -d)"
+          cargo run -q --locked --bin boruna -- workflow run examples/workflows/confidence_gated_review \
+            --policy allow-all --record --data-dir "$out" --evidence-dir "$out/evidence"
+          run_id="$(ls "$out/evidence" | head -1)"
+          cargo run -q --locked --bin boruna -- evidence verify "$out/evidence/$run_id"
+
   clippy:
     name: Clippy
     runs-on: self-hosted

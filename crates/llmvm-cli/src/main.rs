@@ -29,6 +29,7 @@ mod workflow_eval;
 #[derive(Parser)]
 #[command(
     name = "boruna",
+    version,
     about = "Boruna — deterministic, capability-safe language"
 )]
 struct Cli {
@@ -1207,7 +1208,7 @@ enum FrameworkCommand {
 /// are still emitted (the `tracing` dep is non-optional in `boruna-vm`)
 /// but go nowhere because no subscriber is installed. Zero overhead.
 #[cfg(feature = "telemetry")]
-fn main() {
+fn real_main() {
     let runtime = tokio::runtime::Runtime::new()
         .expect("failed to start tokio runtime for telemetry feature");
     // Enter the runtime BEFORE init_telemetry — the OTel batch exporter
@@ -1246,12 +1247,29 @@ fn main() {
 }
 
 #[cfg(not(feature = "telemetry"))]
-fn main() {
+fn real_main() {
     let cli = Cli::parse();
 
     if let Err(e) = run(cli) {
         eprintln!("error: {e}");
         process::exit(1);
+    }
+}
+
+/// Windows gives the main thread a 1 MB stack (Linux and macOS give 8 MB). The command tree
+/// and the compiler recurse deeply enough that `boruna` overflowed it on any real subcommand
+/// (only `--version` survived). Run everything on a thread with an explicit, larger stack so
+/// all platforms behave the same.
+const MAIN_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+fn main() {
+    let worker = std::thread::Builder::new()
+        .name("boruna-main".into())
+        .stack_size(MAIN_STACK_BYTES)
+        .spawn(real_main)
+        .expect("failed to start the main worker thread");
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
     }
 }
 

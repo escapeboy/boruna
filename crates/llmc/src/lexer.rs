@@ -18,10 +18,10 @@ pub struct LexOutput {
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t]+")]
+#[logos(skip r"[ \t\r]+")]
 pub enum TokenKind {
     /// Captured line comment — stripped from the token stream and attached as trivia.
-    #[regex(r"//[^\n]*", |lex| lex.slice().to_string())]
+    #[regex(r"//[^\r\n]*", |lex| lex.slice().to_string())]
     LineComment(String),
     // Keywords
     #[token("fn")]
@@ -254,4 +254,26 @@ pub fn lex_full(source: &str) -> Result<LexOutput, CompileError> {
 /// but still attached as `leading_trivia` on individual tokens).
 pub fn lex(source: &str) -> Result<Vec<Token>, CompileError> {
     lex_full(source).map(|o| o.tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crlf_source_lexes_like_lf_source() {
+        let lf = "// header\nfn main() -> Int {\n    // note\n    1\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        let kinds =
+            |s: &str| -> Vec<TokenKind> { lex(s).unwrap().into_iter().map(|t| t.kind).collect() };
+        assert_eq!(kinds(lf), kinds(&crlf));
+    }
+
+    #[test]
+    fn crlf_does_not_leak_into_comment_trivia() {
+        let out = lex_full("fn main() -> Int { 1 } // tail\r\n").unwrap();
+        assert!(out.trailing_trivia.iter().all(|t| match t {
+            Trivia::LineComment(c) => !c.contains('\r'),
+        }));
+    }
 }

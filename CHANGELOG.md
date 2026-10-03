@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--version` / `-V` on all four binaries (`boruna`, `boruna-mcp`, `boruna-pkg`, `boruna-orch`).
+- Release binaries for macOS Intel (`x86_64-apple-darwin`) and Windows (`x86_64-pc-windows-msvc`,
+  `aarch64-pc-windows-msvc`, packaged as `.zip`). Previously the README listed macOS Intel but no
+  such binary was published, and there was no Windows build.
+- CI job that builds, tests and runs an example workflow with `evidence verify` natively on macOS
+  arm64, macOS Intel, Windows x64, Windows on Arm and Linux arm64.
+- `.gitattributes` pins LF line endings so golden files and the changelog are identical on Windows.
+
+### Fixed
+- Windows: `boruna` overflowed the 1 MB main-thread stack on every command except `--version`. It
+  now runs on a 64 MB stack thread on all platforms.
+- Windows: `.ax` sources with CRLF line endings failed to compile (`unexpected character "\r"`).
+- Windows: patch bundles with a rooted path such as `/etc/passwd` passed the absolute-path check,
+  because such a path has no drive letter. Rooted, drive-letter and backslash-rooted paths are now
+  rejected on every platform.
+- Workflow trigger tokens read `/dev/urandom` and so could not be created on Windows; they now use
+  the operating system's random source and fail instead of falling back to weak randomness.
+
 ## [3.3.0] — 2026-10-03
 
 Additive feature release — no breaking changes. Two ideas from the agentlanguages.dev review:

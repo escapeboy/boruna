@@ -1,0 +1,8 @@
+# Keep checked-in text byte-identical on every platform. Golden files, the changelog and
+# .ax sources are compared or hashed as text, so a Windows checkout must not turn them into CRLF.
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary

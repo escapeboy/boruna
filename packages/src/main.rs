@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "boruna-pkg", about = "Boruna Package Manager")]
+#[command(name = "boruna-pkg", version, about = "Boruna Package Manager")]
 struct Cli {
     /// Registry directory (default: ./packages/registry)
     #[arg(long, default_value = "packages/registry")]

@@ -2,6 +2,11 @@
 
 The `boruna` binary is the primary interface for compiling, running, inspecting, and managing `.ax` programs and workflows.
 
+## Version
+
+`boruna --version` (or `-V`) prints `boruna <version>`. The other binaries (`boruna-mcp`,
+`boruna-pkg`, `boruna-orch`) do the same.
+
 ## Installation
 
 ```bash

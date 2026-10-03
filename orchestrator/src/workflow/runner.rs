@@ -3641,39 +3641,27 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Generate a fresh 16-byte trigger token from `/dev/urandom`, hex-
-/// encoded (sprint 0.3-S15). The token is the operator-facing security
-/// boundary that binds a `boruna workflow trigger` invocation to a
-/// specific pause instance.
+/// Generate a fresh 16-byte trigger token from the operating system's random source,
+/// hex-encoded (sprint 0.3-S15). The token is the operator-facing security boundary that
+/// binds a `boruna workflow trigger` invocation to a specific pause instance.
 ///
-/// **Why `/dev/urandom` and not the `rand` crate?** Avoids a dep for
-/// one helper. Posix-only by design — the persistence feature already
-/// requires file-backed SQLite, so the orchestrator never runs where
-/// `/dev/urandom` is absent.
+/// Uses `rand_core::OsRng`, which the evidence-bundle encryption already depends on. It reads
+/// `getrandom(2)` / `/dev/urandom` on Linux and the BSDs, `getentropy` on macOS and the
+/// system CSPRNG on Windows, so the same code runs on every platform Boruna ships for. (An
+/// earlier version opened `/dev/urandom` directly, which does not exist on Windows.)
 ///
-/// **No fallback.** If `/dev/urandom` cannot be read, the function
-/// returns `Err`. Reviewed in 0.3-S15 — a prior version degraded to a
-/// `SystemTime + pid + counter` hash, which gave low-entropy,
-/// observer-predictable tokens silently. The trigger token IS the
-/// security boundary, so entropy failure is not a graceful-degradation
-/// concern. A `/dev/urandom` failure on a real Unix system signals a
-/// fundamentally misconfigured environment (chroot/cgroup denying the
-/// device, or filesystem corruption); the trigger flow refusing to
-/// pause loudly is the right response.
+/// **No fallback.** If the OS cannot supply entropy the function returns `Err`. Reviewed in
+/// 0.3-S15 — a prior version degraded to a `SystemTime + pid + counter` hash, which gave
+/// low-entropy, observer-predictable tokens silently. The trigger token IS the security
+/// boundary, so entropy failure is not a graceful-degradation concern; the trigger flow
+/// refusing to pause loudly is the right response.
 #[cfg(feature = "persist-sqlite")]
 fn generate_trigger_token() -> Result<String, WorkflowRunError> {
-    use std::io::Read;
+    use rand_core::{OsRng, RngCore};
     let mut buf = [0u8; 16];
-    let mut f = std::fs::File::open("/dev/urandom").map_err(|e| {
-        WorkflowRunError::Io(format!(
-            "trigger token entropy unavailable: cannot open /dev/urandom: {e}"
-        ))
-    })?;
-    f.read_exact(&mut buf).map_err(|e| {
-        WorkflowRunError::Io(format!(
-            "trigger token entropy unavailable: short read from /dev/urandom: {e}"
-        ))
-    })?;
+    OsRng
+        .try_fill_bytes(&mut buf)
+        .map_err(|e| WorkflowRunError::Io(format!("trigger token entropy unavailable: {e}")))?;
     Ok(hex_lower(&buf))
 }
 
@@ -5170,6 +5158,18 @@ impl std::fmt::Display for WorkflowRunError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "persist-sqlite")]
+    #[test]
+    fn trigger_tokens_are_32_hex_chars_and_not_repeated() {
+        let tokens: Vec<String> = (0..64).map(|_| generate_trigger_token().unwrap()).collect();
+        for t in &tokens {
+            assert_eq!(t.len(), 32, "{t}");
+            assert!(t.chars().all(|c| c.is_ascii_hexdigit()), "{t}");
+        }
+        let unique: std::collections::BTreeSet<&String> = tokens.iter().collect();
+        assert_eq!(unique.len(), tokens.len(), "a token repeated");
+    }
 
     fn make_workflow_with_steps(step_sources: &[(&str, &str)]) -> (WorkflowDef, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
