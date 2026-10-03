@@ -1,271 +1,265 @@
-# Long-Term Support (LTS) and Deprecation Policy
+# Support and Deprecation Policy
 
-This document is the contract Boruna offers to operators, integrators, and
-auditors who deploy 1.x in production. It is the single source of truth for:
+This document says which Boruna releases are supported, what stays
+compatible within a major line, how features are deprecated and removed,
+and how security fixes are released.
 
-- Which release tracks are supported and for how long.
-- What we promise will not break inside the 1.x line.
-- What we explicitly reserve the right to change inside 1.x.
-- How we handle deprecations and migrations into 2.x.
-- How we backport security fixes.
-- How and when we end-of-life a major version.
-
-The 1.0.0 release closes the spec on every surface listed in section B. After
-1.0 ships, those surfaces are LTS-protected for the duration of 1.x.
+The short version: **only the latest major line is supported.** Today that
+is **3.x**. The current release is 3.5.0 (2026-10-03).
 
 ## A. Support windows
 
-| Track | Status | First release | Last release | Active support | Security support |
-|-------|--------|---------------|--------------|----------------|------------------|
-| 1.x | **LTS — IN FORCE** | 2026-04-28 ([v1.0.0](../CHANGELOG.md#100---2026-04-28)) | TBD | through 2027-11-15 (18 months from GA) | through 2028-05-15 (24 months from GA) |
-| 0.x | EOL | 2026-02-21 (LLM-Lang) → 2026-04-28 ([v0.5.0](../CHANGELOG.md#050---2026-04-28)) | 2026-04-28 (1.0 GA) | EOL | None |
+| Line | Status | First release | Support |
+|------|--------|---------------|---------|
+| 3.x | **Supported** | 2026-07-18 ([v3.0.0](../CHANGELOG.md)) | Bug fixes and security fixes in new 3.y releases |
+| 2.x | End of life since 2026-07-18 | 2026-07-17 (v2.0.0) | None |
+| 1.x | End of life since 2026-07-18 | 2026-04-28 (v1.0.0) | None |
+| 0.x | End of life since 2026-04-28 | 2026-02-21 (v0.1.0) | None |
 
-Definitions:
+Rules:
 
-- **Active support** — receives bug fixes, security fixes, and additive
-  features (new CLI flags, new MCP fields, new `error_kind` values). Operators
-  on the latest 1.y minor get the full active-support stream.
-- **Security support** — receives security fixes only. New 1.y.z patch
-  releases are cut on the affected line; no functional or performance changes
-  ride along. After active support ends, 1.x continues to receive security
-  patches for an additional 6 months.
-- **0.x EOL** — once 1.0 ships, the 0.x line receives no further fixes. Users
-  on 0.x are expected to upgrade to 1.x using the migration tooling shipped
-  in sprint W5-C (see `docs/roadmap.md` 1.0.0 section).
+- Only the latest major line receives fixes.
+- Within that line, fixes ship in the next minor or patch release of the
+  line. There are no backports to older minor releases. If you run 3.2 and
+  a fix ships in 3.5.1, the fix is in 3.5.1, not in a 3.2.x release.
+- When a new major line ships, the previous major line is end of life on
+  the same day (see section G).
 
-Dates marked `TBD` are pinned at 1.0 tag time. The policy described in this
-document is in force regardless of those dates being filled in.
+### If you are on 1.x or 2.x
 
-## B. What we commit to in the 1.x line
+1.x and 2.x reached end of life when 3.0.0 shipped on 2026-07-18. They get
+no further releases, including security fixes. Upgrade to the latest 3.x
+release.
 
-Inside 1.x, the following surfaces are **stable**. Every 1.0 program, workflow,
-bundle, integration, and tool invocation works unchanged on 1.y for any
-supported `y`. Additive changes (new fields, new flags, new variants) are
-allowed; removals and renames are not.
+What changed on the way:
+
+- **2.0.0** made integer overflow a runtime error, made framework policy
+  defaults fail closed, and rejects codegen operand counts above 255. See
+  the "Breaking changes" list in [`CHANGELOG.md`](../CHANGELOG.md) under
+  2.0.0.
+- **3.0.0** removed the HTTP server layer: the coordinator, distributed
+  workers, HA, the workflow dashboard, the evidence web viewer, the
+  approval console, the `serve` cargo feature, the `coordinator`,
+  `dashboard`, `worker` and `evidence serve` commands, and the
+  `--coordinator` / `--coord-token` flags. Approval and trigger gates are
+  handled locally with `boruna workflow approve/reject/trigger` and
+  `boruna workflow resume`. If you used any of the removed parts, there is
+  no replacement in 3.x.
+
+`.ax` programs, `workflow.json` files and evidence bundles written for 1.x
+or 2.x do not need conversion: the language, workflow schema and bundle
+format versions did not change major version (see section B).
+
+[`docs/guides/migration.md`](./guides/migration.md) and `boruna migrate`
+only cover artifacts from before 1.0 (bundles without `bundle.json`,
+workflows without `schema_version`). They are not needed for a 1.x or 2.x
+upgrade.
+
+## B. What stays compatible within the current major line
+
+Within the current major line, the surfaces below do not break. A program,
+workflow, bundle or integration that works on one 3.y release works on
+every later 3.y release. Additions (new fields, new flags, new values) are
+allowed. Removals, renames and type changes are not.
+
+### Release version and format versions are separate
+
+The Boruna release version (3.5.0) is not the version of the language or
+of the file formats. Each has its own version:
+
+| Surface | Current version | Defined in |
+|---------|-----------------|------------|
+| `.ax` language | 1.1 | `boruna_compiler::LANGUAGE_VERSION` |
+| Bytecode | 1.1 | `boruna_bytecode::BYTECODE_VERSION` |
+| Evidence bundle format | 1.1 | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
+| Workflow DAG schema | 1 | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
+| MCP tool responses | `protocol_version: 1` | `boruna-mcp` |
+
+These versions move by their own rules. Boruna 2.0.0 and 3.0.0 did not
+bump any of them to a new major. A breaking change to one of them (for
+example language 2.0) would ship only in a new Boruna major release.
 
 ### B.1 Language
 
-- **`.ax` `language_version: "1.x"`** — every 1.0 `.ax` source file
-  type-checks, compiles, and runs on every 1.y.z. The stable surface
-  includes: token grammar, type system (records, enums, generics-free
-  monomorphic types), pattern matching, capability annotations, the standard
-  type set (`Int`, `Float`, `String`, `Bool`, `Unit`, `Option<T>`,
-  `Result<T,E>`, `List<T>`, `Map<K,V>`).
+The `.ax` language follows the rule in
+[`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md) §1.2: within
+language 1.x, changes are additive only. No renames, no removed builtins,
+no tightened type rules. A program that compiles under language 1.x
+compiles under every later 1.y. Breaking language changes wait for
+language 2.0.
+
+New diagnostics may be added as warnings. For example, `E009` (type
+mismatch) and `E010` (reassigning a binding without `mut`) are warnings in
+language 1.x. `E010` is documented to become an error in language 2.0.
 
 ### B.2 Workflow DAG schema
 
-- **`workflow.json` schema 1.x** — every 1.0 workflow validates with a 1.y
-  validator. The stable surface includes: required/optional fields, their
-  types and value domains, the DAG validation rules (acyclic, topological
-  ordering), and the per-step `inputs` / `outputs` contracts. New optional
-  fields may be added in minor releases.
+Every `workflow.json` with `schema_version: 1` that validates on one 3.y
+release validates on every later 3.y. This covers the required and
+optional fields, their types, the DAG rules (acyclic, topological order)
+and the per-step inputs and outputs. New optional fields may be added in
+minor releases (3.3.0 added `confidence_gate` on approval gates this way).
+Spec: [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md).
 
 ### B.3 Evidence bundle format
 
-- **Evidence bundle format 1.x** — every 1.0 bundle is verifiable
-  byte-identically by every 1.y reader. The stable surface includes: the
-  on-disk directory layout, the canonical JSON encoding of `audit_log.json`
-  / `events.json` / `manifest.json`, the SHA-256 hash-chain construction,
-  and the genesis-entry contents. New optional metadata fields may be added,
-  but they are not part of the chained hashes.
+Every bundle with a 1.x `format_version` verifies with every 3.y reader.
+This covers the directory layout, the canonical JSON encoding, and the
+SHA-256 hash-chain construction. Format 1.1 (3.2.0) added per-entry
+content hashes for redaction and still reads 1.0 bundles. Spec:
+[`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md).
 
 ### B.4 MCP tool response shapes
 
-- **MCP `protocol_version: 1` response shapes** — the keys, types, and
-  semantics of every documented MCP tool response are stable. Field
-  additions are allowed; removals and type changes are not. The 10
-  documented tools (`boruna_compile`, `boruna_ast`, `boruna_run`,
-  `boruna_check`, `boruna_repair`, `boruna_validate_app`,
-  `boruna_framework_test`, `boruna_workflow_validate`, `boruna_template_list`,
-  `boruna_template_apply`) are LTS-protected.
+Every response from `boruna-mcp` carries `protocol_version: 1`. The keys,
+types and meaning of each documented response stay the same. Fields may
+be added. The 14 tools covered are `boruna_compile`, `boruna_ast`,
+`boruna_run`, `boruna_check`, `boruna_repair`, `boruna_validate_app`,
+`boruna_framework_test`, `boruna_workflow_validate`,
+`boruna_template_list`, `boruna_template_apply`,
+`boruna_capability_list`, `boruna_policy_validate`, `boruna_symbols` and
+`boruna_run_sealed`. Reference:
+[`reference/mcp-server.md`](./reference/mcp-server.md).
 
 ### B.5 CLI commands and flags
 
-- **CLI commands and their flag names** — every documented `boruna`
-  subcommand and every documented flag continues to work with the same
-  semantics across 1.x. New subcommands and new flags are allowed; removing
-  an existing subcommand or renaming a flag requires 2.0.
+The commands listed as Stable in [`stability.md`](./stability.md) and
+their flags keep working with the same meaning. New commands and flags
+may be added. Removing a command or renaming a flag needs a new major
+release and a prior deprecation (section C).
 
 ### B.6 Error taxonomy
 
-- **`error_kind` strings** — the strings emitted in CLI errors and MCP error
-  responses are LTS-protected: an `error_kind` that
-  exists in 1.0 will exist with the same meaning in every 1.y. New
-  `error_kind` values may be introduced in minor releases.
+`error_kind` strings in CLI errors and MCP error responses keep their
+meaning. An `error_kind` that exists in a 3.y release exists in every
+later 3.y. New values may be added in minor releases, so integrators must
+tolerate values they do not recognize. List:
+[`reference/error-kinds.md`](./reference/error-kinds.md).
 
 ### B.7 Standard library packages (`libs/`)
 
-The following `std-*` packages are 1.0-stable and LTS-protected from **v1.2.0**:
+These packages are stable. Function signatures, parameter types and
+return types do not change within the major line, and the capabilities
+declared in each `package.ax.json` do not change. New functions may be
+added in minor releases.
 
-| Package | Stable since | Reference docs |
-|---------|-------------|----------------|
-| `std-ui` | v1.2.0 | [`docs/reference/stdlib/std-ui.md`](./reference/stdlib/std-ui.md) |
-| `std-validation` | v1.2.0 | [`docs/reference/stdlib/std-validation.md`](./reference/stdlib/std-validation.md) |
-| `std-forms` | v1.2.0 | [`docs/reference/stdlib/std-forms.md`](./reference/stdlib/std-forms.md) |
-| `std-authz` | v1.2.0 | [`docs/reference/stdlib/std-authz.md`](./reference/stdlib/std-authz.md) |
-| `std-http` | v1.2.0 | [`docs/reference/stdlib/std-http.md`](./reference/stdlib/std-http.md) |
-| `std-db` | v1.2.0 | [`docs/reference/stdlib/std-db.md`](./reference/stdlib/std-db.md) |
-| `std-sync` | v1.2.0 | [`docs/reference/stdlib/std-sync.md`](./reference/stdlib/std-sync.md) |
-| `std-routing` | v1.2.0 | [`docs/reference/stdlib/std-routing.md`](./reference/stdlib/std-routing.md) |
-| `std-storage` | v1.2.0 | [`docs/reference/stdlib/std-storage.md`](./reference/stdlib/std-storage.md) |
-| `std-notifications` | v1.2.0 | [`docs/reference/stdlib/std-notifications.md`](./reference/stdlib/std-notifications.md) |
-| `std-testing` | v1.2.0 | [`docs/reference/stdlib/std-testing.md`](./reference/stdlib/std-testing.md) |
-| `std-llm` | v1.3.0 | [`docs/reference/stdlib/std-llm.md`](./reference/stdlib/std-llm.md) |
-| `std-json` | v1.3.0 | [`docs/reference/stdlib/std-json.md`](./reference/stdlib/std-json.md) |
+| Package | Stable since | Reference |
+|---------|--------------|-----------|
+| `std-ui` | v1.2.0 | [`std-ui.md`](./reference/stdlib/std-ui.md) |
+| `std-validation` | v1.2.0 | [`std-validation.md`](./reference/stdlib/std-validation.md) |
+| `std-forms` | v1.2.0 | [`std-forms.md`](./reference/stdlib/std-forms.md) |
+| `std-authz` | v1.2.0 | [`std-authz.md`](./reference/stdlib/std-authz.md) |
+| `std-http` | v1.2.0 | [`std-http.md`](./reference/stdlib/std-http.md) |
+| `std-db` | v1.2.0 | [`std-db.md`](./reference/stdlib/std-db.md) |
+| `std-sync` | v1.2.0 | [`std-sync.md`](./reference/stdlib/std-sync.md) |
+| `std-routing` | v1.2.0 | [`std-routing.md`](./reference/stdlib/std-routing.md) |
+| `std-storage` | v1.2.0 | [`std-storage.md`](./reference/stdlib/std-storage.md) |
+| `std-notifications` | v1.2.0 | [`std-notifications.md`](./reference/stdlib/std-notifications.md) |
+| `std-testing` | v1.2.0 | [`std-testing.md`](./reference/stdlib/std-testing.md) |
+| `std-llm` | v1.3.0 | [`std-llm.md`](./reference/stdlib/std-llm.md) |
+| `std-json` | v1.3.0 | [`std-json.md`](./reference/stdlib/std-json.md) |
 
-LTS guarantees for these packages: function signatures, parameter types, and return types are frozen. New functions may be added in minor releases. Capability requirements in `package.ax.json` are frozen.
+`std-guard` (added in 3.1.0) is not on this list yet. It has no reference
+page and no graduation record in
+[`stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md).
 
-## What CAN change in 1.x
+## What can change within a major line
 
-The following are **not** part of the LTS contract and may evolve in minor
-releases:
+These are not covered by section B and may change in minor releases:
 
-- **Internal Rust APIs.** Boruna ships as a CLI binary. We do not commit to
-  a stable Rust library API. Crates
-  (`boruna-vm`, `boruna-compiler`, `boruna-orchestrator`, etc.) may change
-  signatures and module structures freely.
-- **Performance characteristics.** Throughput, latency, and resource
-  consumption may change between minors. Performance commitments live in
-  `docs/PERFORMANCE.md` (sprint W5-A) — what we publish there is what we
-  hold ourselves to; everything else is best-effort.
-- **Default values.** Operator-visible defaults (default policy, default
-  step limits, default concurrency) may change. Such changes are called
-  out in `CHANGELOG.md` under `### Changed`.
-- **Logging output format.** stderr log lines are informational, not
-  contractual. Tools that parse log lines should switch to structured
-  events (the JSON event log, MCP responses, or `--json` flags) for stable
-  consumption.
-- **Internal database schema.** The on-disk SQLite layout in
-  `<data-dir>/boruna.db` is not a public surface. Schema upgrades are
-  handled transparently by the migration tooling (sprint W5-C); operators
-  do not need to migrate manually.
+- **Rust crate APIs.** Boruna ships as binaries. The crates
+  (`boruna-vm`, `boruna-compiler`, `boruna-orchestrator` and others) may
+  change signatures and module layout.
+- **Performance.** Throughput, latency and resource use may change. The
+  published budget is in [`PERFORMANCE.md`](./PERFORMANCE.md).
+- **Defaults.** Default policy, step limits and concurrency may change.
+  Such changes are listed in `CHANGELOG.md` under `### Changed`.
+- **Log output.** stderr log lines are not a contract. Use the JSON event
+  log, MCP responses or `--json` output instead.
+- **The persistent run store.** The SQLite database in the data directory
+  is not a public surface.
+- **Experimental and Alpha components** listed in
+  [`stability.md`](./stability.md).
+- **Bytecode and module hashes when a bug is fixed.** A compiler fix can
+  change the bytecode of affected programs. 3.5.0 did this for integer
+  patterns and nested `match`. The change is listed in `CHANGELOG.md`.
 
 ## C. Deprecation policy
 
-Boruna will introduce breaking changes in 2.x via the following process. Any
-breaking change in a 1.x-LTS-protected surface (section B) follows all four
-steps:
+A change that breaks a surface in section B goes through these steps:
 
-1. **Announce in a 1.y minor release.** Mark the feature deprecated in
-   `CHANGELOG.md` under `### Deprecated`, including `deprecated_in: "1.y"`
-   and `removed_in: "2.0"` annotations. Update the relevant docs page to
-   call the feature deprecated and link the migration path.
-2. **Surface a runtime warning.** Whenever the deprecated path is exercised
-   at runtime (CLI, MCP, HTTP API, `.ax` runtime), emit a one-line warning
-   to stderr: `warning: <feature> is deprecated and will be removed in 2.0;
-   see <link>`. Warnings are emitted at most once per process per
-   deprecation. They never cause exit-non-zero.
-3. **Honor the 6-month notice period.** At least 6 months elapse between
-   the first 1.y minor that announces a deprecation and the 2.0 GA that
-   removes it. This gives downstream integrators a real upgrade window.
-4. **Provide migration tooling where mechanical.** Sprint W5-C delivers the
-   `boruna migrate` tool. Where a migration is mechanically derivable —
-   file-format-to-file-format, deprecated-flag-to-new-equivalent,
-   workflow.json schema upgrade, evidence-bundle format upgrade — the
-   tool performs it automatically. Migrations that require human judgment
-   (e.g. semantic policy changes) are documented in
-   `docs/migrations/2.0.md` with worked examples.
+1. **Deprecate in a minor release.** List the feature in `CHANGELOG.md`
+   under `### Deprecated`, name the release that will remove it (the next
+   major), and update the relevant docs page with the replacement.
+2. **Warn at runtime.** When the deprecated path is used, print a one-line
+   warning to stderr that names the feature and the replacement. The
+   warning does not change the exit code.
+3. **Remove only in the next major release.** A feature deprecated in 3.y
+   is removed no earlier than 4.0.0.
 
-A 2.0 release SHALL NOT remove a feature that has not gone through this
-deprecation cycle.
+Where an upgrade can be done mechanically (a file format change, a renamed
+flag), `boruna migrate` should cover it.
 
-## D. Security fix backports
+The 3.0.0 release did not follow this process. It removed the HTTP server
+layer one day after 2.0.0, with no deprecation release in between.
 
-Security fixes are the highest-priority category of release work and the
-only category that interrupts the normal release cadence.
+## D. Security fixes
 
-### D.1 Backport target lines
+Security fixes are released only for the **latest release of the current
+major line**. A fix ships as a new patch or minor release of 3.x. There
+are no backports to older 3.y releases and no fixes for 1.x or 2.x.
 
-- Fixes for vulnerabilities are backported to **every supported 1.y minor
-  line** for which the vulnerability applies.
-- Fix versions are cut as patch releases (e.g. `1.3.4`, `1.4.2`, `1.5.1`)
-  on each affected line. Patch releases contain the security fix and any
-  trivially related test or doc changes — they do not bundle unrelated
-  features.
-- The latest 1.y minor always receives the fix; older 1.y lines receive
-  the fix while they remain in active or security support (see section A).
+Severity follows [CVSS v4](https://www.first.org/cvss/v4-0/):
 
-### D.2 Severity assessment
+- **CRITICAL or HIGH**: fix released within 7 days of confirmed
+  disclosure. If that is not possible, an advisory with mitigations is
+  published instead.
+- **MEDIUM**: fix released within 30 days of confirmed disclosure.
+- **LOW**: included in the next regular release.
 
-- Severity follows [CVSS v4](https://www.first.org/cvss/v4-0/).
-- **CRITICAL or HIGH** — fix released within **7 days** of confirmed
-  disclosure. If the fix cannot be released within 7 days, an interim
-  advisory with mitigations is published instead.
-- **MEDIUM** — fix released within 30 days of confirmed disclosure.
-- **LOW** — bundled with the next scheduled patch release on each
-  supported line.
+Reporting and disclosure follow [`SECURITY.md`](../SECURITY.md). Reports
+go through GitHub Security Advisories, not public issues.
 
-### D.3 Disclosure
+### External security audit
 
-The reporter, disclosure, and advisory process is governed by
-[`SECURITY.md`](../SECURITY.md). Backports always ship together with the
-GitHub Security Advisory.
+No external security audit has been done. An audit of the VM and
+capability enforcement is planned (see [`roadmap.md`](./roadmap.md)). It
+has not happened yet and has no date. Do not rely on Boruna where a third-party audit attestation is
+required.
 
 ## E. Communication channels
 
-- **Deprecation announcements** — `CHANGELOG.md` `### Deprecated` section
-  ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention).
-  This is the authoritative source.
-- **Critical security advisories** — [`SECURITY.md`](../SECURITY.md) plus
-  GitHub Security Advisories on
+- **Deprecations**: `CHANGELOG.md` `### Deprecated` sections. This is the
+  authoritative source.
+- **Security advisories**: GitHub Security Advisories on
   [escapeboy/boruna](https://github.com/escapeboy/boruna/security/advisories).
-- **Release announcements** — GitHub Releases (binaries + signed
-  `SHA256SUMS`) and the version badge in [`README.md`](../README.md).
-- **Roadmap** — [`docs/roadmap.md`](./roadmap.md) tracks scheduled work,
-  but is not a contract; the LTS contract lives in this document.
+- **Releases**: GitHub Releases, with binaries and a `SHA256SUMS` file.
+- **Roadmap**: [`roadmap.md`](./roadmap.md). It is a plan, not a
+  commitment.
 
-## F. What "production-ready" means for 1.0
+## F. Stability tiers
 
-The 1.0 GA marks the point at which the surfaces listed in section B become
-LTS-protected. It does *not* mark every component as stable. Refer to
-[`docs/stability.md`](./stability.md) for the per-component stability tier:
+Section B covers the Stable tier only. Experimental and Alpha components
+may change in minor releases. The per-component list is in
+[`stability.md`](./stability.md). Known constraints are in
+[`limitations.md`](./limitations.md).
 
-- **Stable** surfaces (the section B list) are LTS-protected for the full
-  1.x line.
-- **Experimental** surfaces are clearly marked and may break in 1.x minors.
-  Operators choosing to depend on them do so explicitly.
-- **Alpha** surfaces are under active development and may break frequently.
-- **Out-of-scope-for-1.0 additions** — items such as evidence-bundle
-  encryption, additional storage adapters, and the LLM provider registry
-  are pre-LTS additions. They enter 1.x as Experimental, graduate through
-  Experimental → Stable across the 1.x minor releases as their interfaces
-  prove out, and are LTS-protected from the minor in which they graduate
-  forward.
+## G. End of life
 
-The known constraints listed in [`docs/limitations.md`](./limitations.md)
-remain accurate against the 1.0 commitment: nothing in this LTS document
-contradicts the limitations file. Where a limitation is later removed
-(e.g. evidence-bundle encryption shipping as a 1.y addition), the addition
-is itself stable from its graduation point.
+When a new major release ships, the previous major line is end of life on
+the same day. It gets no further releases, including security fixes. Its
+docs remain in git history and its tags remain on GitHub.
 
-## G. End-of-life procedure
-
-When a major version reaches end-of-life:
-
-1. **12-month notice.** A planned EOL date is announced at least 12 months
-   in advance via `CHANGELOG.md` `### Deprecated`, the README badge, and
-   GitHub Releases. The notice names the recommended successor track.
-2. **Community migration window.** During the 12 months between the EOL
-   announcement and the EOL date, operators upgrade to the successor
-   track. Migration tooling (`boruna migrate`) is updated to cover the
-   full path.
-3. **EOL takes effect.** After the EOL date, the project releases no
-   further fixes for the EOL'd major version — including security fixes.
-   Community-maintained forks are welcome.
-4. **Documentation archival.** The EOL'd version's docs are preserved on
-   GitHub but tagged as historical. Cross-links from the current docs are
-   updated to point at the successor track.
+To keep receiving fixes, upgrade to the new major line. The
+`CHANGELOG.md` entry for each major release lists what was removed or
+changed.
 
 ## Cross-references
 
-- [`docs/stability.md`](./stability.md) — per-component stability tiers
-  (LTS-protected vs. experimental vs. alpha vs. planned).
-- [`docs/roadmap.md`](./roadmap.md) — scheduled work toward 1.0 and beyond.
-- [`docs/limitations.md`](./limitations.md) — what is intentionally out of
-  scope; cross-checked against this document for consistency.
-- [`SECURITY.md`](../SECURITY.md) — vulnerability disclosure policy and
-  backport contract (section D mirrors and extends).
-- [`CHANGELOG.md`](../CHANGELOG.md) — release history and the
-  authoritative source for deprecation announcements.
-- [`docs/QUICKSTART.md`](./QUICKSTART.md) — 10-minute onboarding.
-- [`LICENSE`](../LICENSE) — MIT.
+- [`stability.md`](./stability.md): per-component stability tiers.
+- [`roadmap.md`](./roadmap.md): planned work.
+- [`limitations.md`](./limitations.md): known constraints.
+- [`SECURITY.md`](../SECURITY.md): how to report a vulnerability.
+- [`CHANGELOG.md`](../CHANGELOG.md): release history and deprecations.
+- [`spec/README.md`](./spec/README.md): versioned specifications.
+- [`LICENSE`](../LICENSE): MIT.

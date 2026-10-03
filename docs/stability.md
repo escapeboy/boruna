@@ -1,95 +1,110 @@
 # Stability and Maturity
 
-Boruna is at version **1.3.0** — third minor release on the 1.x LTS line. This document is explicit about what is stable, what is experimental, and what is planned.
+Boruna is at version **3.5.0**. It is a local engine and CLI. Since 3.0.0
+there is no server component.
 
-> **LTS contract for 1.x:** see [`lts.md`](./lts.md). The **Stable** tier
-> below is what becomes LTS-protected at 1.0 GA — the surfaces listed there
-> are the same surfaces the LTS document commits to preserving across the
-> 1.x line. Experimental and Alpha tiers are explicitly NOT LTS-protected
-> and may break in 1.x minor releases.
+Only the latest major line (3.x) is supported. 1.x and 2.x are end of
+life. The support, compatibility and deprecation rules are in
+[`lts.md`](./lts.md). The **Stable** tier below is what [`lts.md`](./lts.md)
+§B covers. Experimental and Alpha components may change in minor releases.
 
 ## Current status
 
-Boruna 1.3 is shipped and under long-term-support per [`lts.md`](./lts.md). The core execution engine, four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle), bundle encryption, blob GC, migration tooling, and performance baselines are all shipped, tested, and frozen for the 1.x line. All 13 stdlib packages are 1.0-stable as of 1.3.0.
+Suitable for:
 
-Boruna is appropriate for:
-- Production workloads on the LTS-protected surface (`lts.md` §B)
-- Evaluation, proof-of-concept, and internal tooling
-- Audit-sensitive AI pipelines
+- Evaluation, proof-of-concept and internal tooling
+- Audit-sensitive AI pipelines that run locally
+- Production use of the Stable surfaces, after checking
+  [`PERFORMANCE.md`](./PERFORMANCE.md) and
+  [`limitations.md`](./limitations.md) against your workload
 
-Boruna is not yet certified for:
-- Regulated environments requiring third-party security audit attestation (booking is the Q4 2026 commitment per `lts.md`; results expected Q2 2027)
-- Workloads exceeding the [`PERFORMANCE.md`](./PERFORMANCE.md) budget without your own benchmarking
-- Storage layouts beyond local filesystem (cloud-storage adapters are post-1.0 work)
+Not suitable for:
+
+- Environments that require a third-party security audit. No external
+  audit has been done.
+- Anything that needs a hosted server, distributed workers or a web
+  dashboard. These were removed in 3.0.0.
 
 ## Stability tiers
 
-### Stable (LTS-protected at 1.0 GA — see [`lts.md`](./lts.md) §B)
+### Stable (covered by [`lts.md`](./lts.md) §B)
 
-These components are complete, tested, and behave as documented. Every 1.0 program continues to work on every 1.y release:
+- **`.ax` language 1.1**: syntax, type system, pattern matching, records,
+  enums, `let mut` and loops. Spec:
+  [`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md).
+- **VM execution**: bytecode format 1.1, capability enforcement,
+  determinism.
+- **Workflow DAG schema 1**: `workflow.json` with `schema_version: 1`.
+  Spec: [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md).
+- **Evidence bundle format 1.1**: hash-chained audit log, `bundle.json`,
+  optional AES-256-GCM encryption, verifiable redaction. Reads 1.0
+  bundles. Spec: [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md).
+- **Capability set**: additions only within the major line.
+- **CLI commands**: `run`, `compile`, `workflow validate/run/approve/reject/trigger/resume`,
+  `evidence inspect/verify/gc-blobs/rotate-kek`, `migrate`, `new`,
+  `lang check/repair`, `template list/apply`.
+- **Bundle storage adapters**: local filesystem, and S3, GCS and Azure
+  Blob behind the `s3`, `gcs` and `azure` cargo features.
+- **MCP tool responses**: `protocol_version: 1` on every response from
+  the 14 `boruna-mcp` tools.
+- **Standard libraries**: 13 `std-*` packages. See [`lts.md`](./lts.md)
+  §B.7 and [`stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md).
 
-- **`.ax` language 1.0** — syntax, type system, pattern matching, records, enums; formal spec at [`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md)
-- **VM execution** — bytecode format, capability enforcement, determinism guarantees
-- **Workflow DAG 1.0** — `workflow.json` format with `schema_version: 1`, topological execution, step isolation; spec at [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md)
-- **Evidence bundle 1.0** — hash-chained log + `bundle.json` manifest with `format_version: "1.0"`, optional AES-256-GCM envelope encryption; spec at [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md)
-- **Capability system** — the capability set is frozen at 1.0; any additions in 1.x are additive
-- **CLI commands** — `run`, `compile`, `workflow validate/run/approve/reject/trigger/resume`, `evidence inspect/verify/gc-blobs/rotate-kek`, `migrate`, `new`, `lang check/repair`, `template list/apply`
-- **`BundleStorage` trait and adapters** — `BundleStorage`, `StorageRef`, `StorageError` (`#[non_exhaustive]`), `LocalFs`, `from_uri` dispatcher, and the S3/GCS/Azure Blob adapter modules (`storage_s3`, `storage_gcs`, `storage_azure`) are now stable public API
-- **MCP tool response shapes** — `protocol_version: 1` carried on every response (success and failure)
-- **Standard libraries** — all 13 `std-*` packages are 1.0-stable (11 as of v1.2.0, plus `std-llm` and `std-json` as of v1.3.0); see [`docs/stdlib-graduation-tracker.md`](./stdlib-graduation-tracker.md)
+CLI commands not in the list above are Experimental.
 
-### Experimental (may change in minor versions)
+### Experimental (may change in minor releases)
 
-These components work but may change based on usage feedback:
-
-- **Actor system** — spawning, message passing, supervision semantics
-- **Multi-agent orchestration** — `boruna-orch` binary and its API
-- **Package system** — `boruna-pkg` manifest format and registry protocol
-- **App templates** — template variable names and generated code structure
-- **`trace2tests`** — test generation format and minimization behavior
-- **Migration tooling** — `boruna migrate` is currently in beta; covered migrators are stable, additional migrators may ship in 1.x
+- **Actor system**: spawning, message passing, supervision.
+- **Multi-agent orchestration**: the `boruna-orch` binary.
+- **Package system**: the `boruna-pkg` manifest format and registry.
+- **App templates**: variable names and generated code.
+- **`trace2tests`**: test generation and minimization.
+- **Migration tooling**: `boruna migrate` is beta and covers pre-1.0
+  artifacts only.
+- **`std-guard`** standard library (added in 3.1.0).
+- **Evidence extras**: `evidence attest`, `anchor`, `report`, `otel`,
+  `redact`, `diff` and `create`.
+- **Confidence gates**: `confidence_gate` on approval gates and
+  `boruna confidence threshold` (3.3.0).
+- **Other commands**: `fmt` (v1 strips comments), `repl`, `simulate`,
+  `literate`, `skills`, `doctor`, `size`, `capability`, `metrics`,
+  `policy`, `lang codes/caps`, `workflow show/list/schedule/eval/find/graph`.
+- **`lex_full()`**: the lexer API that keeps comments and whitespace.
 
 ### Alpha (expect breaking changes)
 
-These components are available but under active development:
+- **`--live` network calls**: the `http` cargo feature for `net.fetch`,
+  SSRF policy and response handling.
+- **`replay`**: replaying a recorded event log.
+- **`framework test`**: the message protocol for testing framework apps.
 
-- **`--live` HTTP handler** — real network calls, SSRF policy, response handling
-- **Replay verification** — semantics of `--verify` with partial replays
-- **Framework app testing** — `framework test` message protocol
+### Planned (see [`roadmap.md`](./roadmap.md))
 
-### Experimental — new in 1.1.0 / 1.3.0
-
-These components shipped in 1.1.0 but may change based on usage feedback in 1.x minors:
-
-- **`lex_full()` / trivia-in-AST API** — `lex_full(source)` returning tokens with `leading_trivia`. Foundation for `boruna fmt v2`. Not yet used by any public tool; shape may change before the formatter ships.
-
-### Planned (post-1.1 — see [roadmap.md](./roadmap.md))
-
-These capabilities are on the roadmap but do not yet exist:
-
-- Rolling-upgrade per-capability version negotiation
-- `boruna fmt` v2 (comment-preserving formatter using the `lex_full()` trivia foundation) and `boruna run --watch`
-- LLM provider registry and model routing
-- Commercial platform features (SSO, RBAC, policy management UI)
-
-## What "stable" means
-
-For stable components (LTS-protected at 1.0 GA): a `.ax` file, workflow.json, or evidence bundle that compiles, validates, or verifies on 1.0 will continue to do so on every 1.y release. Per [`lts.md`](./lts.md): `language_version: "1.x"`, workflow DAG `schema_version: 1`, and evidence bundle `format_version: "1.x"` are forward-compat-readable across the entire 1.x line.
-
-For experimental and alpha components: best-effort compatibility, with breakage documented in CHANGELOG `### Changed` or `### Deprecated`.
+- External security audit of the VM and capability enforcement
+- `boruna fmt` v2 that keeps comments
+- Language 2.0, where warnings such as `E010` become errors
 
 ## Versioning policy
 
 Boruna follows [Semantic Versioning](https://semver.org):
 
-- **Patch** (1.0.x): Bug fixes, security patches, no API changes
-- **Minor** (1.x.0): New capabilities, experimental components may change, stable components preserved per LTS contract
-- **Major** (x.0.0): Breaking changes to stable API surface; deprecation announced ≥6 months prior in a minor release; full migration tooling provided
+- **Patch** (3.5.x): bug fixes and security fixes.
+- **Minor** (3.x.0): new features. Stable surfaces stay compatible.
+  Experimental and Alpha components may change. Deprecations are
+  announced here.
+- **Major** (x.0.0): may remove deprecated features. The previous major
+  line is end of life on the day the new major ships.
 
-## Dependency on nightly Rust
+The language, bytecode, workflow schema and bundle format have their own
+version numbers, separate from the release version. See [`lts.md`](./lts.md)
+§B.
 
-Boruna builds on stable Rust. No nightly features are required. Minimum supported Rust version (MSRV): **1.75.0**.
+## Rust toolchain
+
+Boruna builds on stable Rust. CI uses the current stable toolchain. No
+minimum Rust version is declared.
 
 ## Security
 
-See [SECURITY.md](../SECURITY.md) for the vulnerability disclosure policy, supported version matrix, and CVSS-based backport SLAs (CRITICAL/HIGH within 7 days of disclosure).
+See [`SECURITY.md`](../SECURITY.md) for how to report a vulnerability and
+[`lts.md`](./lts.md) §D for which releases get security fixes.
