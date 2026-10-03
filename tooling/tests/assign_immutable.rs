@@ -122,3 +122,17 @@ fn findings_point_at_the_offending_line() {
         ]
     );
 }
+
+#[test]
+fn a_repeated_call_or_a_same_line_loop_assignment_points_at_the_right_line() {
+    use boruna_tooling::diagnostics::E009_TYPE_ERROR;
+    let src = "fn g(a: Int) -> Int {\n    a\n}\nfn main() -> Int {\n    let ok: Int = g(1)\n    let bad: Int = g(\"x\")\n    for i in [1] { i = 3 }\n    ok\n}\n";
+    let lines: Vec<(String, usize)> = DiagnosticCollector::new("t.ax", src)
+        .collect()
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.id == E009_TYPE_ERROR || d.id == E010_ASSIGN_IMMUTABLE)
+        .map(|d| (d.id, d.location.unwrap().line))
+        .collect();
+    assert_eq!(lines, [("E009".to_string(), 6), ("E010".to_string(), 7)]);
+}

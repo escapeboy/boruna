@@ -137,3 +137,14 @@ fn a_function_parameter_shadows_a_top_level_function_of_the_same_name() {
     let src = "fn step(x: String) -> Int {\n    100\n}\nfn plus_one(x: Int) -> Int {\n    x + 1\n}\nfn apply(step: Fn(Int) -> Int, v: Int) -> Int {\n    step(v)\n}\nfn main() -> Int {\n    apply(plus_one, 1)\n}\n";
     assert_eq!(run(src), Value::Int(2));
 }
+
+#[test]
+fn a_local_that_is_not_a_function_does_not_hide_a_top_level_function() {
+    // Same results as 3.x: only a local declared with a `Fn` type takes over the call.
+    let src = "fn size(x: Int) -> Int {\n    x * 2\n}\nfn main() -> Int {\n    let size: Int = 3\n    size(size)\n}\n";
+    assert_eq!(run(src), Value::Int(6));
+    let src = "fn item(n: Int) -> Int {\n    n * 3\n}\nfn main() -> Int {\n    let mut s: Int = 0\n    for item in [1, 2] {\n        s = s + item(item)\n    }\n    s\n}\n";
+    assert_eq!(run(src), Value::Int(9));
+    let src = "fn v(n: Int) -> Int {\n    n + 1\n}\nfn main() -> Int {\n    let o: Option<Int> = Some(4)\n    match o {\n        Some(v) => v(v)\n        None => 0\n    }\n}\n";
+    assert_eq!(run(src), Value::Int(5));
+}

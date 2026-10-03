@@ -472,10 +472,12 @@ impl<'a> Analyzer<'a> {
                         Issue::LetAnnotation { name, .. } => {
                             self.line_in_fn(func, |l| let_of(l).is_some_and(|n| n == name))
                         }
-                        Issue::CallArgument { callee, .. } => {
-                            self.line_in_fn(func, |l| calls(l, callee))
-                        }
-                        Issue::Assign { name, .. } => self.line_in_fn(func, |l| assigns(l, name)),
+                        Issue::CallArgument {
+                            callee, occurrence, ..
+                        } => self.nth_in_fn(func, *occurrence, |l| calls(l, callee)),
+                        Issue::Assign {
+                            name, occurrence, ..
+                        } => self.nth_in_fn(func, *occurrence, |l| assigns(l, name)),
                         Issue::WhileCondition { .. } => {
                             self.line_in_fn(func, |l| l.trim_start().starts_with("while "))
                         }
@@ -525,7 +527,7 @@ impl<'a> Analyzer<'a> {
         }
         // A parameter, a loop variable, or a `let` that is shadowed or not found: point at the
         // first reassignment and offer no automatic edit.
-        if let Some(l) = self.line_in_fn(&f.name, |l| assigns(l, name)) {
+        if let Some(l) = self.nth_in_fn(&f.name, 1, |l| assigns(l, name)) {
             diag = diag.at(self.file, l, None);
         } else if start < end {
             diag = diag.at(self.file, start + 1, None);
@@ -536,6 +538,19 @@ impl<'a> Analyzer<'a> {
     /// 1-indexed line of the first line in the body of function `func` that matches `pred`.
     /// Searching only inside the function keeps a finding from pointing at another function or
     /// at the declaration of the called function.
+    fn nth_in_fn(&self, func: &str, n: usize, count: impl Fn(&str) -> usize) -> Option<usize> {
+        let (start, end) = fn_line_range(self.source, func);
+        let mut seen = 0;
+        for (i, l) in self.source.lines().enumerate().take(end).skip(start + 1) {
+            seen += count(l);
+            if seen >= n {
+                return Some(i + 1);
+            }
+        }
+        None
+    }
+
+    /// 1-indexed line of the first line in the body of function `func` that matches `pred`.
     fn line_in_fn(&self, func: &str, pred: impl Fn(&str) -> bool) -> Option<usize> {
         let (start, end) = fn_line_range(self.source, func);
         self.source
@@ -586,24 +601,40 @@ fn let_of(line: &str) -> Option<&str> {
     Some(&t[..end])
 }
 
-/// The line is an assignment `NAME = ...` (not `==`, not a `let`).
-fn assigns(line: &str, name: &str) -> bool {
-    let Some(rest) = line.trim_start().strip_prefix(name) else {
-        return false;
-    };
-    let rest = rest.trim_start();
-    rest.starts_with('=') && !rest.starts_with("==")
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
-/// The line calls `callee(` as a whole word (not `my_callee(`).
-fn calls(line: &str, callee: &str) -> bool {
+/// Byte `i` of `line` starts a whole word (not the tail of `my_name`).
+fn word_start(line: &str, i: usize) -> bool {
+    line[..i]
+        .chars()
+        .next_back()
+        .is_none_or(|c| !is_ident_char(c))
+}
+
+/// How many assignments `NAME = ...` the line holds (not `==`, not a `let`).
+fn assigns(line: &str, name: &str) -> usize {
+    line.match_indices(name)
+        .filter(|&(i, _)| {
+            let after = &line[i + name.len()..];
+            let rest = after.trim_start();
+            word_start(line, i)
+                && !after.starts_with(is_ident_char)
+                && rest.starts_with('=')
+                && !rest.starts_with("==")
+                && !line[..i].trim_end().ends_with("let")
+                && !line[..i].trim_end().ends_with("mut")
+        })
+        .count()
+}
+
+/// How many calls `callee(` the line holds, as a whole word and not its `fn` declaration.
+fn calls(line: &str, callee: &str) -> usize {
     let needle = format!("{callee}(");
-    line.match_indices(&needle).any(|(i, _)| {
-        line[..i]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
-    })
+    line.match_indices(&needle)
+        .filter(|&(i, _)| word_start(line, i) && !line[..i].trim_end().ends_with("fn"))
+        .count()
 }
 
 /// `let NAME` (without `mut`) at the start of the line, NAME followed by `:`, `=` or a space.

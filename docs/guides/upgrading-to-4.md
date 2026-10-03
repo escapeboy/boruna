@@ -57,7 +57,9 @@ working program depended on the old behaviour, because it could only crash.
 
 **A parameter that holds a function, named like a top-level function.** In
 `fn apply(step: Fn(Int) -> Int, v: Int) -> Int { step(v) }`, 3.x called the top-level `step`
-when one existed, not the function passed in. 4.0 calls the parameter.
+when one existed, not the function passed in. 4.0 calls the parameter. This applies only to a
+local declared with a `Fn` type; a local of any other type with the same name still leaves the
+call to the top-level function, as before.
 
 ## 3. New words that cannot be names any more
 

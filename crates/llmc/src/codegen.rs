@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use boruna_bytecode::capability::Capability;
 use boruna_bytecode::module::{
@@ -32,6 +32,39 @@ struct FnEmitter {
     capabilities: Vec<Capability>,
     /// Enclosing loops, innermost last, for `break` and `continue`.
     loops: Vec<LoopCtx>,
+    /// Locals declared with a function type (`f: Fn(Int) -> Int`). A call `f(..)` through one
+    /// of them calls the value, even when a top-level function has the same name.
+    fn_locals: HashSet<String>,
+}
+
+/// Saved local-name scope, restored when a block, loop body or `match` arm ends.
+#[derive(Clone)]
+struct Scope {
+    locals: HashMap<String, u32>,
+    fn_locals: HashSet<String>,
+}
+
+impl FnEmitter {
+    fn scope(&self) -> Scope {
+        Scope {
+            locals: self.locals.clone(),
+            fn_locals: self.fn_locals.clone(),
+        }
+    }
+
+    fn restore(&mut self, s: Scope) {
+        self.locals = s.locals;
+        self.fn_locals = s.fn_locals;
+    }
+
+    /// Record a new local `name`; it is a function value only if declared with a `Fn` type.
+    fn declare(&mut self, name: &str, ty: Option<&TypeExpr>) {
+        if matches!(ty, Some(TypeExpr::Fn(..))) {
+            self.fn_locals.insert(name.to_string());
+        } else {
+            self.fn_locals.remove(name);
+        }
+    }
 }
 
 /// Jumps to patch when a loop's exit and continue points are known.
@@ -107,6 +140,7 @@ impl Emitter {
             next_local: 0,
             capabilities: Vec::new(),
             loops: Vec::new(),
+            fn_locals: HashSet::new(),
         };
 
         // Resolve capabilities
@@ -120,6 +154,7 @@ impl Emitter {
         for p in &f.params {
             let idx = fe.next_local;
             fe.locals.insert(p.name.clone(), idx);
+            fe.declare(&p.name, Some(&p.ty));
             fe.next_local += 1;
         }
 
@@ -158,6 +193,7 @@ impl Emitter {
             let result_local = fe.next_local;
             fe.next_local += 1;
             fe.locals.insert("result".to_string(), result_local);
+            fe.declare("result", None);
             fe.code.push(Op::StoreLocal(result_local));
 
             for (i, ens) in f.ensures.iter().enumerate() {
@@ -220,10 +256,13 @@ impl Emitter {
                     ctx.continues.push(at);
                 }
             }
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
                 self.emit_expr(value, fe)?;
                 let idx = fe.next_local;
                 fe.locals.insert(name.clone(), idx);
+                fe.declare(name, ty.as_ref());
                 fe.next_local += 1;
                 fe.code.push(Op::StoreLocal(idx));
             }
@@ -255,9 +294,9 @@ impl Emitter {
                 let exit_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
                 fe.loops.push(LoopCtx::default());
-                let saved = fe.locals.clone();
+                let saved = fe.scope();
                 self.emit_block(body, fe)?;
-                fe.locals = saved;
+                fe.restore(saved);
                 // A while body's value is discarded each iteration. `emit_block`
                 // leaves the trailing statement's value on the stack when it is a
                 // bare expression, so pop it here — otherwise one value leaks per
@@ -292,8 +331,9 @@ impl Emitter {
                 let var_local = fe.next_local;
                 fe.next_local += 1;
                 // The loop variable and the body's bindings end with the loop.
-                let saved = fe.locals.clone();
+                let saved = fe.scope();
                 fe.locals.insert(var.clone(), var_local);
+                fe.declare(var, None);
 
                 let loop_start = fe.code.len() as u32;
                 // Condition: idx < len(list)
@@ -316,7 +356,7 @@ impl Emitter {
                 if let Some(Stmt::Expr(_)) = body.stmts.last() {
                     fe.code.push(Op::Pop);
                 }
-                fe.locals = saved;
+                fe.restore(saved);
 
                 // idx = idx + 1 (also where `continue` jumps)
                 let next_iter = fe.code.len() as u32;
@@ -341,9 +381,9 @@ impl Emitter {
     /// when it is empty or does not end in an expression).
     fn emit_block_value(&mut self, block: &Block, fe: &mut FnEmitter) -> Result<(), CompileError> {
         // A `let` inside the block ends with the block; assignments still reach outer names.
-        let saved = fe.locals.clone();
+        let saved = fe.scope();
         self.emit_block(block, fe)?;
-        fe.locals = saved;
+        fe.restore(saved);
         if !matches!(block.stmts.last(), Some(Stmt::Expr(_))) {
             let unit = self.module.add_const(Value::Unit);
             fe.code.push(Op::PushConst(unit));
@@ -354,9 +394,9 @@ impl Emitter {
     fn emit_expr(&mut self, expr: &Expr, fe: &mut FnEmitter) -> Result<(), CompileError> {
         // Names bound inside a `match` arm end with the arm (language spec, block scoping).
         if matches!(expr, Expr::Match { .. }) {
-            let saved = fe.locals.clone();
+            let saved = fe.scope();
             let result = self.emit_expr_inner(expr, fe);
-            fe.locals = saved;
+            fe.restore(saved);
             return result;
         }
         self.emit_expr_inner(expr, fe)
@@ -717,12 +757,13 @@ impl Emitter {
                         }
                         _ => {}
                     }
-                    // User-defined function call. A local of the same name (a function value passed
-                    // as a parameter) takes precedence, so it is called indirectly below.
+                    // User-defined function call. A local of the same name declared with a `Fn`
+                    // type (a function value passed in) takes precedence and is called
+                    // indirectly below; any other local leaves the call to the top-level function.
                     if let Some(&func_idx) = self
                         .fn_map
                         .get(name)
-                        .filter(|_| !fe.locals.contains_key(name))
+                        .filter(|_| !(fe.locals.contains_key(name) && fe.fn_locals.contains(name)))
                     {
                         let argc =
                             count_as_u8(args.len(), &format!("call to `{name}`"), "arguments")?;
@@ -778,7 +819,7 @@ impl Emitter {
                 fe.code[end_jmp] = Op::Jmp(end_target);
             }
             Expr::Match { value, arms } => {
-                let match_scope = fe.locals.clone();
+                let match_scope = fe.scope();
                 // String and integer literal patterns compile to an if-else chain of
                 // `Eq` comparisons. `Op::Match` cannot handle them: it dispatches on a
                 // tag, and every Int value has the wildcard tag, so an integer pattern
@@ -802,7 +843,7 @@ impl Emitter {
 
                     for (i, arm) in arms.iter().enumerate() {
                         // Each arm starts from the scope outside the match.
-                        fe.locals = match_scope.clone();
+                        fe.restore(match_scope.clone());
                         let is_last = i == arms.len() - 1;
                         match &arm.pattern {
                             Pattern::StringLit(s) => {
@@ -853,6 +894,7 @@ impl Emitter {
                                 fe.code.push(Op::LoadLocal(scrutinee_local));
                                 let idx = fe.next_local;
                                 fe.locals.insert(name.clone(), idx);
+                                fe.declare(name, None);
                                 fe.next_local += 1;
                                 fe.code.push(Op::StoreLocal(idx));
                                 self.emit_expr(&arm.body, fe)?;
@@ -893,13 +935,14 @@ impl Emitter {
 
                     for (i, arm) in arms.iter().enumerate() {
                         // Each arm starts from the scope outside the match.
-                        fe.locals = match_scope.clone();
+                        fe.restore(match_scope.clone());
                         let arm_start = fe.code.len() as u32;
                         arm_starts.push(arm_start);
 
                         if let Pattern::Ident(name) = &arm.pattern {
                             let idx = fe.next_local;
                             fe.locals.insert(name.clone(), idx);
+                            fe.declare(name, None);
                             fe.next_local += 1;
                             fe.code.push(Op::StoreLocal(idx));
                         } else if has_binding(&arm.pattern) {
@@ -1174,6 +1217,7 @@ fn store_pattern_binding(arm: &MatchArm, fe: &mut FnEmitter) {
             Pattern::Ident(name) => {
                 let idx = fe.next_local;
                 fe.locals.insert(name.clone(), idx);
+                fe.declare(name, None);
                 fe.next_local += 1;
                 fe.code.push(Op::StoreLocal(idx));
             }
