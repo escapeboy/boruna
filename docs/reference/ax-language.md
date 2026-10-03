@@ -132,8 +132,9 @@ fn main() -> Int {
 - What actually answers depends on how Boruna runs:
   - by default a deterministic mock answers (`net_fetch` and `llm_call` return a small JSON
     marker such as `{"mock": true, ...}`), so runs and tests need no network or API keys;
-  - `--live` with a binary built with `--features http` makes real HTTP requests for `net.*`,
-    subject to the policy's network allowlist;
+  - `--live` makes real HTTP requests for `net.*` (release binaries include the HTTP handler; a
+    source build needs `--features http`), subject to the policy's network allowlist and the
+    block on private and loopback addresses;
   - `--live --providers providers.json` sends `llm_call` to OpenAI, an OpenAI-compatible endpoint,
     Anthropic, Ollama or AWS Bedrock (see the
     [LLM integration guide](../guides/llm-integration.md#built-in-providers)).

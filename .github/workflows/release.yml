@@ -103,7 +103,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          cross build --release --target "$TARGET" --bin boruna
+          # `http` = the real HTTP handler, used only with `boruna run|workflow run --live`.
+          cross build --release --target "$TARGET" --bin boruna --features boruna-cli/http
           cross build --release --target "$TARGET" --bin boruna-mcp
           cross build --release --target "$TARGET" --bin boruna-pkg
           cross build --release --target "$TARGET" --bin boruna-orch
@@ -114,7 +115,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          cargo build --release --target "$TARGET" --bin boruna
+          # `http` = the real HTTP handler, used only with `boruna run|workflow run --live`.
+          cargo build --release --target "$TARGET" --bin boruna --features boruna-cli/http
           cargo build --release --target "$TARGET" --bin boruna-mcp
           cargo build --release --target "$TARGET" --bin boruna-pkg
           cargo build --release --target "$TARGET" --bin boruna-orch
