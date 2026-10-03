@@ -29,6 +29,18 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - 'LICENSE'
       - 'CHANGELOG.md'
+      # No Rust code: the website, its scripts, installers and the other workflows. The bench
+      # compares identical code for these and only reports noise from the shared runner.
+      - 'site/**'
+      - 'scripts/**'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'llms.txt'
+      - 'llms-full.txt'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/site.yml'
+      - '.github/workflows/smoke-musl.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

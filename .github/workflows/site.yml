@@ -1,0 +1,99 @@
+name: Site
+
+# Builds and deploys https://boruna.fleetq.net (Cloudflare Pages project "boruna").
+#   /       landing page
+#   /docs/  docs of the latest release (vX.Y.Z tag)
+#   /next/  docs of master
+# The Markdown in this repository is the only source; see docs/design-docs-site.md.
+#
+# Runs on a push to master (refreshes /next/) and after the Release workflow succeeds
+# (refreshes /docs/; waiting for Release means the release binaries already exist for
+# install.sh). Never runs on pull requests, so the deploy token is not exposed to them;
+# the "Docs site" job in ci.yml builds and checks the site on pull requests.
+
+on:
+  push:
+    branches: [master]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Find the latest release
+        id: release
+        run: |
+          tag="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
+          test -n "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          git worktree add "$RUNNER_TEMP/stable" "$tag"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: site-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: site-${{ runner.os }}-
+
+      - name: Build boruna from master
+        run: cargo build --release --locked -p boruna-cli
+
+      - name: Install the released boruna
+        env:
+          BORUNA_VERSION: ${{ steps.release.outputs.tag }}
+        run: BORUNA_INSTALL_DIR="$RUNNER_TEMP/stable-bin" sh install.sh
+
+      - name: Install mdBook
+        run: |
+          curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Build site
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          python3 scripts/build-site.py --out public \
+            --next-root . --next-boruna target/release/boruna \
+            --stable-root "$RUNNER_TEMP/stable" --stable-ref "$TAG" \
+            --stable-boruna "$RUNNER_TEMP/stable-bin/boruna"
+
+      - name: Check internal links
+        run: |
+          # A release cut before the site existed cannot be fixed any more: report its
+          # broken links without failing. Landing page and /next/ are always strict.
+          if [ -f "$RUNNER_TEMP/stable/site/SUMMARY.md" ]; then
+            python3 scripts/check-site-links.py public
+          else
+            python3 scripts/check-site-links.py public --warn-prefix docs/
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy public --project-name=boruna --branch=master --commit-dirty=true
