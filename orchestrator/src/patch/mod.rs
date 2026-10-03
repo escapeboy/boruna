@@ -96,7 +96,13 @@ impl PatchBundle {
             {
                 errors.push(format!("patches[{i}].file contains '..': {}", patch.file));
             }
-            if patch_path.is_absolute() {
+            // `is_absolute` alone is platform-dependent: on Windows "/etc/passwd" has no drive
+            // letter and is only "rooted". A bundle must be rejected the same way everywhere.
+            let b = patch.file.as_bytes();
+            let rooted_or_drive = patch.file.starts_with('/')
+                || patch.file.starts_with('\\')
+                || (b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic());
+            if patch_path.is_absolute() || patch_path.has_root() || rooted_or_drive {
                 errors.push(format!(
                     "patches[{i}].file is an absolute path: {}",
                     patch.file
@@ -358,6 +364,16 @@ mod tests {
         bundle.patches[0].file = "/etc/passwd".into();
         let err = bundle.validate().unwrap_err();
         assert!(err.iter().any(|e| e.contains("absolute")));
+    }
+
+    #[test]
+    fn test_validate_rejects_rooted_and_drive_paths_on_every_platform() {
+        for bad in ["/etc/passwd", "\\windows\\win.ini", "C:\\x", "c:/x"] {
+            let mut bundle = sample_bundle();
+            bundle.patches[0].file = bad.into();
+            let err = bundle.validate().unwrap_err();
+            assert!(err.iter().any(|e| e.contains("absolute")), "{bad}");
+        }
     }
 
     #[test]
