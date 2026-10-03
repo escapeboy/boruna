@@ -29,6 +29,7 @@ mod workflow_eval;
 #[derive(Parser)]
 #[command(
     name = "boruna",
+    version,
     about = "Boruna — deterministic, capability-safe language"
 )]
 struct Cli {

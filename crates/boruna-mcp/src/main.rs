@@ -5,7 +5,11 @@ mod server;
 mod tools;
 
 #[derive(Parser)]
-#[command(name = "boruna-mcp", about = "Boruna MCP server for AI coding agents")]
+#[command(
+    name = "boruna-mcp",
+    version,
+    about = "Boruna MCP server for AI coding agents"
+)]
 struct Args {
     /// Path to templates directory.
     #[arg(long, default_value = "templates")]
