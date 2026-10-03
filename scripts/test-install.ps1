@@ -17,6 +17,9 @@ function Invoke-Installer([hashtable]$envVars) {
     $set = ($envVars.GetEnumerator() | ForEach-Object { "`$env:$($_.Key) = '$($_.Value)';" }) -join ' '
     $cmd = "$set Get-Content -Raw -LiteralPath '$root\install.ps1' | Invoke-Expression"
     $exe = (Get-Process -Id $PID).Path
+    # Windows PowerShell 5.1 turns a child's stderr line into an error record; under 'Stop'
+    # that would abort this test on the very failure it is checking for.
+    $ErrorActionPreference = 'Continue'
     $out = & $exe -NoProfile -NonInteractive -Command $cmd 2>&1 | Out-String
     return @{ Code = $LASTEXITCODE; Out = $out }
 }
