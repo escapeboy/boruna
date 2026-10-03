@@ -42,6 +42,8 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 ## Evidence and audit limitations
 
+**Workflow bundles do not record individual capability calls.** The audit log of a `workflow run --record` bundle records completed and failed steps with the hash of each output, approvals and rejections, external triggers, and confidence-gate decisions. The `StepStarted` (input hash) and `CapabilityInvoked` audit events exist but are not emitted yet, and the VM event log (which does record every capability call and result) is not added to workflow bundles. A single program run with `boruna run --record` does record every capability call and can be replayed.
+
 **Evidence bundles are local files; remote storage is operator-owned.** Evidence bundles write to `<data-dir>/runs/<run-id>/`. Pluggable storage adapters (S3 / object storage / document store) are roadmap 0.7.x or 1.x. Today, ship bundles to remote storage with your own pipeline (rsync, S3 upload, etc.).
 
 **LLM response reproducibility is not guaranteed.** Evidence bundles capture LLM responses for replay, but if the LLM provider changes their model weights, a replay may produce different outputs if the real capability is used. Replay with recorded responses (sprint 0.5-S7 of FleetQ track) is always reproducible.

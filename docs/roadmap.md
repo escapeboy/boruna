@@ -2,7 +2,7 @@
 
 This roadmap describes what Boruna is working toward. It is realistic, not aspirational marketing. Items without a milestone are under consideration but not scheduled.
 
-Last refreshed: 2026-05-17 (after the v1.4.0 release).
+Last refreshed: 2026-10-03 (after the v3.5.0 release).
 
 ## v3.0.0 — HTTP / distributed layer removed
 
@@ -19,9 +19,21 @@ been removed — they are retained as history, not as descriptions of current ca
 Approval and external-trigger gates remain, handled locally via `boruna workflow
 approve/reject/trigger` plus `resume`.
 
-## Current: 1.4.0 — SHIPPED (2026-05-17)
+## Current: 3.5.0 — SHIPPED (2026-10-03)
 
-Workspace version is `1.4.0`. Fourth feature minor on the 1.x LTS line. Agent-native CLI inspection surfaces (`boruna doctor`, `boruna size`, `boruna workflow graph`, `boruna lang codes`, `boruna skills` — all `--json`-capable, motivated by a competitive review of `vercel-labs/zero`); the `boruna-lsp` language server for `.ax` files (diagnostics, completion, formatting); three compliance example workflows (SOC 2 audit, HIPAA data pipeline, financial review). See the [CHANGELOG](../CHANGELOG.md#140--2026-05-17) for the full list.
+Workspace version is `3.5.0`. What shipped since v3.0.0 (see the [CHANGELOG](../CHANGELOG.md#350--2026-10-03) for details):
+
+- **3.1.0 (2026-07-18)** — `boruna evidence attest` (in-toto Statement + DSSE envelope), `boruna evidence report --framework eu-ai-act|nist|iso42001` (compliance mapping report), `boruna evidence otel` (OTLP/JSON export); `requires`/`ensures` contract checks and output guards sealed into the event log; `std-guard` (14th standard library); MCP tools `boruna_symbols` and `boruna_run_sealed` (14 tools in total); quickfix-coverage CI gate.
+- **3.2.0 (2026-07-18)** — `boruna evidence anchor` (Sigstore Rekor transparency-log anchoring; `--rekor-url` for a private Rekor, `--offline`, `--verify` inclusion-proof check; live submission behind the opt-in `rekor` cargo feature); `boruna evidence redact` (verifiable redaction; bundle format `1.1`, back-compatible with `1.0`).
+- **3.3.0 (2026-10-03)** — `confidence_gate` on approval gates (calibrated auto-approval, decisions sealed and recomputed by `evidence verify`; `boruna confidence threshold`); agent docs generated from the binary (`boruna skills emit` / `pack`).
+- **3.4.0 (2026-10-03)** — `--version` on all four binaries; release binaries for macOS Intel and Windows (x64 and Arm); native CI on macOS (arm64, Intel), Windows (x64, Arm) and Linux arm64; Windows fixes (stack overflow, CRLF sources, rooted patch paths, trigger tokens).
+- **3.5.0 (2026-10-03)** — `install.sh` / `install.ps1` one-line installers; diagnostic `E010` (warning: reassigning a binding declared without `mut`); language version `1.1`; `match` fixes (`Some`/`Ok`/`Err` patterns, integer literal patterns, nested `match`, no-arm fallthrough).
+
+Versions 1.5.0 through 2.0.0 are listed in the [CHANGELOG](../CHANGELOG.md).
+
+## Previous: 1.4.0 — SHIPPED (2026-05-17)
+
+Workspace version was `1.4.0`. Fourth feature minor on the 1.x LTS line. Agent-native CLI inspection surfaces (`boruna doctor`, `boruna size`, `boruna workflow graph`, `boruna lang codes`, `boruna skills` — all `--json`-capable, motivated by a competitive review of `vercel-labs/zero`); the `boruna-lsp` language server for `.ax` files (diagnostics, completion, formatting); three compliance example workflows (SOC 2 audit, HIPAA data pipeline, financial review). See the [CHANGELOG](../CHANGELOG.md#140--2026-05-17) for the full list.
 
 ## Previous: 1.3.0 — SHIPPED (2026-04-30)
 
@@ -156,23 +168,15 @@ First minor release on the 1.x LTS line. All changes are additive — no breakin
 - [x] **BYOH reference handler library** — four new `CapabilityHandler` reference implementations in `examples/llm_handlers/`: Anthropic Messages API, Ollama, vLLM/OpenAI-compatible, AWS Bedrock skeleton. Each is ~80–120 LOC, copy-and-tweak, no Cargo dep (post1-T-1.2).
 - [x] **BundleStorage adapters stable** — S3, GCS, and Azure Blob adapters promoted from `#[doc(hidden)]` to stable public API. `StorageError` marked `#[non_exhaustive]`. New `boruna evidence rotate-kek` command re-encrypts DEKs under a new key-encryption key without touching ciphertext (post1-T-3.1–3.3, T-4.3).
 
-## What we need to decide *now* (before 0.3.0 starts)
+## Open decisions
 
-These decisions block downstream planning. None of them are urgent today, but each one becomes urgent within 1–2 quarters.
-
-1. **Security audit booking** — pick auditor, scope, budget by Q4 2026. A real audit costs $30–100k and books months in advance. If this slips past Q4 2026, v1.0.0 slips with it.
-2. ~~**LLM live handler shipping plan**~~ — **decided** (`0.3-S8`): Bring Your Own Handler. See [`docs/guides/llm-integration.md`](./guides/llm-integration.md).
-3. ~~**Persistence storage backend**~~ — **decided** ([ADR 001](./adr/001-persistence-backend.md)): sqlite, no abstraction trait. Shipped via 0.3-S2a/S2b/S3/S6.
-4. **Dashboard scope and tech** — full SSR Rust stack (Axum + askama, fits the project) vs. SPA (more work, more polish). 0.4.0 dashboard depends on this answer.
+1. **Security audit** — an external audit of the VM and capability enforcement has not been done (the unchecked item under 1.0.0). A real audit costs $30–100k and books months in advance.
 
 ## Future / under consideration
 
 These items are on the long-term radar but not scheduled:
 
 - **Commercial platform**: hosted workflow execution, managed evidence storage, SSO, RBAC, compliance reporting — built on the open source core.
-- **IDE integration**: language server (LSP) for `.ax` syntax, completion, and diagnostics in VS Code / Neovim (boruna-lsp MVP: diagnostics, completion, formatting — future/lsp).
-- **Model evaluation framework**: run the same workflow against multiple LLM providers and compare evidence bundles. (`boruna workflow eval` — future/model-eval)
-- **Compliance templates**: pre-built workflow patterns for common regulated use cases (SOC 2, HIPAA, financial audit — future/compliance-templates).
 - **Cross-language FFI**: call into Rust/Python libraries from `.ax` through a typed capability interface.
 
 ## What is intentionally out of scope

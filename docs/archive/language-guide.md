@@ -1,5 +1,7 @@
 # Boruna Language Guide
 
+> **Archived (2026-10-03).** Covers language 1.0 only and has examples that no longer compile. Current docs: [.ax language reference](../reference/ax-language.md) and [specification](../spec/ax-language-1.0.md).
+
 ## Overview
 
 Boruna is a statically-typed, capability-safe programming language designed for LLM-native applications. All side effects are explicitly declared and enforced at both compile time and runtime.

@@ -11,11 +11,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   CI job that fails when a PR makes a benchmark execute more than 3% more instructions. The
   wall-clock bench comparison stays as an informational comment: on the shared runner identical
   code moved by 10-40% between runs.
+- `scripts/check-doc-examples.py`: every complete `.ax` example in the published docs must
+  compile; runs in the "Docs site" CI job.
 - Website and docs site generated from the repository's Markdown (`site/`, `scripts/build-site.py`):
   a landing page, the docs of the latest release and of `master`, and a command reference generated
   from the binary. CI builds it and fails on a missing listed page or a broken internal link.
 
 ### Fixed
+- Language spec errata: records are declared with `type` (not `record`), enum variants have no
+  payload or one positional payload and are matched by bare name, and records are not
+  destructured in patterns. The spec's own examples now compile.
+- Docs corrected against the code and published on the site: framework spec and API, effects,
+  actors, orchestrator, packages, operations, governance, platform overview, determinism
+  contract, traces, threat model (Rekor anchoring exists since 3.2.0), roadmap, FAQ, security
+  model and compliance evidence. Three obsolete docs moved to `docs/archive/`.
+- README and the landing page said workflow bundles record every capability call; they record
+  steps with output hashes, failures, approvals, triggers and confidence-gate decisions. The
+  gap is now listed in `docs/limitations.md`.
 - `boruna-orch`: the replay and diag gates ran `cargo run -p llmvm-cli`, a package that does not
   exist (the crate is `boruna-cli`), so neither gate ever ran the CLI. Both now record the exit
   code and the end of stderr, so a failed run is visible in the gate report.

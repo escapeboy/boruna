@@ -1,5 +1,7 @@
 # LLM Effect Specification
 
+> **Archived (2026-10-03).** Describes an LLM path through `boruna-effect`'s gateway that the runtime does not use. Current guide: [LLM integration](../guides/llm-integration.md).
+
 Token-optimized, deterministic LLM integration for the Boruna platform.
 
 ## 1. Effect Shape

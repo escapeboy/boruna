@@ -12,22 +12,22 @@ Version 1, stable JSON format.
 {
   "version": 1,
   "source_file": "path/to/app.ax",
-  "source_hash": "sha256:<hex>",
+  "source_hash": "<64 hex chars>",
   "cycles": [
     {
       "cycle": 1,
       "message": { "tag": "increment", "payload": {"Int": 0} },
-      "state_before_hash": "sha256:<hex>",
-      "state_after_hash": "sha256:<hex>",
+      "state_before_hash": "<64 hex chars>",
+      "state_after_hash": "<64 hex chars>",
       "state_after": {"Record": {"type_id": 0, "fields": [{"Int": 1}]}},
       "effects": [
-        { "kind": "http_request", "payload_hash": "sha256:<hex>", "callback_tag": "on_response" }
+        { "kind": "http_request", "payload_hash": "<64 hex chars>", "callback_tag": "on_response" }
       ],
-      "ui_tree_hash": "sha256:<hex>"
+      "ui_tree_hash": "<64 hex chars>"
     }
   ],
-  "final_state_hash": "sha256:<hex>",
-  "trace_hash": "sha256:<hex>"
+  "final_state_hash": "<64 hex chars>",
+  "trace_hash": "<64 hex chars>"
 }
 ```
 
@@ -44,7 +44,7 @@ Version 1, stable JSON format.
 
 ### Hashing
 
-All hashes use SHA-256 of canonical JSON serialization:
+All hashes are written as bare lowercase hex (64 characters, no `sha256:` prefix), for example `"bfac1732d6113f3165fb8ef4c21230def6da9bc40af020c72e7a2461a7b1c99c"`. They use SHA-256 of canonical JSON serialization:
 - Values are serialized via serde (deterministic for BTreeMap)
 - The trace fingerprint concatenates all cycle data in stable format
 - Same inputs always produce identical hashes
@@ -58,14 +58,14 @@ Generated test specifications are self-contained JSON:
   "version": 1,
   "name": "counter_regression",
   "source_file": "examples/counter.ax",
-  "source_hash": "sha256:<hex>",
+  "source_hash": "<64 hex chars>",
   "messages": [
     { "tag": "increment", "payload": {"Int": 0} },
     { "tag": "decrement", "payload": {"Int": 0} }
   ],
   "assertions": [
-    { "kind": "final_state_hash", "expected": "sha256:<hex>", "description": "..." },
-    { "kind": "trace_hash", "expected": "sha256:<hex>", "description": "..." },
+    { "kind": "final_state_hash", "expected": "<64 hex chars>", "description": "..." },
+    { "kind": "trace_hash", "expected": "<64 hex chars>", "description": "..." },
     { "kind": "cycle_count", "expected": "2", "description": "..." }
   ]
 }
@@ -91,10 +91,12 @@ Implements the ddmin algorithm to shrink failing message sequences:
 ### Predicates
 
 Built-in predicates:
-- `panic`: Failure = runtime error during message processing
-- State mismatch: Failure = final state hash differs from expected
+- `panic`: Failure = runtime error during message processing. This is the CLI default.
+- State mismatch: Failure = final state hash differs from expected. This one exists only in the library (`trace2tests::make_state_mismatch_predicate`); the CLI has no flag for it.
 
-External predicates: Any command that receives a temp trace file path and returns non-zero on failure.
+External predicates: Any command that receives, as its last argument, the path of a temp JSON file (`{"source_file": ..., "messages": [...]}`) and returns non-zero on failure.
+
+The CLI `--predicate` accepts only `panic` or an external command. Any value other than `panic` is run as a command. To minimize against a state mismatch from the CLI, wrap the check in an external command.
 
 ## CLI Usage
 

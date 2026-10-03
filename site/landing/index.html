@@ -35,9 +35,9 @@
 <section class="points">
   <article>
     <h2>Every run is evidence</h2>
-    <p>Each step, policy decision and capability call goes into a hash-chained audit log inside an
-    evidence bundle. <code>boruna evidence verify</code> recomputes every hash and reports any
-    change.</p>
+    <p>Each completed step with the hash of its output, every approval or rejection and every
+    confidence-gate decision goes into a hash-chained audit log inside an evidence bundle. <code>boruna evidence verify</code>
+    recomputes every hash and reports any change.</p>
     <a href="/docs/concepts/evidence-bundles.html#verifying-a-bundle">How bundles are verified →</a>
   </article>
   <article>
@@ -50,8 +50,9 @@
   <article>
     <h2>Same input, same output</h2>
     <p>Workflow steps are written in <code>.ax</code> and run on a VM with no ambient randomness,
-    clock or I/O. Network, LLM and file access must be declared and allowed by policy, and their
-    results are recorded so a run can be replayed and checked.</p>
+    clock or I/O. Network, LLM and file access must be declared and allowed by policy. A program run
+    with <code>boruna run --record</code> records every such call and its result, so the run can be
+    replayed and checked.</p>
     <a href="/docs/concepts/determinism.html#replay-verification">How replay works →</a>
   </article>
 </section>
