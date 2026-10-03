@@ -17,6 +17,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   a landing page, the docs of the latest release and of `master`, and a command reference generated
   from the binary. CI builds it and fails on a missing listed page or a broken internal link.
 
+### Changed
+- Support policy: only the latest major line (3.x) is supported, and fixes ship in its latest
+  release. 1.x and 2.x have been end of life since 3.0.0 (2026-07-18). `docs/lts.md`,
+  `docs/stability.md`, `SECURITY.md` and the README now say so; they still described 1.x
+  long-term support through 2028. `docs/spec/README.md` shows both the spec-document and the
+  implementation version of each format.
+
 ### Fixed
 - Language spec errata: records are declared with `type` (not `record`), enum variants have no
   payload or one positional payload and are matched by bare name, and records are not

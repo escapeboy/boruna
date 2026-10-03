@@ -86,6 +86,8 @@ Internal notes (design-*, architecture-*, test-plan-*, retros, archive/) stay in
 
 # Project
 
+- [Stability](docs/stability.md)
+- [Support and deprecation policy](docs/lts.md)
 - [Platform overview](docs/ENTERPRISE_PLATFORM_OVERVIEW.md)
 - [Security model](docs/SECURITY_MODEL.md)
 - [Platform governance](docs/PLATFORM_GOVERNANCE.md)

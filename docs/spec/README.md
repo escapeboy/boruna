@@ -6,12 +6,17 @@ Each spec carries a `language_version` / `format_version` / `schema_version` fie
 
 ## Current specs
 
-| Surface | Latest | Status | Sprint | Reader constant |
-|---------|:------:|:------:|--------|-----------------|
-| `.ax` language | 1.0 | stable | W1-B | `boruna_compiler::LANGUAGE_VERSION` |
-| Bytecode format | 1.0 | stable | W9-A | `boruna_bytecode::BYTECODE_VERSION` |
-| Evidence bundle format | 1.0 | stable | W1-C | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
-| Workflow DAG schema | 1.0 | stable | W4 | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
+| Surface | Spec document | Implementation | Status | Reader constant |
+|---------|:-------------:|:--------------:|:------:|-----------------|
+| `.ax` language | 1.1 | 1.1 | stable | `boruna_compiler::LANGUAGE_VERSION` |
+| Bytecode format | 1.0 | 1.1 | stable | `boruna_bytecode::BYTECODE_VERSION` |
+| Evidence bundle format | 1.0 | 1.1 | stable | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
+| Workflow DAG schema | 1.0 | 1 | stable | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
+
+The bytecode and evidence-bundle implementations are at 1.1 (additive changes; 1.0 documents
+still read) but their spec documents have not yet been updated for the 1.1 additions. See the
+CHANGELOG for what 1.1 added. These format versions are independent of the Boruna release
+version (currently 3.x).
 
 The narrative companion to the bytecode spec lives at [`docs/bytecode-spec.md`](../bytecode-spec.md); the formal spec at [`bytecode-1.0.md`](./bytecode-1.0.md) wins on any disagreement.
 
