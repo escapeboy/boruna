@@ -56,3 +56,7 @@ sha2 = "0.10"
 # `boruna run --watch` (post1-T-1.4) — filesystem-watch loop that
 # re-executes a `.ax` file on change.
 notify = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Restore the default SIGPIPE disposition so `boruna ... | head` exits quietly.
+libc = "0.2"

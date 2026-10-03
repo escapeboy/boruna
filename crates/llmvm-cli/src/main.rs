@@ -1279,6 +1279,15 @@ fn real_main() {
 const MAIN_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() {
+    // Rust ignores SIGPIPE, so `boruna ... | head` panicked with "failed printing to stdout:
+    // Broken pipe" once the reader closed the pipe. Restore the default: the process ends
+    // quietly, as other command-line tools do.
+    #[cfg(unix)]
+    // SAFETY: called once at startup, before any other thread exists; SIG_DFL is a valid
+    // disposition for SIGPIPE.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let worker = std::thread::Builder::new()
         .name("boruna-main".into())
         .stack_size(MAIN_STACK_BYTES)

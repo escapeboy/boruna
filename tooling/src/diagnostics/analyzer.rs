@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use boruna_compiler::ast::*;
+use boruna_compiler::strict::{Binding, Issue};
 
 use super::suggest;
 use super::*;
@@ -48,8 +49,7 @@ impl<'a> Analyzer<'a> {
         self.check_match_exhaustiveness(&mut diags);
         self.check_record_fields(&mut diags);
         self.check_capability_purity(&mut diags);
-        self.check_type_consistency(&mut diags);
-        self.check_mutability(&mut diags);
+        self.check_strict(&mut diags);
         diags
     }
 
@@ -96,7 +96,7 @@ impl<'a> Analyzer<'a> {
             Stmt::Assign { value, .. } => self.check_match_in_expr(value, param_types, diags),
             Stmt::Expr(e) => self.check_match_in_expr(e, param_types, diags),
             Stmt::Return(Some(e)) => self.check_match_in_expr(e, param_types, diags),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             Stmt::While { condition, body } => {
                 self.check_match_in_expr(condition, param_types, diags);
                 self.check_match_in_block(body, param_types, diags);
@@ -454,500 +454,78 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    /// Warn-only type-consistency pass (first step toward strict static typing).
-    /// Uses a conservative, inference-free local type environment: it only
-    /// reasons about types it can name with confidence (literals, annotated
-    /// bindings, record/enum constructors, and user-function return types), and
-    /// only reports a mismatch when BOTH sides resolve to concrete named types
-    /// that differ. Everything uncertain (generics, builtins, binary ops) is
-    /// left untyped, so false positives are rare. Emitted at `Warning` severity
-    /// — never blocks compilation.
-    fn check_type_consistency(&self, diags: &mut Vec<Diagnostic>) {
-        let mut fn_sigs: FnSigs = HashMap::new();
-        for item in &self.program.items {
-            if let Item::Function(f) = item {
-                let params = f.params.iter().map(|p| named_type(&p.ty)).collect();
-                let ret = f.return_type.as_ref().and_then(named_type);
-                fn_sigs.insert(f.name.as_str(), (params, ret));
-            }
-        }
-        for item in &self.program.items {
-            if let Item::Function(f) = item {
-                let mut env: HashMap<String, String> = HashMap::new();
-                for p in &f.params {
-                    if let Some(t) = named_type(&p.ty) {
-                        env.insert(p.name.clone(), t);
+    /// Language 2.0 strictness (E009 type mismatches, E010 reassigning a binding that is not
+    /// `mut`). The compiler rejects these; this pass reports every one with a location and,
+    /// where safe, an automatic fix. The rules live in `boruna_compiler::strict`.
+    fn check_strict(&self, diags: &mut Vec<Diagnostic>) {
+        for issue in boruna_compiler::strict::check(self.program) {
+            let diag = match &issue {
+                Issue::AssignImmutable { name, binding, .. } => {
+                    match self.functions.get(issue.func()) {
+                        Some(f) => self.assign_immutable_diag(f, name, *binding, &issue),
+                        None => Diagnostic::error(E010_ASSIGN_IMMUTABLE, issue.message()),
                     }
                 }
-                self.check_types_in_block(&f.body, &mut env, &fn_sigs, diags);
-            }
+                _ => {
+                    let line = match &issue {
+                        Issue::LetAnnotation { name, .. } => find_let_line(self.source, name),
+                        Issue::CallArgument { callee, .. } => {
+                            find_line_containing(self.source, &format!("{callee}("))
+                        }
+                        Issue::Assign { name, .. } => {
+                            find_line_containing(self.source, &format!("{name} ="))
+                        }
+                        Issue::WhileCondition { .. } => find_line_containing(self.source, "while "),
+                        Issue::AssignImmutable { .. } => None,
+                    };
+                    let mut diag = Diagnostic::error(E009_TYPE_ERROR, issue.message());
+                    if let Some(l) = line {
+                        diag = diag.at(self.file, l, None);
+                    }
+                    diag
+                }
+            };
+            diags.push(diag);
         }
     }
 
-    /// Warn when a binding declared without `mut`, a parameter or a `for` variable is
-    /// reassigned. The compiler accepts this today (the `mut` flag is parsed but not
-    /// enforced), so it is a warning; language version 2.0 turns it into an error.
-    /// One diagnostic per variable per function.
-    fn check_mutability(&self, diags: &mut Vec<Diagnostic>) {
-        for item in &self.program.items {
-            if let Item::Function(f) = item {
-                let mut scope: HashMap<String, Binding> = HashMap::new();
-                for p in &f.params {
-                    scope.insert(p.name.clone(), Binding::Param);
-                }
-                let mut hits = Vec::new();
-                walk_block_for_mut(&f.body, &mut scope, &mut hits);
-                let mut reported = HashSet::new();
-                for (name, kind) in hits {
-                    if reported.insert(name.clone()) {
-                        diags.push(self.assign_immutable_diag(f, &name, kind));
-                    }
-                }
-            }
-        }
-    }
-
-    fn assign_immutable_diag(&self, f: &FnDef, name: &str, kind: Binding) -> Diagnostic {
+    fn assign_immutable_diag(
+        &self,
+        f: &FnDef,
+        name: &str,
+        kind: Binding,
+        issue: &Issue,
+    ) -> Diagnostic {
         let (start, end) = fn_line_range(self.source, &f.name);
         let lines: Vec<&str> = self.source.lines().collect();
-        match kind {
-            Binding::Let => {
-                let mut diag = Diagnostic::warning(
-                    E010_ASSIGN_IMMUTABLE,
-                    format!(
-                        "'{name}' is reassigned but was declared without `mut`; declare it \
-                         with `let mut {name}` (accepted today, an error in language version 2.0)"
-                    ),
-                );
-                let candidates: Vec<usize> = (start..end)
-                    .filter(|&i| is_immutable_let_of(lines[i], name))
-                    .collect();
-                if let [i] = candidates[..] {
-                    diag = diag.at(self.file, i + 1, None);
-                    diag.suggested_patches.push(SuggestedPatch {
-                        id: format!("{E010_ASSIGN_IMMUTABLE}-add-mut-{name}"),
-                        description: format!("declare '{name}' with `let mut`"),
-                        confidence: Confidence::High,
-                        rationale: "the binding is reassigned later in the same function".into(),
-                        edits: vec![TextEdit {
-                            file: self.file.to_string(),
-                            start_line: i + 1,
-                            old_text: lines[i].to_string(),
-                            new_text: lines[i].replacen("let ", "let mut ", 1),
-                        }],
-                    });
-                } else if start < end {
-                    // Shadowed or not found: point at the function, offer no automatic edit.
-                    diag = diag.at(self.file, start + 1, None);
-                }
-                diag
-            }
-            Binding::Param | Binding::ForVar => {
-                let what = if kind == Binding::Param {
-                    "parameter"
-                } else {
-                    "loop variable"
-                };
-                let mut diag = Diagnostic::warning(
-                    E010_ASSIGN_IMMUTABLE,
-                    format!(
-                        "{what} '{name}' is reassigned; copy it into a new binding first, e.g. \
-                         `let mut {name}_acc = {name}` (accepted today, an error in language version 2.0)"
-                    ),
-                );
-                if start < end {
-                    diag = diag.at(self.file, start + 1, None);
-                }
-                diag
-            }
-            Binding::Mut => unreachable!("mutable bindings are never reported"),
-        }
-    }
-
-    fn check_types_in_block(
-        &self,
-        block: &Block,
-        env: &mut HashMap<String, String>,
-        fn_sigs: &FnSigs,
-        diags: &mut Vec<Diagnostic>,
-    ) {
-        for stmt in &block.stmts {
-            self.check_types_in_stmt(stmt, env, fn_sigs, diags);
-        }
-    }
-
-    fn check_types_in_stmt(
-        &self,
-        stmt: &Stmt,
-        env: &mut HashMap<String, String>,
-        fn_sigs: &FnSigs,
-        diags: &mut Vec<Diagnostic>,
-    ) {
-        match stmt {
-            Stmt::Let {
-                name, ty, value, ..
-            } => {
-                self.check_types_in_expr(value, env, fn_sigs, diags);
-                let inferred = self.infer_expr_type(value, env, fn_sigs);
-                if let Some(TypeExpr::Named(declared)) = ty {
-                    if let Some(actual) = &inferred {
-                        if actual != declared {
-                            let mut diag = Diagnostic::warning(
-                                E009_TYPE_ERROR,
-                                format!(
-                                    "type mismatch: '{name}' is annotated '{declared}' but its \
-                                     initializer has type '{actual}'"
-                                ),
-                            );
-                            if let Some(l) = find_let_line(self.source, name) {
-                                diag = diag.at(self.file, l, None);
-                            }
-                            diags.push(diag);
-                        }
-                    }
-                    env.insert(name.clone(), declared.clone());
-                } else if let Some(actual) = inferred {
-                    env.insert(name.clone(), actual);
-                }
-            }
-            Stmt::Assign { target, value } => {
-                self.check_types_in_expr(value, env, fn_sigs, diags);
-                if let (Some(declared), Some(actual)) =
-                    (env.get(target), self.infer_expr_type(value, env, fn_sigs))
-                {
-                    if &actual != declared {
-                        let mut diag = Diagnostic::warning(
-                            E009_TYPE_ERROR,
-                            format!(
-                                "type mismatch: '{target}' has type '{declared}' but is \
-                                 assigned a value of type '{actual}'"
-                            ),
-                        );
-                        if let Some(l) = find_line_containing(self.source, &format!("{target} =")) {
-                            diag = diag.at(self.file, l, None);
-                        }
-                        diags.push(diag);
-                    }
-                }
-            }
-            Stmt::Expr(e) | Stmt::Return(Some(e)) => {
-                self.check_types_in_expr(e, env, fn_sigs, diags)
-            }
-            Stmt::Return(None) => {}
-            Stmt::While { condition, body } => {
-                self.check_types_in_expr(condition, env, fn_sigs, diags);
-                if let Some(actual) = self.infer_expr_type(condition, env, fn_sigs) {
-                    if actual != "Bool" {
-                        let mut diag = Diagnostic::warning(
-                            E009_TYPE_ERROR,
-                            format!(
-                                "type mismatch: a while condition must be Bool, got '{actual}'"
-                            ),
-                        );
-                        if let Some(l) = find_line_containing(self.source, "while ") {
-                            diag = diag.at(self.file, l, None);
-                        }
-                        diags.push(diag);
-                    }
-                }
-                let mut inner = env.clone();
-                self.check_types_in_block(body, &mut inner, fn_sigs, diags);
-            }
-            Stmt::For { iter, body, .. } => {
-                self.check_types_in_expr(iter, env, fn_sigs, diags);
-                let mut inner = env.clone();
-                self.check_types_in_block(body, &mut inner, fn_sigs, diags);
+        let mut diag = Diagnostic::error(E010_ASSIGN_IMMUTABLE, issue.message());
+        if kind == Binding::Let {
+            let candidates: Vec<usize> = (start..end)
+                .filter(|&i| is_immutable_let_of(lines[i], name))
+                .collect();
+            if let [i] = candidates[..] {
+                diag = diag.at(self.file, i + 1, None);
+                diag.suggested_patches.push(SuggestedPatch {
+                    id: format!("{E010_ASSIGN_IMMUTABLE}-add-mut-{name}"),
+                    description: format!("declare '{name}' with `let mut`"),
+                    confidence: Confidence::High,
+                    rationale: "the binding is reassigned later in the same function".into(),
+                    edits: vec![TextEdit {
+                        file: self.file.to_string(),
+                        start_line: i + 1,
+                        old_text: lines[i].to_string(),
+                        new_text: lines[i].replacen("let ", "let mut ", 1),
+                    }],
+                });
+                return diag;
             }
         }
-    }
-
-    fn check_types_in_expr(
-        &self,
-        expr: &Expr,
-        env: &HashMap<String, String>,
-        fn_sigs: &FnSigs,
-        diags: &mut Vec<Diagnostic>,
-    ) {
-        // Direct call to a named user function: check each argument's concrete
-        // type against the declared parameter type. Skip when the callee name is
-        // a local binding (a first-class function value passed as a parameter).
-        if let Expr::Call { func, args } = expr {
-            if let Expr::Ident(fname) = func.as_ref() {
-                if !env.contains_key(fname) {
-                    if let Some((param_types, _)) = fn_sigs.get(fname.as_str()) {
-                        for (i, arg) in args.iter().enumerate() {
-                            if let Some(Some(pt)) = param_types.get(i) {
-                                if let Some(at) = self.infer_expr_type(arg, env, fn_sigs) {
-                                    if &at != pt {
-                                        let mut diag = Diagnostic::warning(
-                                            E009_TYPE_ERROR,
-                                            format!(
-                                                "type mismatch: call to '{fname}' argument {} \
-                                                 expects '{pt}' but got '{at}'",
-                                                i + 1
-                                            ),
-                                        );
-                                        if let Some(l) =
-                                            find_line_containing(self.source, &format!("{fname}("))
-                                        {
-                                            diag = diag.at(self.file, l, None);
-                                        }
-                                        diags.push(diag);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // A parameter, a loop variable, or a `let` that is shadowed or not found: point at the
+        // function and offer no automatic edit.
+        if start < end {
+            diag = diag.at(self.file, start + 1, None);
         }
-
-        // Recurse into sub-expressions so calls/lets nested anywhere are covered.
-        match expr {
-            Expr::Binary { left, right, .. } => {
-                self.check_types_in_expr(left, env, fn_sigs, diags);
-                self.check_types_in_expr(right, env, fn_sigs, diags);
-            }
-            Expr::Unary { expr, .. } => self.check_types_in_expr(expr, env, fn_sigs, diags),
-            Expr::Call { func, args } => {
-                self.check_types_in_expr(func, env, fn_sigs, diags);
-                for a in args {
-                    self.check_types_in_expr(a, env, fn_sigs, diags);
-                }
-            }
-            Expr::FieldAccess { object, .. } => {
-                self.check_types_in_expr(object, env, fn_sigs, diags)
-            }
-            Expr::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                self.check_types_in_expr(condition, env, fn_sigs, diags);
-                let mut inner = env.clone();
-                self.check_types_in_block(then_block, &mut inner, fn_sigs, diags);
-                if let Some(eb) = else_block {
-                    let mut inner = env.clone();
-                    self.check_types_in_block(eb, &mut inner, fn_sigs, diags);
-                }
-            }
-            Expr::Match { value, arms } => {
-                self.check_types_in_expr(value, env, fn_sigs, diags);
-                for arm in arms {
-                    self.check_types_in_expr(&arm.body, env, fn_sigs, diags);
-                }
-            }
-            Expr::Record { fields, spread, .. } => {
-                for (_, v) in fields {
-                    self.check_types_in_expr(v, env, fn_sigs, diags);
-                }
-                if let Some(s) = spread {
-                    self.check_types_in_expr(s, env, fn_sigs, diags);
-                }
-            }
-            Expr::List(items) => {
-                for it in items {
-                    self.check_types_in_expr(it, env, fn_sigs, diags);
-                }
-            }
-            Expr::SomeExpr(e)
-            | Expr::OkExpr(e)
-            | Expr::ErrExpr(e)
-            | Expr::Spawn(e)
-            | Expr::Emit(e) => self.check_types_in_expr(e, env, fn_sigs, diags),
-            Expr::EnumVariant {
-                payload: Some(p), ..
-            } => self.check_types_in_expr(p, env, fn_sigs, diags),
-            Expr::Send { target, message } => {
-                self.check_types_in_expr(target, env, fn_sigs, diags);
-                self.check_types_in_expr(message, env, fn_sigs, diags);
-            }
-            Expr::Block(b) => {
-                let mut inner = env.clone();
-                self.check_types_in_block(b, &mut inner, fn_sigs, diags);
-            }
-            _ => {}
-        }
-    }
-
-    /// Best-effort concrete type of an expression, or `None` when it cannot be
-    /// named with confidence. Deliberately narrow to keep false positives low.
-    fn infer_expr_type(
-        &self,
-        expr: &Expr,
-        env: &HashMap<String, String>,
-        fn_sigs: &FnSigs,
-    ) -> Option<String> {
-        match expr {
-            Expr::IntLit(_) => Some("Int".to_string()),
-            Expr::FloatLit(_) => Some("Float".to_string()),
-            Expr::StringLit(_) => Some("String".to_string()),
-            Expr::BoolLit(_) => Some("Bool".to_string()),
-            Expr::Ident(name) => env.get(name).cloned(),
-            Expr::Record { type_name, .. } => Some(type_name.clone()),
-            Expr::EnumVariant { enum_name, .. } => Some(enum_name.clone()),
-            Expr::Call { func, .. } => {
-                if let Expr::Ident(fname) = func.as_ref() {
-                    if !env.contains_key(fname) {
-                        return fn_sigs.get(fname.as_str()).and_then(|(_, ret)| ret.clone());
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-}
-
-/// A user function's signature: per-parameter concrete type (None when the
-/// parameter type isn't a plain named type) and the concrete return type.
-type FnSigs<'a> = HashMap<&'a str, (Vec<Option<String>>, Option<String>)>;
-
-/// The concrete name of a type expression, or `None` for generic constructors
-/// (`Option`/`Result`/`List`/`Map`/`Fn`) which this pass treats as untyped.
-fn named_type(ty: &TypeExpr) -> Option<String> {
-    match ty {
-        TypeExpr::Named(n) => Some(n.clone()),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Binding {
-    Let,
-    Mut,
-    Param,
-    ForVar,
-}
-
-fn walk_block_for_mut(
-    block: &Block,
-    scope: &mut HashMap<String, Binding>,
-    hits: &mut Vec<(String, Binding)>,
-) {
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::Let {
-                name,
-                mutable,
-                value,
-                ..
-            } => {
-                walk_expr_for_mut(value, scope, hits);
-                let kind = if *mutable { Binding::Mut } else { Binding::Let };
-                scope.insert(name.clone(), kind);
-            }
-            Stmt::Assign { target, value } => {
-                walk_expr_for_mut(value, scope, hits);
-                if let Some(&kind) = scope.get(target) {
-                    if kind != Binding::Mut {
-                        hits.push((target.clone(), kind));
-                    }
-                }
-            }
-            Stmt::Expr(e) | Stmt::Return(Some(e)) => walk_expr_for_mut(e, scope, hits),
-            Stmt::Return(None) => {}
-            Stmt::While { condition, body } => {
-                walk_expr_for_mut(condition, scope, hits);
-                walk_block_for_mut(body, &mut scope.clone(), hits);
-            }
-            Stmt::For { var, iter, body } => {
-                walk_expr_for_mut(iter, scope, hits);
-                let mut inner = scope.clone();
-                inner.insert(var.clone(), Binding::ForVar);
-                walk_block_for_mut(body, &mut inner, hits);
-            }
-        }
-    }
-}
-
-fn walk_expr_for_mut(
-    expr: &Expr,
-    scope: &HashMap<String, Binding>,
-    hits: &mut Vec<(String, Binding)>,
-) {
-    match expr {
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            walk_expr_for_mut(condition, scope, hits);
-            walk_block_for_mut(then_block, &mut scope.clone(), hits);
-            if let Some(b) = else_block {
-                walk_block_for_mut(b, &mut scope.clone(), hits);
-            }
-        }
-        Expr::Match { value, arms } => {
-            walk_expr_for_mut(value, scope, hits);
-            for arm in arms {
-                // A name bound by the pattern shadows the outer binding; leave it out
-                // rather than guess how an assignment to it behaves.
-                let mut inner = scope.clone();
-                for n in pattern_names(&arm.pattern) {
-                    inner.remove(&n);
-                }
-                walk_expr_for_mut(&arm.body, &inner, hits);
-            }
-        }
-        Expr::Block(b) => walk_block_for_mut(b, &mut scope.clone(), hits),
-        Expr::Binary { left, right, .. } => {
-            walk_expr_for_mut(left, scope, hits);
-            walk_expr_for_mut(right, scope, hits);
-        }
-        Expr::Unary { expr, .. }
-        | Expr::SomeExpr(expr)
-        | Expr::OkExpr(expr)
-        | Expr::ErrExpr(expr)
-        | Expr::Spawn(expr)
-        | Expr::Emit(expr) => walk_expr_for_mut(expr, scope, hits),
-        Expr::Call { func, args } => {
-            walk_expr_for_mut(func, scope, hits);
-            for a in args {
-                walk_expr_for_mut(a, scope, hits);
-            }
-        }
-        Expr::FieldAccess { object, .. } => walk_expr_for_mut(object, scope, hits),
-        Expr::Record { fields, spread, .. } => {
-            for (_, e) in fields {
-                walk_expr_for_mut(e, scope, hits);
-            }
-            if let Some(s) = spread {
-                walk_expr_for_mut(s, scope, hits);
-            }
-        }
-        Expr::EnumVariant { payload, .. } => {
-            if let Some(p) = payload {
-                walk_expr_for_mut(p, scope, hits);
-            }
-        }
-        Expr::List(items) => {
-            for e in items {
-                walk_expr_for_mut(e, scope, hits);
-            }
-        }
-        Expr::Send { target, message } => {
-            walk_expr_for_mut(target, scope, hits);
-            walk_expr_for_mut(message, scope, hits);
-        }
-        Expr::IntLit(_)
-        | Expr::FloatLit(_)
-        | Expr::StringLit(_)
-        | Expr::BoolLit(_)
-        | Expr::NoneLit
-        | Expr::Ident(_)
-        | Expr::Receive => {}
-    }
-}
-
-fn pattern_names(p: &Pattern) -> Vec<String> {
-    match p {
-        Pattern::Ident(n) => vec![n.clone()],
-        Pattern::SomePat(inner) | Pattern::OkPat(inner) | Pattern::ErrPat(inner) => {
-            pattern_names(inner)
-        }
-        Pattern::EnumVariant(_, Some(inner)) => pattern_names(inner),
-        _ => Vec::new(),
+        diag
     }
 }
 
@@ -1128,7 +706,7 @@ fn view(state: State) -> String { \"ok\" }
         analyzer
             .analyze()
             .into_iter()
-            .filter(|d| d.id == E009_TYPE_ERROR && d.severity == Severity::Warning)
+            .filter(|d| d.id == E009_TYPE_ERROR && d.severity == Severity::Error)
             .collect()
     }
 

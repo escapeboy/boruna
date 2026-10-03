@@ -334,6 +334,7 @@ dependencies = [
  "boruna-tooling",
  "boruna-vm",
  "clap",
+ "libc",
  "notify",
  "serde",
  "serde_json",

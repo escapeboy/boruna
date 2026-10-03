@@ -609,6 +609,8 @@ impl Printer {
                 self.write(" ");
                 self.print_block(body);
             }
+            Stmt::Break => self.write("break"),
+            Stmt::Continue => self.write("continue"),
         }
     }
 

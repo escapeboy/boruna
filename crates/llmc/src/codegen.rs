@@ -30,6 +30,15 @@ struct FnEmitter {
     locals: HashMap<String, u32>,
     next_local: u32,
     capabilities: Vec<Capability>,
+    /// Enclosing loops, innermost last, for `break` and `continue`.
+    loops: Vec<LoopCtx>,
+}
+
+/// Jumps to patch when a loop's exit and continue points are known.
+#[derive(Default)]
+struct LoopCtx {
+    breaks: Vec<usize>,
+    continues: Vec<usize>,
 }
 
 impl Emitter {
@@ -97,6 +106,7 @@ impl Emitter {
             locals: HashMap::new(),
             next_local: 0,
             capabilities: Vec::new(),
+            loops: Vec::new(),
         };
 
         // Resolve capabilities
@@ -198,6 +208,18 @@ impl Emitter {
 
     fn emit_stmt(&mut self, stmt: &Stmt, fe: &mut FnEmitter) -> Result<(), CompileError> {
         match stmt {
+            Stmt::Break | Stmt::Continue => {
+                let at = fe.code.len();
+                fe.code.push(Op::Jmp(0)); // patched when the loop is finished
+                let ctx = fe.loops.last_mut().ok_or_else(|| {
+                    CompileError::Codegen("break or continue outside of a loop".into())
+                })?;
+                if matches!(stmt, Stmt::Break) {
+                    ctx.breaks.push(at);
+                } else {
+                    ctx.continues.push(at);
+                }
+            }
             Stmt::Let { name, value, .. } => {
                 self.emit_expr(value, fe)?;
                 let idx = fe.next_local;
@@ -232,7 +254,10 @@ impl Emitter {
                 self.emit_expr(condition, fe)?;
                 let exit_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
+                fe.loops.push(LoopCtx::default());
+                let saved = fe.locals.clone();
                 self.emit_block(body, fe)?;
+                fe.locals = saved;
                 // A while body's value is discarded each iteration. `emit_block`
                 // leaves the trailing statement's value on the stack when it is a
                 // bare expression, so pop it here — otherwise one value leaks per
@@ -243,6 +268,9 @@ impl Emitter {
                 fe.code.push(Op::Jmp(loop_start));
                 let exit_target = fe.code.len() as u32;
                 fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
+                let ctx = fe.loops.pop().expect("pushed above");
+                patch_jumps(fe, &ctx.continues, loop_start);
+                patch_jumps(fe, &ctx.breaks, exit_target);
             }
             Stmt::For { var, iter, body } => {
                 // Desugar `for v in list { body }` into an index loop over a
@@ -263,6 +291,8 @@ impl Emitter {
                 // Loop variable local, reused across iterations.
                 let var_local = fe.next_local;
                 fe.next_local += 1;
+                // The loop variable and the body's bindings end with the loop.
+                let saved = fe.locals.clone();
                 fe.locals.insert(var.clone(), var_local);
 
                 let loop_start = fe.code.len() as u32;
@@ -280,9 +310,16 @@ impl Emitter {
                 fe.code.push(Op::ListGet);
                 fe.code.push(Op::StoreLocal(var_local));
 
+                fe.loops.push(LoopCtx::default());
                 self.emit_block(body, fe)?;
+                // The body's trailing expression value is discarded, as in `while`.
+                if let Some(Stmt::Expr(_)) = body.stmts.last() {
+                    fe.code.push(Op::Pop);
+                }
+                fe.locals = saved;
 
-                // idx = idx + 1
+                // idx = idx + 1 (also where `continue` jumps)
+                let next_iter = fe.code.len() as u32;
                 fe.code.push(Op::LoadLocal(idx_local));
                 let one_idx = self.module.add_const(Value::Int(1));
                 fe.code.push(Op::PushConst(one_idx));
@@ -292,12 +329,40 @@ impl Emitter {
                 fe.code.push(Op::Jmp(loop_start));
                 let exit_target = fe.code.len() as u32;
                 fe.code[exit_jmp] = Op::JmpIfNot(exit_target);
+                let ctx = fe.loops.pop().expect("pushed above");
+                patch_jumps(fe, &ctx.continues, next_iter);
+                patch_jumps(fe, &ctx.breaks, exit_target);
             }
         }
         Ok(())
     }
 
+    /// Emit a block used as a value: it always leaves exactly one value on the stack (`Unit`
+    /// when it is empty or does not end in an expression).
+    fn emit_block_value(&mut self, block: &Block, fe: &mut FnEmitter) -> Result<(), CompileError> {
+        // A `let` inside the block ends with the block; assignments still reach outer names.
+        let saved = fe.locals.clone();
+        self.emit_block(block, fe)?;
+        fe.locals = saved;
+        if !matches!(block.stmts.last(), Some(Stmt::Expr(_))) {
+            let unit = self.module.add_const(Value::Unit);
+            fe.code.push(Op::PushConst(unit));
+        }
+        Ok(())
+    }
+
     fn emit_expr(&mut self, expr: &Expr, fe: &mut FnEmitter) -> Result<(), CompileError> {
+        // Names bound inside a `match` arm end with the arm (language spec, block scoping).
+        if matches!(expr, Expr::Match { .. }) {
+            let saved = fe.locals.clone();
+            let result = self.emit_expr_inner(expr, fe);
+            fe.locals = saved;
+            return result;
+        }
+        self.emit_expr_inner(expr, fe)
+    }
+
+    fn emit_expr_inner(&mut self, expr: &Expr, fe: &mut FnEmitter) -> Result<(), CompileError> {
         match expr {
             Expr::IntLit(n) => {
                 let idx = self.module.add_const(Value::Int(*n));
@@ -637,7 +702,17 @@ impl Emitter {
                             for arg in args {
                                 self.emit_expr(arg, fe)?;
                             }
-                            fe.code.push(Op::CapCall(cap.id(), *arity as u8));
+                            let tags: &[&str] = crate::typeck::CAPABILITY_BUILTIN_TAGS
+                                .iter()
+                                .find(|(b, _)| *b == n)
+                                .map(|(_, t)| *t)
+                                .unwrap_or(&[]);
+                            for tag in tags {
+                                let idx = self.module.add_const(Value::String(tag.to_string()));
+                                fe.code.push(Op::PushConst(idx));
+                            }
+                            fe.code
+                                .push(Op::CapCall(cap.id(), (*arity + tags.len()) as u8));
                             return Ok(());
                         }
                         _ => {}
@@ -679,22 +754,26 @@ impl Emitter {
                 let else_jmp = fe.code.len();
                 fe.code.push(Op::JmpIfNot(0)); // placeholder
 
-                self.emit_block(then_block, fe)?;
-
-                if let Some(eb) = else_block {
-                    let end_jmp = fe.code.len();
-                    fe.code.push(Op::Jmp(0)); // placeholder
-                    let else_target = fe.code.len() as u32;
-                    fe.code[else_jmp] = Op::JmpIfNot(else_target);
-                    self.emit_block(eb, fe)?;
-                    let end_target = fe.code.len() as u32;
-                    fe.code[end_jmp] = Op::Jmp(end_target);
-                } else {
-                    let else_target = fe.code.len() as u32;
-                    fe.code[else_jmp] = Op::JmpIfNot(else_target);
+                // Both branches leave exactly one value, so the stack is the same whichever runs.
+                // (A missing `else` used to leave nothing, so an `if` statement whose condition
+                // was false popped a value it never pushed: "stack underflow".)
+                self.emit_block_value(then_block, fe)?;
+                let end_jmp = fe.code.len();
+                fe.code.push(Op::Jmp(0)); // placeholder
+                let else_target = fe.code.len() as u32;
+                fe.code[else_jmp] = Op::JmpIfNot(else_target);
+                match else_block {
+                    Some(eb) => self.emit_block_value(eb, fe)?,
+                    None => {
+                        let unit = self.module.add_const(Value::Unit);
+                        fe.code.push(Op::PushConst(unit));
+                    }
                 }
+                let end_target = fe.code.len() as u32;
+                fe.code[end_jmp] = Op::Jmp(end_target);
             }
             Expr::Match { value, arms } => {
+                let match_scope = fe.locals.clone();
                 // String and integer literal patterns compile to an if-else chain of
                 // `Eq` comparisons. `Op::Match` cannot handle them: it dispatches on a
                 // tag, and every Int value has the wildcard tag, so an integer pattern
@@ -717,6 +796,8 @@ impl Emitter {
                     let mut end_jmps = Vec::new();
 
                     for (i, arm) in arms.iter().enumerate() {
+                        // Each arm starts from the scope outside the match.
+                        fe.locals = match_scope.clone();
                         let is_last = i == arms.len() - 1;
                         match &arm.pattern {
                             Pattern::StringLit(s) => {
@@ -806,6 +887,8 @@ impl Emitter {
                     fe.code.push(Op::Match(table_idx));
 
                     for (i, arm) in arms.iter().enumerate() {
+                        // Each arm starts from the scope outside the match.
+                        fe.locals = match_scope.clone();
                         let arm_start = fe.code.len() as u32;
                         arm_starts.push(arm_start);
 
@@ -956,7 +1039,7 @@ impl Emitter {
                 fe.code.push(Op::EmitUi); // pops the duplicate
             }
             Expr::Block(block) => {
-                self.emit_block(block, fe)?;
+                self.emit_block_value(block, fe)?;
             }
         }
         Ok(())
@@ -1126,5 +1209,12 @@ fn type_expr_to_string(ty: &TypeExpr) -> String {
                 type_expr_to_string(ret)
             )
         }
+    }
+}
+
+/// Point every jump at `sites` (placeholders pushed for `break` / `continue`) to `target`.
+fn patch_jumps(fe: &mut FnEmitter, sites: &[usize], target: u32) {
+    for &at in sites {
+        fe.code[at] = Op::Jmp(target);
     }
 }

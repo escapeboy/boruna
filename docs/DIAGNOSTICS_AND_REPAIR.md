@@ -20,8 +20,8 @@ Every diagnostic is emitted in two formats:
 | E006 | Analysis | Unknown record field (with closest-name suggestion) |
 | E007 | Analysis | Capability violation (update/view must be pure) |
 | E008 | Codegen | Code generation error |
-| E009 | Type | General type error |
-| E010 | Analysis | Binding declared without `mut` (or a parameter / loop variable) is reassigned. Warning today, error in language version 2.0; `lang repair` adds `mut` |
+| E009 | Type | Type mismatch the checker can name (let annotation, call argument, assignment, `while` condition). A compile error since language 2.0 |
+| E010 | Analysis | Binding declared without `mut` (or a parameter / loop variable) is reassigned. A compile error since language 2.0 (Boruna 4.0); `lang repair` adds `mut` to a `let` |
 
 ## Suggested Patches
 

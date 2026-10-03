@@ -1,5 +1,6 @@
 //! E010: reassigning a binding declared without `mut` (or a parameter or `for` variable).
-//! The compiler accepts it today, so it is a warning with a `lang repair` fix.
+//! Language 2.0: the compiler rejects it, and `lang check` reports it as an error with a
+//! `lang repair` fix where the fix is safe.
 
 use boruna_tooling::diagnostics::collector::DiagnosticCollector;
 use boruna_tooling::diagnostics::{Confidence, Diagnostic, Severity, E010_ASSIGN_IMMUTABLE};
@@ -9,11 +10,11 @@ fn e010(source: &str) -> Vec<Diagnostic> {
     let all = DiagnosticCollector::new("t.ax", source)
         .collect()
         .diagnostics;
-    // A program that does not compile may skip the analyzer, which would make an
+    // A program that fails for another reason may skip the analyzer, which would make an
     // "is empty" assertion pass for the wrong reason.
     let errors: Vec<_> = all
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Error && d.id != E010_ASSIGN_IMMUTABLE)
         .collect();
     assert!(errors.is_empty(), "test program must compile: {errors:?}");
     all.into_iter()
@@ -26,13 +27,16 @@ fn reassigned_let_warns_with_a_high_confidence_fix_that_repair_applies() {
     let src = "fn main() -> Int {\n    let x: Int = 1\n    x = 2\n    x\n}\n";
     let d = e010(src);
     assert_eq!(d.len(), 1);
-    assert_eq!(d[0].severity, Severity::Warning);
+    assert_eq!(d[0].severity, Severity::Error);
     assert_eq!(d[0].location.as_ref().unwrap().line, 2);
     assert_eq!(d[0].suggested_patches[0].confidence, Confidence::High);
+    let err = boruna_compiler::compile("t", src).unwrap_err().to_string();
+    assert!(err.contains("cannot reassign 'x'"), "{err}");
 
     let set = DiagnosticCollector::new("t.ax", src).collect();
     let (fixed, result) = RepairTool::repair("t.ax", src, &set, RepairStrategy::Best, None);
     assert!(result.verify_passed);
+    assert!(boruna_compiler::compile("t", &fixed).is_ok());
     assert!(fixed.contains("    let mut x: Int = 1\n"));
     assert!(e010(&fixed).is_empty());
 }
@@ -65,8 +69,12 @@ fn parameters_and_loop_variables_warn_without_an_automatic_fix() {
     let src = "fn f(n: Int) -> Int {\n    n = n + 1\n    n\n}\nfn main() -> Int {\n    let mut s: Int = 0\n    for v in [1, 2] {\n        v = v + 1\n        s = s + v\n    }\n    f(s)\n}\n";
     let d = e010(src);
     assert_eq!(d.len(), 2);
-    assert!(d.iter().any(|d| d.message.starts_with("parameter 'n'")));
-    assert!(d.iter().any(|d| d.message.starts_with("loop variable 'v'")));
+    assert!(d
+        .iter()
+        .any(|d| d.message.starts_with("cannot reassign parameter 'n'")));
+    assert!(d
+        .iter()
+        .any(|d| d.message.starts_with("cannot reassign loop variable 'v'")));
     assert!(d.iter().all(|d| d.suggested_patches.is_empty()));
 }
 

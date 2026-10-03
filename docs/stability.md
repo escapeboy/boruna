@@ -1,10 +1,10 @@
 # Stability and Maturity
 
-Boruna is at version **3.5.0**. It is a local engine and CLI. Since 3.0.0
+Boruna is at version **4.0.0**. It is a local engine and CLI. Since 3.0.0
 there is no server component.
 
-Only the latest major line (3.x) is supported. 1.x and 2.x are end of
-life. The support, compatibility and deprecation rules are in
+Only the latest major line (4.x) is supported. 1.x, 2.x and 3.x are end
+of life. The support, compatibility and deprecation rules are in
 [`lts.md`](./lts.md). The **Stable** tier below is what [`lts.md`](./lts.md)
 §B covers. Experimental and Alpha components may change in minor releases.
 
@@ -29,8 +29,8 @@ Not suitable for:
 
 ### Stable (covered by [`lts.md`](./lts.md) §B)
 
-- **`.ax` language 1.1**: syntax, type system, pattern matching, records,
-  enums, `let mut` and loops. Spec:
+- **`.ax` language 2.0**: syntax, type system, pattern matching, records,
+  enums, `let mut`, loops with `break` / `continue`, capability built-ins. Spec:
   [`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md).
 - **VM execution**: bytecode format 1.1, capability enforcement,
   determinism.
@@ -82,14 +82,13 @@ CLI commands not in the list above are Experimental.
 
 - External security audit of the VM and capability enforcement
 - `boruna fmt` v2 that keeps comments
-- Language 2.0, where warnings such as `E010` become errors
 
 ## Versioning policy
 
 Boruna follows [Semantic Versioning](https://semver.org):
 
-- **Patch** (3.5.x): bug fixes and security fixes.
-- **Minor** (3.x.0): new features. Stable surfaces stay compatible.
+- **Patch** (4.0.x): bug fixes and security fixes.
+- **Minor** (4.x.0): new features. Stable surfaces stay compatible.
   Experimental and Alpha components may change. Deprecations are
   announced here.
 - **Major** (x.0.0): may remove deprecated features. The previous major

@@ -24,7 +24,7 @@ Codes appear in `boruna lang check --json` output as the `id` field of each diag
 | `E007` | capability-violation | capability | A function performs an effect it does not declare in its capability set. |
 | `E008` | codegen-error | codegen | The typechecked program could not be lowered to bytecode. |
 | `E009` | type-error | type | An expression's type does not match the type required by its context. |
-| `E010` | assign-to-immutable | type | A binding declared without `mut` (or a parameter or loop variable) is reassigned. A warning today; an error in language version 2.0. |
+| `E010` | assign-to-immutable | type | A binding declared without `mut` (or a parameter or loop variable) is reassigned. An error since language version 2.0 (a warning in 1.x). |
 
 The table above is generated from the same registry the CLI serves
 (`tooling/src/diagnostics/registry.rs`). A drift test asserts the registry stays
