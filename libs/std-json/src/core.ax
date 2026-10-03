@@ -58,8 +58,8 @@ fn escape_char(c: String) -> String {
 
 fn json_escape(s: String) -> String {
     let chars: List<String> = __builtin_string_chars(s)
-    let result: String = ""
-    let i: Int = 0
+    let mut result: String = ""
+    let mut i: Int = 0
     let n: Int = list_len(chars)
     while i < n {
         let c: String = list_get(chars, i)

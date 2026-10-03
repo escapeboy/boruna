@@ -169,7 +169,7 @@ boruna lang codes [--json]
 Subcommands:
   check     Run diagnostics: type errors, undeclared capabilities, unreachable code
   repair    Apply auto-repair suggestions from diagnostics
-  codes     List the registry of stable diagnostic codes (E001–E009)
+  codes     List the registry of stable diagnostic codes (E001–E010)
 ```
 
 Examples:

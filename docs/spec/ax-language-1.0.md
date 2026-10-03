@@ -6,7 +6,7 @@ last_revised: 2026-04-28
 audience: language implementers, compiler authors, security auditors
 ---
 
-# `.ax` Language Specification — Version 1.0
+# `.ax` Language Specification — Version 1.1
 
 This document is the **formal specification** of the `.ax` source language. It is the authoritative reference for any independent implementation of an `.ax` parser, type checker, or compiler.
 
@@ -18,13 +18,13 @@ The reference implementation lives in `crates/llmc/` (lexer, parser, typechecker
 
 ### 1.1 Version identifier
 
-The current language version is **`1.0`**. Implementations MUST expose this value programmatically.
+The current language version is **`1.1`**. Implementations MUST expose this value programmatically. Version 1.1 is 1.0 plus the additions listed in §13; every 1.0 program is a 1.1 program.
 
 In the reference implementation:
 
 ```rust
 // crates/llmc/src/lib.rs
-pub const LANGUAGE_VERSION: &str = "1.0";
+pub const LANGUAGE_VERSION: &str = "1.1";
 ```
 
 The version string is a `<major>.<minor>` decimal number. A program written against `1.x` MUST compile against any `1.y` implementation where `y >= x`.
@@ -82,11 +82,12 @@ Identifiers are case-sensitive. The identifier `_` (single underscore) is a **wi
 
 ### 2.4 Keywords and reserved words
 
-**Keywords** (have meaning in 1.0; MUST NOT be used as identifiers):
+**Keywords** (have meaning; MUST NOT be used as identifiers):
 
 ```
 fn   let   if   else   match   record   enum   true   false
 Some None Ok  Err
+mut  while for  in                                  (added in 1.1, §4.5)
 ```
 
 **Type names treated as reserved identifiers** (§4.1):
@@ -98,10 +99,14 @@ Int Float String Bool Unit Option Result List Map
 **Reserved-for-future-use** (a 1.0 implementation MUST tokenize these as reserved and reject them in identifier position; they have no semantics in 1.0):
 
 ```
-mut for while loop return break continue trait impl import module
-where as in pub priv async await yield static const ref self Self
+loop return break continue trait impl import module
+where as pub priv async await yield static const ref self Self
 type spawn actor receive
 ```
+
+(`mut`, `for`, `while` and `in` moved from this list to the keywords in 1.1. The reference
+implementation already gives some of the remaining words a meaning, for example `return`,
+`import`, `spawn` and `receive`; those are not yet specified here.)
 
 ### 2.5 Literals
 
@@ -187,8 +192,11 @@ There are no anonymous tuples, function types as first-class type expressions, o
 
 ```
 Block      ::= "{" {Stmt Newline} [Expr] "}"
-Stmt       ::= LetStmt | ExprStmt
-LetStmt    ::= "let" Identifier ":" Type "=" Expr
+Stmt       ::= LetStmt | AssignStmt | WhileStmt | ForStmt | ExprStmt
+LetStmt    ::= "let" ["mut"] Identifier ":" Type "=" Expr
+AssignStmt ::= Identifier "=" Expr                       (1.1, §4.5)
+WhileStmt  ::= "while" Expr Block                        (1.1, §4.5)
+ForStmt    ::= "for" Identifier "in" Expr Block          (1.1, §4.5)
 ExprStmt   ::= Expr
 
 Expr       ::= If | Match | Binary | Unary | Call | RecordLit | EnumLit
@@ -427,6 +435,42 @@ A wildcard `_` or a bare-identifier binding always makes a match exhaustive.
 
 The compiler SHOULD warn on unreachable arms (an arm whose pattern is fully covered by an earlier arm). 1.0 does not require this warning to be a hard error.
 
+### 4.5 Rebinding and loops (added in 1.1)
+
+**Mutable bindings and assignment.** `let mut x: T = e` introduces a binding that MAY later be
+rebound with `x = e2`. Assignment changes which value the name `x` refers to for the rest of its
+scope. It never changes a value: records, lists and maps are still never updated in place (§7.2),
+so any other name holding the old value still sees the old value.
+
+```
+x : T (declared mut) ∈ Γ      Γ ⊢ e : T
+──────────────────────────────────────────
+Γ ⊢ x = e   ok
+```
+
+- The assigned value MUST have the binding's type. The reference implementation does not check
+  this yet; a program that assigns a value of another type has unspecified behaviour.
+- Rebinding a binding declared without `mut`, a function parameter or a `for` loop variable is
+  not permitted by this specification. The reference implementation still accepts it, because
+  1.0 programs (including two standard libraries) relied on it, and §1.2 forbids tightening
+  type rules within 1.x. Tooling reports it as warning **E010** with an automatic fix
+  (`boruna lang repair` adds `mut`); it becomes a compile error in language version 2.0.
+- An assignment inside a nested block (`if`, `match` arm, loop body) rebinds the binding from the
+  enclosing scope. A `let` inside a block introduces a new binding that ends with the block.
+
+**While loops.** `while cond { body }` evaluates `cond`; while it is `true` it runs `body` and
+evaluates `cond` again. `cond` MUST have type `Bool` (the reference implementation does not check
+this yet). A `while` statement has no value.
+
+**For loops.** `for v in e { body }` evaluates `e` once. `e` MUST have type `List<T>`; iterating
+anything else is a runtime error in the reference implementation. `body` runs once per element in
+list order, with `v : T` bound to the element. `v` and any `let` inside `body` are scoped to the
+body. A `for` statement has no value.
+
+**Termination.** Loops do not change the determinism model (§7): the same inputs run the same
+iterations. A loop that never ends is stopped by the VM's step limit (`--step-limit`), which
+reports a runtime error rather than hanging.
+
 ## 5. Pattern binding
 
 Pattern matching introduces bindings into the arm's scope:
@@ -552,7 +596,7 @@ For any program `P` and any input `I`, executing `P(I)` MUST produce the same ob
 
 ### 7.2 Immutability
 
-All values are immutable. There is no mutable cell, no `mut` keyword, no in-place update. Record spread (§4.2) constructs a new value.
+All values are immutable. There is no mutable cell and no in-place update. Record spread (§4.2) constructs a new value. Since 1.1 a `let mut` binding can be rebound to a different value (§4.5); that changes what the name refers to, never the value itself, and is local to one function call, so it does not affect determinism.
 
 ### 7.3 Replay model
 
@@ -684,3 +728,6 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
 ## 13. Change log for this specification
 
 - **1.0** (2026-04-28) — Initial freeze. Sprint W1-B. Captures the language as shipped in Boruna v0.5.0.
+- **1.1** (2026-10-03) — Additive (§1.2). Specifies what the implementation has accepted since
+  Boruna v2.0: `let mut`, assignment, `while` and `for` (§4.5); `mut`, `while`, `for` and `in`
+  become keywords. Rebinding a binding that is not `mut` stays accepted but is warning E010.
