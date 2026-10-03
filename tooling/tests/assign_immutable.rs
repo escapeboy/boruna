@@ -100,3 +100,25 @@ fn a_shadowed_name_gets_a_warning_but_no_guessed_fix() {
     assert_eq!(d.len(), 1);
     assert!(d[0].suggested_patches.is_empty());
 }
+
+#[test]
+fn findings_point_at_the_offending_line() {
+    use boruna_tooling::diagnostics::E009_TYPE_ERROR;
+    let src = "fn g(s: Int) -> Int {\n    s\n}\nfn main() -> Int {\n    let mut z: Int = 1\n    let y: Int = 2\n    z = \"t\"\n    let q: Int = g(\"q\")\n    while 3 {\n    }\n    for v in [1] {\n        v = 2\n    }\n    0\n}\n";
+    let lines: Vec<(String, usize)> = DiagnosticCollector::new("t.ax", src)
+        .collect()
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.id == E009_TYPE_ERROR || d.id == E010_ASSIGN_IMMUTABLE)
+        .map(|d| (d.id, d.location.unwrap().line))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("E009".to_string(), 7),
+            ("E009".to_string(), 8),
+            ("E009".to_string(), 9),
+            ("E010".to_string(), 12)
+        ]
+    );
+}

@@ -6,13 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-10-03
+
+`.ax` language 2.0. The type and `mut` checks that were warnings in 3.x are compile errors,
+loops get `break` and `continue`, and three long-standing code generation bugs are fixed. 3.x is
+end of life. Read [Upgrading to 4.0](docs/guides/upgrading-to-4.md) first.
+
 ### Breaking
 - `.ax` language 2.0. The compiler rejects what 1.x only warned about:
   - `E009`: a type mismatch the checker can name, in a `let` annotation, a call argument, an
     assignment or a `while` condition.
   - `E010`: reassigning a `let` declared without `mut`, a parameter or a `for` variable.
 
-  `boruna lang check` lists every case with its line; `boruna lang repair` adds the missing
+  `boruna lang check` lists every case with its line in the function; `boruna lang repair` adds the missing
   `mut`. See [Upgrading to 4.0](docs/guides/upgrading-to-4.md).
 - `break` and `continue` are keywords; programs that used them as names must rename them.
 - Names declared inside a block, loop body or `match` arm now end there, as the language spec
@@ -35,7 +41,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 - An `if` without `else` used as a statement crashed with "stack underflow" when its condition
   was false. Both branches now always leave one value.
-- The trailing expression of a `for` body was left on the stack on every iteration.
+- The trailing expression of a `for` body was left on the stack on every iteration; a long
+  loop hit "stack overflow".
+- A parameter holding a function, named like a top-level function, called the top-level
+  function instead of the value passed in.
 - `boruna ... | head` panicked with "failed printing to stdout: Broken pipe" when the reader
   closed the pipe; it now exits quietly (Unix).
 

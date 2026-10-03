@@ -717,8 +717,13 @@ impl Emitter {
                         }
                         _ => {}
                     }
-                    // User-defined function call
-                    if let Some(&func_idx) = self.fn_map.get(name) {
+                    // User-defined function call. A local of the same name (a function value passed
+                    // as a parameter) takes precedence, so it is called indirectly below.
+                    if let Some(&func_idx) = self
+                        .fn_map
+                        .get(name)
+                        .filter(|_| !fe.locals.contains_key(name))
+                    {
                         let argc =
                             count_as_u8(args.len(), &format!("call to `{name}`"), "arguments")?;
                         for arg in args {

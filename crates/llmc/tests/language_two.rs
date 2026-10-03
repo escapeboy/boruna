@@ -129,3 +129,11 @@ fn assignment_inside_a_block_still_updates_the_outer_binding() {
     let src = "fn main() -> Int {\n    let mut n: Int = 1\n    if true {\n        n = 5\n    }\n    let o: Option<Int> = Some(2)\n    match o {\n        Some(v) => {\n            n = n + v\n        }\n        None => {}\n    }\n    n\n}\n";
     assert_eq!(run(src), Value::Int(7));
 }
+
+#[test]
+fn a_function_parameter_shadows_a_top_level_function_of_the_same_name() {
+    // 3.x called the top-level `step` (returned 100); the parameter must win. A different
+    // signature for the top-level function must not cause a false E009 either.
+    let src = "fn step(x: String) -> Int {\n    100\n}\nfn plus_one(x: Int) -> Int {\n    x + 1\n}\nfn apply(step: Fn(Int) -> Int, v: Int) -> Int {\n    step(v)\n}\nfn main() -> Int {\n    apply(plus_one, 1)\n}\n";
+    assert_eq!(run(src), Value::Int(2));
+}

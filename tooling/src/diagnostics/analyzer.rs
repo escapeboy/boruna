@@ -467,15 +467,18 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 _ => {
+                    let func = issue.func();
                     let line = match &issue {
-                        Issue::LetAnnotation { name, .. } => find_let_line(self.source, name),
+                        Issue::LetAnnotation { name, .. } => {
+                            self.line_in_fn(func, |l| let_of(l).is_some_and(|n| n == name))
+                        }
                         Issue::CallArgument { callee, .. } => {
-                            find_line_containing(self.source, &format!("{callee}("))
+                            self.line_in_fn(func, |l| calls(l, callee))
                         }
-                        Issue::Assign { name, .. } => {
-                            find_line_containing(self.source, &format!("{name} ="))
+                        Issue::Assign { name, .. } => self.line_in_fn(func, |l| assigns(l, name)),
+                        Issue::WhileCondition { .. } => {
+                            self.line_in_fn(func, |l| l.trim_start().starts_with("while "))
                         }
-                        Issue::WhileCondition { .. } => find_line_containing(self.source, "while "),
                         Issue::AssignImmutable { .. } => None,
                     };
                     let mut diag = Diagnostic::error(E009_TYPE_ERROR, issue.message());
@@ -521,11 +524,27 @@ impl<'a> Analyzer<'a> {
             }
         }
         // A parameter, a loop variable, or a `let` that is shadowed or not found: point at the
-        // function and offer no automatic edit.
-        if start < end {
+        // first reassignment and offer no automatic edit.
+        if let Some(l) = self.line_in_fn(&f.name, |l| assigns(l, name)) {
+            diag = diag.at(self.file, l, None);
+        } else if start < end {
             diag = diag.at(self.file, start + 1, None);
         }
         diag
+    }
+
+    /// 1-indexed line of the first line in the body of function `func` that matches `pred`.
+    /// Searching only inside the function keeps a finding from pointing at another function or
+    /// at the declaration of the called function.
+    fn line_in_fn(&self, func: &str, pred: impl Fn(&str) -> bool) -> Option<usize> {
+        let (start, end) = fn_line_range(self.source, func);
+        self.source
+            .lines()
+            .enumerate()
+            .take(end)
+            .skip(start + 1)
+            .find(|(_, l)| pred(l))
+            .map(|(i, _)| i + 1)
     }
 }
 
@@ -557,6 +576,36 @@ fn fn_line_range(source: &str, name: &str) -> (usize, usize) {
     (start, end)
 }
 
+/// The name a `let` line binds (`let x`, `let mut x`), if the line is a `let`.
+fn let_of(line: &str) -> Option<&str> {
+    let t = line.trim_start().strip_prefix("let ")?;
+    let t = t.strip_prefix("mut ").unwrap_or(t).trim_start();
+    let end = t
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(t.len());
+    Some(&t[..end])
+}
+
+/// The line is an assignment `NAME = ...` (not `==`, not a `let`).
+fn assigns(line: &str, name: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix(name) else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    rest.starts_with('=') && !rest.starts_with("==")
+}
+
+/// The line calls `callee(` as a whole word (not `my_callee(`).
+fn calls(line: &str, callee: &str) -> bool {
+    let needle = format!("{callee}(");
+    line.match_indices(&needle).any(|(i, _)| {
+        line[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+    })
+}
+
 /// `let NAME` (without `mut`) at the start of the line, NAME followed by `:`, `=` or a space.
 fn is_immutable_let_of(line: &str, name: &str) -> bool {
     line.trim_start()
@@ -564,27 +613,6 @@ fn is_immutable_let_of(line: &str, name: &str) -> bool {
         .and_then(|r| r.strip_prefix(name))
         .and_then(|r| r.chars().next())
         .is_some_and(|c| c == ':' || c == '=' || c == ' ')
-}
-
-/// Line (1-indexed) of the `let` binding for `name`, best-effort.
-fn find_let_line(source: &str, name: &str) -> Option<usize> {
-    for (i, line) in source.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if (trimmed.starts_with("let ") || trimmed.starts_with("let mut "))
-            && trimmed.contains(name)
-        {
-            return Some(i + 1);
-        }
-    }
-    None
-}
-
-/// First line (1-indexed) containing `needle`, best-effort.
-fn find_line_containing(source: &str, needle: &str) -> Option<usize> {
-    source
-        .lines()
-        .position(|line| line.contains(needle))
-        .map(|i| i + 1)
 }
 
 /// Find the line number where `match <name>` occurs.

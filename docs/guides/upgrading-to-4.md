@@ -55,10 +55,22 @@ an outer `let mut` binding from inside a block still updates it.
 statements failed with "stack underflow" when `c` was false. It now runs on both paths. No
 working program depended on the old behaviour, because it could only crash.
 
+**A parameter that holds a function, named like a top-level function.** In
+`fn apply(step: Fn(Int) -> Int, v: Int) -> Int { step(v) }`, 3.x called the top-level `step`
+when one existed, not the function passed in. 4.0 calls the parameter.
+
 ## 3. New words that cannot be names any more
 
 `break` and `continue` are keywords. A variable, parameter or function with one of these
 names has to be renamed.
+
+## 4. If you embed Boruna with your own `fs.write` handler
+
+`fs_append` and `fs_delete` reach the host as `fs.write` calls with an operation name appended:
+`[path, content, "append"]` and `[path, "", "delete"]`. A plain `fs_write` still has two
+arguments. A custom handler that ignores extra arguments would treat an append as an overwrite
+and a delete as writing an empty file, so check the argument count. The same applies to
+`fs_list` on `fs.read` (`[dir, "list"]`). The built-in handlers already do this.
 
 ## What you get in return
 

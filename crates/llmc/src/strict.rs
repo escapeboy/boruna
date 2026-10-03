@@ -147,11 +147,9 @@ pub fn check(program: &Program) -> Vec<Issue> {
                 sigs: &sigs,
                 issues: &mut issues,
             };
-            let mut env: HashMap<String, String> = HashMap::new();
+            let mut env: Env = HashMap::new();
             for p in &f.params {
-                if let Some(t) = named_type(&p.ty) {
-                    env.insert(p.name.clone(), t);
-                }
+                env.insert(p.name.clone(), named_type(&p.ty));
             }
             types.block(&f.body, &mut env);
 
@@ -178,6 +176,10 @@ pub fn check(program: &Program) -> Vec<Issue> {
 
 /// A user function's signature: per-parameter concrete type (None when the parameter type is
 /// not a plain named type) and the concrete return type.
+/// Local names in scope and their type when it can be named. A name with `None` is still a
+/// local: a call through it is a call of a function value, not of the top-level function.
+type Env = HashMap<String, Option<String>>;
+
 type FnSigs<'a> = HashMap<&'a str, (Vec<Option<String>>, Option<String>)>;
 
 /// The concrete name of a type expression, or `None` for generic constructors
@@ -196,13 +198,13 @@ struct TypePass<'a, 'b> {
 }
 
 impl TypePass<'_, '_> {
-    fn block(&mut self, block: &Block, env: &mut HashMap<String, String>) {
+    fn block(&mut self, block: &Block, env: &mut Env) {
         for stmt in &block.stmts {
             self.stmt(stmt, env);
         }
     }
 
-    fn stmt(&mut self, stmt: &Stmt, env: &mut HashMap<String, String>) {
+    fn stmt(&mut self, stmt: &Stmt, env: &mut Env) {
         match stmt {
             Stmt::Let {
                 name, ty, value, ..
@@ -220,22 +222,22 @@ impl TypePass<'_, '_> {
                             });
                         }
                     }
-                    env.insert(name.clone(), declared.clone());
-                } else if let Some(actual) = inferred {
-                    env.insert(name.clone(), actual);
+                    env.insert(name.clone(), Some(declared.clone()));
                 } else {
-                    // Shadowing with a value of unknown type: forget the old type.
-                    env.remove(name);
+                    // Unknown type is recorded too, so a shadowed name loses its old type.
+                    env.insert(name.clone(), inferred);
                 }
             }
             Stmt::Assign { target, value } => {
                 self.expr(value, env);
-                if let (Some(declared), Some(actual)) = (env.get(target), self.infer(value, env)) {
-                    if &actual != declared {
+                if let (Some(declared), Some(actual)) =
+                    (env.get(target).cloned().flatten(), self.infer(value, env))
+                {
+                    if actual != declared {
                         self.issues.push(Issue::Assign {
                             func: self.func.to_string(),
                             name: target.clone(),
-                            declared: declared.clone(),
+                            declared,
                             actual,
                         });
                     }
@@ -258,13 +260,13 @@ impl TypePass<'_, '_> {
             Stmt::For { var, iter, body } => {
                 self.expr(iter, env);
                 let mut inner = env.clone();
-                inner.remove(var);
+                inner.insert(var.clone(), None);
                 self.block(body, &mut inner);
             }
         }
     }
 
-    fn expr(&mut self, expr: &Expr, env: &HashMap<String, String>) {
+    fn expr(&mut self, expr: &Expr, env: &Env) {
         // Direct call to a named user function: check each argument's concrete type against the
         // declared parameter type. Skip when the callee name is a local binding (a function
         // value passed as a parameter).
@@ -322,7 +324,7 @@ impl TypePass<'_, '_> {
                     // A name bound by the pattern shadows the outer one with an unknown type.
                     let mut inner = env.clone();
                     for n in pattern_names(&arm.pattern) {
-                        inner.remove(&n);
+                        inner.insert(n, None);
                     }
                     self.expr(&arm.body, &inner);
                 }
@@ -359,13 +361,13 @@ impl TypePass<'_, '_> {
 
     /// Best-effort concrete type of an expression, or `None` when it cannot be named with
     /// confidence.
-    fn infer(&self, expr: &Expr, env: &HashMap<String, String>) -> Option<String> {
+    fn infer(&self, expr: &Expr, env: &Env) -> Option<String> {
         match expr {
             Expr::IntLit(_) => Some("Int".to_string()),
             Expr::FloatLit(_) => Some("Float".to_string()),
             Expr::StringLit(_) => Some("String".to_string()),
             Expr::BoolLit(_) => Some("Bool".to_string()),
-            Expr::Ident(name) => env.get(name).cloned(),
+            Expr::Ident(name) => env.get(name).cloned().flatten(),
             Expr::Record { type_name, .. } => Some(type_name.clone()),
             Expr::EnumVariant { enum_name, .. } => Some(enum_name.clone()),
             Expr::Call { func, .. } => match func.as_ref() {
