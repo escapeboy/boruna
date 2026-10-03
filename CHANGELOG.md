@@ -6,6 +6,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-10-03
+
+Platform release. Boruna now ships and is tested natively on macOS (Apple Silicon and Intel), Windows (x64 and Arm) and Linux (x86_64 and arm64). No change to workflows, workflow hashes or evidence bundles.
+
 ### Added
 - `--version` / `-V` on all four binaries (`boruna`, `boruna-mcp`, `boruna-pkg`, `boruna-orch`).
 - Release binaries for macOS Intel (`x86_64-apple-darwin`) and Windows (`x86_64-pc-windows-msvc`,
