@@ -1,24 +1,16 @@
 name: Bench compare
 
-# Sprint T-0.3 of post-1.0-execution-plan: PR-time perf-regression
-# detection. Runs the criterion bench harness on both the PR base
-# and the PR head, then posts a sticky comment with the deltas.
+# PR-time performance checks, two jobs:
 #
-# Non-blocking by default: this job is NOT in branch protection's
-# required_status_checks set. A regression FAILS the job (so the
-# comment shows red), but does not prevent merging until the team
-# decides to promote it. Reviewers should treat ≥10% regressions
-# as "explain or justify" before merging.
+# - "Bench compare" runs the criterion (wall-clock) benches on the PR base and head on the
+#   self-hosted runner and posts a sticky comment with the deltas. Informational only: on that
+#   shared runner identical code moved by 10-40% between runs, so it no longer fails the job.
+# - "Instruction count" runs benches/benches/instructions.rs under Valgrind (Gungraun) on base
+#   and head and fails when a benchmark executes more than 3% more instructions. Instruction
+#   counts do not depend on machine load, so this is the regression gate.
 #
-# CI runner: self-hosted. Production-class hardware will give
-# cleaner deltas than a hosted runner; the 10% threshold is
-# calibrated to be larger than typical noise on this box. See
-# docs/PERFORMANCE.md.
-#
-# Bench-compare runs the full criterion suite. If a PR's perf
-# impact can be reasoned about without bench data (docs, CI
-# workflow tweaks, pure CHANGELOG edits), the path filter below
-# skips this job.
+# Neither job is in branch protection's required checks. The path filter below skips PRs that
+# change no Rust code.
 
 on:
   pull_request:
@@ -193,9 +185,71 @@ jobs:
               > /dev/null
           fi
 
-      - name: Fail on regression
+      # Wall-clock numbers stay as an informational PR comment only. On the shared self-hosted
+      # runner identical code moved by 10-40% between runs (PRs #90-#96), so they cannot gate a
+      # merge. The "Instruction count" job below is the regression gate.
+      - name: Note wall-clock regressions (informational)
         if: steps.cmp.outputs.regressed == 'true'
         run: |
-          echo "::error::One or more benchmarks regressed by >= 10%."
-          echo "See the bench-compare PR comment for details."
-          exit 1
+          echo "::warning::Wall-clock benchmarks moved by >= 10%. These numbers are noisy on this runner;"
+          echo "see the Instruction count job for the regression check."
+
+  instructions:
+    # Counts executed instructions under Valgrind (benches/benches/instructions.rs). The count
+    # does not depend on machine load, so a hosted runner is fine and a change means the code
+    # changed. Fails when any benchmark executes more than 3% more instructions than the base.
+    name: Instruction count
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/gungraun-runner
+            target
+          key: ${{ runner.os }}-instructions-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-instructions-
+
+      - name: Measure base and head
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The runner binary must match the gungraun library version of the checkout.
+          install_runner() {
+            version=$(cargo metadata --format-version=1 --locked \
+              | jq -r '.packages[] | select(.name == "gungraun") | .version')
+            if [ "$(gungraun-runner --version 2>/dev/null | awk '{print $2}')" != "$version" ]; then
+              cargo install gungraun-runner --version "$version" --locked
+            fi
+          }
+          bench() { cargo bench --locked -p boruna-benches --bench instructions -- "$@"; }
+
+          git fetch origin "$BASE_REF"
+          git checkout "origin/$BASE_REF"
+          if [ -f benches/benches/instructions.rs ]; then
+            install_runner
+            bench --save-baseline=base
+            git checkout "$HEAD_SHA"
+            install_runner
+            # Exit code 3 = at least one benchmark executed > 3% more instructions.
+            bench --baseline=base --callgrind-limits='ir=3%'
+          else
+            echo "Base has no instruction benchmarks yet; recording head only (no comparison)."
+            git checkout "$HEAD_SHA"
+            install_runner
+            bench
+          fi

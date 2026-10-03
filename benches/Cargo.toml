@@ -27,6 +27,9 @@ boruna-tooling = { path = "../tooling" }
 # single-threaded numbers we want.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3"
+# Instruction-count benchmarks (benches/instructions.rs). Runs under Valgrind on Linux; the
+# matching `gungraun-runner` binary is installed in CI (see bench-compare.yml).
+gungraun = "0.20"
 
 [[bench]]
 name = "compile"
@@ -38,4 +41,8 @@ harness = false
 
 [[bench]]
 name = "evidence"
+harness = false
+
+[[bench]]
+name = "instructions"
 harness = false

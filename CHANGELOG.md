@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Instruction-count benchmarks (`benches/benches/instructions.rs`, Gungraun under Valgrind) and a
+  CI job that fails when a PR makes a benchmark execute more than 3% more instructions. The
+  wall-clock bench comparison stays as an informational comment: on the shared runner identical
+  code moved by 10-40% between runs.
 - Website and docs site generated from the repository's Markdown (`site/`, `scripts/build-site.py`):
   a landing page, the docs of the latest release and of `master`, and a command reference generated
   from the binary. CI builds it and fails on a missing listed page or a broken internal link.
