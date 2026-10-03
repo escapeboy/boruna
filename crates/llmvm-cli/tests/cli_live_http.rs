@@ -27,7 +27,10 @@ fn workflow_run_live_does_not_fall_back_to_the_mock() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(!stderr.contains(FALLBACK), "workflow run --live used the mock: {stderr}");
+    assert!(
+        !stderr.contains(FALLBACK),
+        "workflow run --live used the mock: {stderr}"
+    );
 }
 
 #[test]
@@ -43,5 +46,8 @@ fn run_live_does_not_fall_back_to_the_mock() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(!stderr.contains(FALLBACK), "run --live used the mock: {stderr}");
+    assert!(
+        !stderr.contains(FALLBACK),
+        "run --live used the mock: {stderr}"
+    );
 }
