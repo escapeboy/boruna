@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Fail if the built site has a broken internal link or anchor.
 
-    scripts/check-site-links.py public
+    scripts/check-site-links.py public [--warn-prefix docs/]
 
 Checks every href/src in every .html file: a relative or root-relative link must point at a file
 that exists in the build (a directory means its index.html), and a `#fragment` must match an
 element id in the target page. External links (http:, https:, mailto:, ...) are not fetched.
+`--warn-prefix P` reports problems in pages under P without failing: used for the docs of a
+release cut before the site existed, whose Markdown can no longer be changed.
 Standard library only.
 """
 
@@ -30,7 +32,13 @@ class Page(HTMLParser):
 
 
 def main() -> None:
-    root = Path(sys.argv[1]).resolve()
+    args = sys.argv[1:]
+    warn_prefix = None
+    if "--warn-prefix" in args:
+        i = args.index("--warn-prefix")
+        warn_prefix = args[i + 1]
+        del args[i:i + 2]
+    root = Path(args[0]).resolve()
     pages = {}
     for path in root.rglob("*.html"):
         parser = Page()
@@ -60,6 +68,12 @@ def main() -> None:
 
     # print.html repeats every page; report its problems once, through the pages themselves.
     broken = sorted({b for b in broken if not b.split(":", 1)[0].endswith("print.html")})
+    if warn_prefix:
+        warned = [b for b in broken if b.startswith(warn_prefix)]
+        broken = [b for b in broken if not b.startswith(warn_prefix)]
+        if warned:
+            print(f"warning: {len(warned)} broken internal link(s) under {warn_prefix} (not failing):")
+            print("\n".join(f"  {b}" for b in warned))
     if broken:
         print(f"{len(broken)} broken internal link(s):")
         print("\n".join(f"  {b}" for b in broken))
