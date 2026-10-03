@@ -14,22 +14,28 @@ Internal notes (design-*, architecture-*, test-plan-*, retros, archive/) stay in
 - [Quickstart](docs/QUICKSTART.md)
 - [Your first workflow](docs/guides/first-workflow.md)
 - [Limitations](docs/limitations.md)
+- [FAQ](docs/faq.md)
 
 # Concepts
 
 - [Determinism](docs/concepts/determinism.md)
 - [Capabilities](docs/concepts/capabilities.md)
 - [Evidence bundles](docs/concepts/evidence-bundles.md)
+- [Evidence bundle threat model](docs/concepts/threat-model.md)
 - [Runtime execution provenance](docs/concepts/runtime-execution-provenance.md)
 - [Bundle storage](docs/concepts/bundle-storage.md)
 
 # Guides
 
+- [Compliance evidence](docs/COMPLIANCE_EVIDENCE.md)
 - [LLM integration](docs/guides/llm-integration.md)
 - [Model evaluation](docs/guides/model-eval.md)
 - [Testing apps](docs/TESTING_GUIDE.md)
 - [Traces to regression tests](docs/TRACE_TO_TESTS.md)
 - [App template](docs/APP_TEMPLATE.md)
+- [Framework effects](docs/EFFECTS_GUIDE.md)
+- [Actors](docs/ACTORS_GUIDE.md)
+- [Operations](docs/OPERATIONS.md)
 - [Language server (LSP)](docs/guides/lsp.md)
 - [Migration tooling](docs/guides/migration.md)
 - [Bundle storage on S3](docs/guides/bundle-storage-s3.md)
@@ -48,6 +54,7 @@ Internal notes (design-*, architecture-*, test-plan-*, retros, archive/) stay in
 - [Diagnostic codes](docs/reference/diagnostic-codes.md)
 - [Diagnostics and repair](docs/DIAGNOSTICS_AND_REPAIR.md)
 - [Error kinds](docs/reference/error-kinds.md)
+- [Framework API](docs/FRAMEWORK_API.md)
 - [Compliance workflow templates](docs/reference/compliance/README.md)
 - [Standard libraries]()
   - [std-authz](docs/reference/stdlib/std-authz.md)
@@ -72,11 +79,17 @@ Internal notes (design-*, architecture-*, test-plan-*, retros, archive/) stay in
 - [Workflow DAG](docs/spec/workflow-dag-1.0.md)
 - [Evidence bundle](docs/spec/evidence-bundle-1.0.md)
 - [Runtime provenance predicate](docs/spec/runtime-provenance-predicate-1.0.md)
+- [Framework (App protocol)](docs/FRAMEWORK_SPEC.md)
+- [Orchestrator](docs/ORCHESTRATOR_SPEC.md)
+- [Packages](docs/PACKAGE_SPEC.md)
+- [Determinism contract](docs/DETERMINISM_CONTRACT.md)
 
 # Project
 
-- [Stability](docs/stability.md)
-- [Long-term support](docs/lts.md)
+- [Platform overview](docs/ENTERPRISE_PLATFORM_OVERVIEW.md)
+- [Security model](docs/SECURITY_MODEL.md)
+- [Platform governance](docs/PLATFORM_GOVERNANCE.md)
 - [Performance](docs/PERFORMANCE.md)
+- [Roadmap](docs/roadmap.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)

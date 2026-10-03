@@ -100,9 +100,12 @@ Constraints:
 ## 5. Actor Integration
 
 - Child actors use the same App protocol.
-- Parent spawns child via `spawn_actor` effect.
-- Messages between actors are routed by the framework runtime.
-- Supervision: if a child crashes, parent receives an error message.
+- A parent requests a child with the `spawn_actor` effect and messages it with `send_to_actor`.
+- The framework runtime does not run actors itself: plain `send` only returns these effects, and
+  the bundled executors do not deliver them (the mock executor returns a fake actor id). See
+  [ACTORS_GUIDE.md](ACTORS_GUIDE.md) for what each executor does.
+- Supervision exists in the VM's actor system (a failed actor is marked failed, its children are
+  stopped and the parent is notified), not at the framework level.
 
 ## 6. Policy Layer
 

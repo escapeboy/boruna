@@ -17,7 +17,7 @@ Most AI orchestration tools run workflows and return outputs. When something goe
 
 Boruna answers those questions by design.
 
-Every Boruna workflow run produces a **tamper-evident evidence bundle**: a hash-chained audit log of every step executed, every capability invoked, every model response received. That bundle can be inspected, verified, and replayed — without network access, without a central server, without trusting anyone's word.
+Every Boruna workflow run can produce a **tamper-evident evidence bundle**: a hash-chained audit log of every completed step with the hash of its output, every failure, every approval or rejection, and every confidence-gate decision. Anyone can inspect and verify the bundle offline, without a central server and without trusting anyone's word. A single `.ax` program run with `boruna run --record` also records every capability call and its result, so that run can be replayed and checked exactly. (Workflow bundles do not yet record individual capability calls; see [limitations](docs/limitations.md).)
 
 This makes Boruna suited for teams building AI workflows that touch regulated data, make consequential decisions, or need a defensible audit trail.
 
@@ -207,7 +207,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v3.0.0** — the release that removes the entire HTTP / serving / distributed-execution layer. Gone are the distributed coordinator, distributed workers, active-active HA and coordinator mTLS, the three web UIs (workflow dashboard, evidence web viewer, approval console), and the `serve` cargo feature and its server dependencies. What remains is a **local deterministic engine and CLI**: compiler → capability-gated VM → orchestrator (runner, persistence, audit) → tamper-evident evidence bundles. Approval and external-trigger gates are still handled locally via `boruna workflow approve/reject/trigger` plus `resume`. This is a **breaking** release — the `coordinator`, `dashboard`, `worker`, and `evidence serve` CLI commands, the `--coordinator` / `--coord-token` flags, and the `serve` feature are removed — so review the 3.0.0 entry in [`CHANGELOG.md`](CHANGELOG.md). The core execution engine, evidence bundles, and four formal versioned specifications (`.ax` language, bytecode, workflow DAG, evidence bundle) remain feature-complete; the 1.x LTS line continues per [`docs/lts.md`](docs/lts.md).
+Boruna is at **v3.5.0**: a **local deterministic engine and CLI**. Since v3.0.0 there is no HTTP server, coordinator, dashboard or `serve` feature. Recent releases added signed, redactable and Rekor-anchorable evidence bundles with compliance reports (3.1–3.2), calibrated confidence gates for approvals (3.3), native builds and tests for macOS, Windows and Linux on x86_64 and Arm (3.4), and one-line installers, language 1.1 and several `match` fixes (3.5). See the [CHANGELOG](CHANGELOG.md).
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 

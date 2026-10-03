@@ -1,5 +1,7 @@
 # Using Boruna in Existing Projects
 
+> **Archived (2026-10-03).** Most Rust and CLI examples no longer compile or run. Current docs: [LLM integration](../guides/llm-integration.md), [CLI reference](../reference/cli.md) and [policy schema](../reference/policy-schema.md).
+
 This guide explains how to integrate Boruna into existing applications. Boruna is designed as an embeddable platform — you can use its compiler, VM, framework, and tooling as Rust crate dependencies within your own projects.
 
 ## Table of Contents

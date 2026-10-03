@@ -150,7 +150,7 @@ For MVP, locking operates at the crate/module level:
 |------------|-------------|---------|
 | Crate | Entire crate directory | `crates/llmbc` |
 | Example | Example directory | `examples/admin_crud` |
-| Doc | Single file | `docs/language-guide.md` |
+| Doc | Single file | `docs/reference/ax-language.md` |
 
 ### 5.2 Lock Lifecycle
 
