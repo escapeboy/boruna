@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.7.0] — 2026-10-03
+
+`.ax` steps can now call the network and an LLM. `net_fetch`, `net_request` and `llm_call` go
+through the capability gateway (declared in the signature, decided by the policy, recorded and
+replayable), and the CLI ships OpenAI, OpenAI-compatible, Anthropic, Ollama and AWS Bedrock
+providers behind `--live --providers`. Release binaries now include the HTTP handler. Without
+`--live` nothing reaches the network. Language version 1.2.
+
 ### Added
 - Built-in LLM providers for `llm_call`: OpenAI, OpenAI-compatible endpoints (vLLM, OpenRouter,
   Together, Groq, LiteLLM), Anthropic, Ollama and AWS Bedrock (SigV4). Configure them in a
