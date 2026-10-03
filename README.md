@@ -63,7 +63,7 @@ Windows (PowerShell):
 $base = "https://github.com/escapeboy/boruna/releases/latest/download"
 Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
 $target = "x86_64-pc-windows-msvc"   # or aarch64-pc-windows-msvc on Windows on Arm
-$zip = ((Select-String -Path SHA256SUMS -Pattern $target).Line -split "\s+")[1]
+$zip = ((Select-String -Path SHA256SUMS -Pattern $target).Line -split "\s+")[1].TrimStart("*")
 Invoke-WebRequest "$base/$zip" -OutFile $zip
 # Compare this hash with the line for $zip in SHA256SUMS:
 (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
