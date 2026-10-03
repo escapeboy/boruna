@@ -32,7 +32,9 @@
     "net_policy": {
       "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/netPolicy" }]
     },
-    "fs_policy": { "$ref": "#/$defs/fsPolicy" }
+    "fs_policy": {
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/fsPolicy" }]
+    }
   },
   "$defs": {
     "policyRule": {

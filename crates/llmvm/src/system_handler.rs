@@ -79,8 +79,22 @@ impl SystemHandler {
                 policy.max_read_bytes
             ));
         }
-        let bytes =
-            std::fs::read(&resolved).map_err(|e| format!("fs_read: cannot read '{path}': {e}"))?;
+        // Read at most one byte past the limit, so a file that grew after the size check is
+        // refused instead of read whole.
+        let mut bytes = Vec::new();
+        std::fs::File::open(&resolved)
+            .and_then(|f| {
+                use std::io::Read;
+                f.take(policy.max_read_bytes as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .map_err(|e| format!("fs_read: cannot read '{path}': {e}"))?;
+        if bytes.len() > policy.max_read_bytes {
+            return Err(format!(
+                "fs_read: '{path}' is over fs_policy.max_read_bytes ({})",
+                policy.max_read_bytes
+            ));
+        }
         String::from_utf8(bytes)
             .map(Value::String)
             .map_err(|_| format!("fs_read: '{path}' is not UTF-8 text"))
@@ -102,10 +116,15 @@ impl SystemHandler {
         let parent = std::fs::canonicalize(&parent)
             .map_err(|e| format!("fs_write: folder of '{path}' does not exist: {e}"))?;
         let mut target = parent.join(name);
-        // An existing symlink is followed; check where it really points.
-        if target.exists() {
+        // The write follows a symlink, so check where it really points. A link to a missing
+        // file cannot be resolved and is refused: writing through it would create the file
+        // wherever the link points, possibly outside the roots.
+        let is_link = std::fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_link {
             target = std::fs::canonicalize(&target)
-                .map_err(|e| format!("fs_write: cannot resolve '{path}': {e}"))?;
+                .map_err(|_| format!("fs_write denied: '{path}' is a symlink to a missing file"))?;
         }
         Self::check_inside("fs.write", &target, &roots, path)?;
         std::fs::write(&target, content)
@@ -253,6 +272,36 @@ mod tests {
         assert!(h.handle(&Capability::FsRead, &[p(&link)]).is_err());
         assert!(h.handle(&Capability::FsWrite, &[p(&link), s("y")]).is_err());
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_cannot_create_a_file_outside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let missing = other.path().join("pwned.txt");
+        let link = root.path().join("link.txt");
+        std::os::unix::fs::symlink(&missing, &link).unwrap();
+        let mut h = handler(&[root.path()]);
+        let err = h
+            .handle(&Capability::FsWrite, &[p(&link), s("escaped")])
+            .unwrap_err();
+        assert!(err.contains("symlink to a missing file"), "{err}");
+        assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_a_file_inside_the_root_is_written() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real.txt");
+        std::fs::write(&real, "old").unwrap();
+        let link = root.path().join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut h = handler(&[root.path()]);
+        h.handle(&Capability::FsWrite, &[p(&link), s("new")])
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
     }
 
     #[test]

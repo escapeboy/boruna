@@ -250,8 +250,6 @@ fn print_report(report: &EvalReport) {
     }
 }
 
-/// Extract a human-readable provider name from the registry's describe() output.
-/// Falls back to the file's stem if the registry has no entries.
 /// Load one side's provider file. The `{"providers": {...}}` format is what `--live` calls;
 /// the older capability-keyed format can only be described, so it runs on the mock.
 fn load_side(
@@ -276,6 +274,8 @@ fn load_side(
     }
 }
 
+/// Extract a human-readable provider name from the registry's describe() output.
+/// Falls back to the file's stem if the registry has no entries.
 fn provider_name_from_registry(registry: &ProviderRegistry, path: &Path, fallback: &str) -> String {
     let desc = registry.describe();
     let after_arrow = desc.split("->").nth(1).unwrap_or("").trim().to_string();
