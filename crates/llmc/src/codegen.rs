@@ -621,6 +621,25 @@ impl Emitter {
                             }
                             return Ok(());
                         }
+                        // Capability built-ins (`net_fetch`, `net_request`, `llm_call`): the
+                        // arguments in order, then a gateway call. The type checker has already
+                        // required the function to declare the capability, so it is in
+                        // `fe.capabilities` and the VM's per-function check passes.
+                        n if !self.fn_map.contains_key(n)
+                            && crate::typeck::CAPABILITY_BUILTINS
+                                .iter()
+                                .any(|(b, _, arity)| *b == n && *arity == args.len()) =>
+                        {
+                            let (_, cap, arity) = crate::typeck::CAPABILITY_BUILTINS
+                                .iter()
+                                .find(|(b, _, _)| *b == n)
+                                .expect("matched above");
+                            for arg in args {
+                                self.emit_expr(arg, fe)?;
+                            }
+                            fe.code.push(Op::CapCall(cap.id(), *arity as u8));
+                            return Ok(());
+                        }
                         _ => {}
                     }
                     // User-defined function call

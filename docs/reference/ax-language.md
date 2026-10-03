@@ -96,20 +96,50 @@ Functions that perform side effects must declare the required capabilities:
 
 ```ax
 fn fetch(url: String) -> String !{net.fetch} {
-    // live implementation
+    net_fetch(url)
 }
 
 fn call_model(prompt: String) -> String !{llm.call} {
-    // live implementation
-}
-
-// Multiple capabilities
-fn fetch_and_cache(url: String) -> String !{net.fetch, fs.write} {
-    // live implementation
+    llm_call(prompt, "openai/gpt-4o-mini")
 }
 ```
 
-Without the annotation, the VM will reject any attempt to call the capability at runtime.
+## Network and LLM calls
+
+Three built-ins perform side effects. Each goes through the capability gateway, so the policy
+decides whether the call happens, and each call is recorded (in the VM event log for
+`boruna run --record`, and as `CapabilityInvoked` in workflow evidence).
+
+| Built-in | Capability | Returns |
+|---|---|---|
+| `net_fetch(url)` | `net.fetch` | the response body of an HTTP GET |
+| `net_request(url, method, body)` | `net.fetch` | the response body; an empty `body` sends none |
+| `llm_call(prompt, model)` | `llm.call` | the model's reply text; `model` is `"provider/model"` |
+
+```ax
+fn review(code: String) -> String !{llm.call} {
+    llm_call("Review this code:\n" ++ code, "anthropic/claude-sonnet-4-6")
+}
+
+fn main() -> Int {
+    let notes: String = review("fn add(a: Int, b: Int) -> Int { a + b }")
+    __builtin_string_len(notes)
+}
+```
+
+- The function that calls a built-in must declare its capability (`!{net.fetch}`,
+  `!{llm.call}`); otherwise compilation fails with `E007`.
+- What actually answers depends on how Boruna runs:
+  - by default a deterministic mock answers (`net_fetch` and `llm_call` return a small JSON
+    marker such as `{"mock": true, ...}`), so runs and tests need no network or API keys;
+  - `--live` with a binary built with `--features http` makes real HTTP requests for `net.*`,
+    subject to the policy's network allowlist;
+  - real LLM replies come from an LLM handler you register when embedding Boruna (see the
+    [LLM integration guide](../guides/llm-integration.md)); the CLI does not call LLM APIs itself.
+- A policy that denies the capability stops the run with "capability denied".
+- If your program (or a library it imports) defines a function with the same name, that function
+  is used instead of the built-in. `std-llm` does this: its `llm_call(req, tag)` builds a
+  framework effect.
 
 ## Intent declarations
 

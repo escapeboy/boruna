@@ -6,7 +6,7 @@ last_revised: 2026-04-28
 audience: language implementers, compiler authors, security auditors
 ---
 
-# `.ax` Language Specification — Version 1.1
+# `.ax` Language Specification — Version 1.2
 
 This document is the **formal specification** of the `.ax` source language. It is the authoritative reference for any independent implementation of an `.ax` parser, type checker, or compiler.
 
@@ -18,13 +18,13 @@ The reference implementation lives in `crates/llmc/` (lexer, parser, typechecker
 
 ### 1.1 Version identifier
 
-The current language version is **`1.1`**. Implementations MUST expose this value programmatically. Version 1.1 is 1.0 plus the additions listed in §13; every 1.0 program is a 1.1 program.
+The current language version is **`1.2`**. Implementations MUST expose this value programmatically. Each 1.x version is the previous one plus the additions listed in §13; every 1.0 program is a 1.2 program.
 
 In the reference implementation:
 
 ```rust
 // crates/llmc/src/lib.rs
-pub const LANGUAGE_VERSION: &str = "1.1";
+pub const LANGUAGE_VERSION: &str = "1.2";
 ```
 
 The version string is a `<major>.<minor>` decimal number. A program written against `1.x` MUST compile against any `1.y` implementation where `y >= x`.
@@ -525,6 +525,27 @@ All built-ins are pure (no capability annotation). Their semantics are defined b
 
 All list built-ins are non-mutating; the original list is unchanged. This is consistent with the immutability requirement in §7.2.
 
+### Capability built-ins (added in 1.2)
+
+These built-ins perform side effects through the capability gateway (§6.5).
+
+| Name | Signature | Capability | Notes |
+|---|---|---|---|
+| `net_fetch` | `(String) -> String` | `net.fetch` | HTTP GET of the URL; returns the response body. |
+| `net_request` | `(String, String, String) -> String` | `net.fetch` | `(url, method, body)`; an empty body sends none. |
+| `llm_call` | `(String, String) -> String` | `llm.call` | `(prompt, model)`; `model` is `"provider/model"`; returns the reply text. |
+
+- A function whose body calls one of these MUST declare the listed capability in its annotation
+  (§6.1); otherwise the program is rejected at compile time.
+- A function the program defines, itself or through an imported library, takes precedence over a
+  built-in of the same name (e.g. `std-llm` defines its own `llm_call(req, tag) -> Effect`). This
+  keeps every program that compiled before 1.2 compiling.
+- Each call is a capability call: the runtime policy is consulted and the call and its result are
+  recorded in the event log, so a recorded run replays with the same results (§7.3).
+- What produces the result is the host's capability handler. The reference CLI uses a
+  deterministic mock unless run with `--live` (HTTP, requires the `http` build feature); LLM
+  replies come from a handler registered by the embedding host.
+
 ## 6. Capability semantics
 
 ### 6.1 Annotation form
@@ -744,3 +765,6 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
   constructed as `Shape::Circle(1.5)` and matched by bare name (`Circle(r)`); records are not
   destructured in patterns. Fixed in §2.4, §3.1, §3.2, §3.4, §3.5 and the §9 examples, which now
   compile.
+- **1.2** (2026-10-03) — Additive (§1.2). Capability built-ins `net_fetch`, `net_request` and
+  `llm_call` (§5a). Before 1.2 no source construct could call `net.fetch` or `llm.call`; the
+  annotations only declared intent.

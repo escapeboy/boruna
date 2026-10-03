@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::error::CompileError;
 use crate::suggest;
+use boruna_bytecode::Capability;
 
 /// Build a `did you mean: '...'?` suffix from in-scope locals and
 /// known function names, or empty string when no unique candidate
@@ -34,6 +35,142 @@ struct TypeChecker {
     types: HashSet<String>,
     /// Known function names and their arities.
     functions: HashMap<String, usize>,
+}
+
+/// Built-ins that perform a side effect through the capability gateway:
+/// `(name, capability, arity)`.
+///
+/// - `net_fetch(url) -> String`: HTTP GET, returns the response body.
+/// - `net_request(url, method, body) -> String`: any method; empty `body` sends none.
+/// - `llm_call(prompt, model) -> String`: `model` is `"provider/model"` (e.g.
+///   `"openai/gpt-4o-mini"`), routed by the host's LLM handler; returns the reply text.
+pub const CAPABILITY_BUILTINS: &[(&str, Capability, usize)] = &[
+    ("net_fetch", Capability::NetFetch, 1),
+    ("net_request", Capability::NetFetch, 3),
+    ("llm_call", Capability::LlmCall, 2),
+];
+
+/// A function that calls a capability built-in must declare that capability
+/// (`!{net.fetch}`, `!{llm.call}`), so the effect is visible in its signature.
+fn check_capability_builtins(f: &FnDef, user_fns: &HashSet<&str>) -> Result<(), CompileError> {
+    let declared: Vec<Capability> = f
+        .capabilities
+        .iter()
+        .filter_map(|c| Capability::from_name(c))
+        .collect();
+    let mut used = Vec::new();
+    collect_builtin_calls_block(&f.body, &mut used);
+    for name in used.into_iter().filter(|n| !user_fns.contains(n)) {
+        let (_, cap, _) = CAPABILITY_BUILTINS
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .expect("collected only known built-ins");
+        if !declared.contains(cap) {
+            return Err(CompileError::Type(format!(
+                "capability not declared: function '{}' calls {name}, which needs {cap}; \
+                 declare it: fn {}(...) -> ... !{{{}}}",
+                f.name,
+                f.name,
+                cap.name(),
+                cap = cap.name(),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn collect_builtin_calls_block<'a>(block: &'a Block, out: &mut Vec<&'a str>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } => {
+                collect_builtin_calls_expr(value, out)
+            }
+            Stmt::Expr(e) | Stmt::Return(Some(e)) => collect_builtin_calls_expr(e, out),
+            Stmt::Return(None) => {}
+            Stmt::While { condition, body } => {
+                collect_builtin_calls_expr(condition, out);
+                collect_builtin_calls_block(body, out);
+            }
+            Stmt::For { iter, body, .. } => {
+                collect_builtin_calls_expr(iter, out);
+                collect_builtin_calls_block(body, out);
+            }
+        }
+    }
+}
+
+fn collect_builtin_calls_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a str>) {
+    match expr {
+        Expr::Call { func, args } => {
+            if let Expr::Ident(name) = func.as_ref() {
+                if CAPABILITY_BUILTINS.iter().any(|(n, _, _)| n == name) {
+                    out.push(name);
+                }
+            }
+            collect_builtin_calls_expr(func, out);
+            for a in args {
+                collect_builtin_calls_expr(a, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_builtin_calls_expr(left, out);
+            collect_builtin_calls_expr(right, out);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::SomeExpr(expr)
+        | Expr::OkExpr(expr)
+        | Expr::ErrExpr(expr)
+        | Expr::Spawn(expr)
+        | Expr::Emit(expr) => collect_builtin_calls_expr(expr, out),
+        Expr::FieldAccess { object, .. } => collect_builtin_calls_expr(object, out),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_builtin_calls_expr(condition, out);
+            collect_builtin_calls_block(then_block, out);
+            if let Some(b) = else_block {
+                collect_builtin_calls_block(b, out);
+            }
+        }
+        Expr::Match { value, arms } => {
+            collect_builtin_calls_expr(value, out);
+            for arm in arms {
+                collect_builtin_calls_expr(&arm.body, out);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, e) in fields {
+                collect_builtin_calls_expr(e, out);
+            }
+            if let Some(s) = spread {
+                collect_builtin_calls_expr(s, out);
+            }
+        }
+        Expr::EnumVariant { payload, .. } => {
+            if let Some(p) = payload {
+                collect_builtin_calls_expr(p, out);
+            }
+        }
+        Expr::List(items) => {
+            for e in items {
+                collect_builtin_calls_expr(e, out);
+            }
+        }
+        Expr::Send { target, message } => {
+            collect_builtin_calls_expr(target, out);
+            collect_builtin_calls_expr(message, out);
+        }
+        Expr::Block(b) => collect_builtin_calls_block(b, out),
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::StringLit(_)
+        | Expr::BoolLit(_)
+        | Expr::NoneLit
+        | Expr::Ident(_)
+        | Expr::Receive => {}
+    }
 }
 
 impl TypeChecker {
@@ -99,6 +236,12 @@ impl TypeChecker {
         // the JSON-encoded upstream output as a String. Steps that
         // need typed access parse the JSON.
         functions.insert("step_input".to_string(), 1);
+        // Capability built-ins (language 1.2). Each compiles to `Op::CapCall` and goes through
+        // the capability gateway, so the policy decides and the call is recorded. The calling
+        // function must declare the capability (see `check_capability_builtins`).
+        for (name, _cap, arity) in CAPABILITY_BUILTINS {
+            functions.insert(name.to_string(), *arity);
+        }
 
         TypeChecker { types, functions }
     }
@@ -117,10 +260,25 @@ impl TypeChecker {
             }
         }
 
+        // A function the program defines (itself or through an imported library, e.g.
+        // std-llm's own `llm_call(req, tag) -> Effect`) takes precedence over a built-in
+        // of the same name, so adding built-ins never breaks existing programs.
+        let user_fns: HashSet<&str> = program
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+
         // Second pass: validate
         for item in &program.items {
             match item {
-                Item::Function(f) => self.check_fn(f)?,
+                Item::Function(f) => {
+                    check_capability_builtins(f, &user_fns)?;
+                    self.check_fn(f)?
+                }
                 Item::TypeDef(t) => self.check_type_def(t)?,
                 _ => {}
             }
