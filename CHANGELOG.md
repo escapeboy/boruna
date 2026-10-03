@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `install.sh` (Linux, macOS) and `install.ps1` (Windows): one-line install of the release
+  binaries. They pick the build for the OS and CPU, verify it against `SHA256SUMS` and install
+  nothing on a mismatch. Tested in CI on all five native platforms, including a tampered archive
+  and Windows PowerShell 5.1.
 - Diagnostic `E010` (warning): a binding declared without `mut`, a parameter or a `for` loop
   variable is reassigned. The compiler has accepted this since `let mut` was introduced, because
   the `mut` flag was parsed but never checked. `boruna lang check` and the MCP `boruna_check`
