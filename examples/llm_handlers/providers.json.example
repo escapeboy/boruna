@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "openai":    { "kind": "openai",        "api_key_env": "OPENAI_API_KEY" },
+    "anthropic": { "kind": "anthropic",     "api_key_env": "ANTHROPIC_API_KEY", "max_tokens": 1024 },
+    "local":     { "kind": "ollama",        "base_url": "http://localhost:11434" },
+    "vllm":      { "kind": "openai_compat", "base_url": "http://localhost:8000/v1" },
+    "bedrock":   { "kind": "bedrock",       "region": "us-east-1" }
+  }
+}

@@ -7,6 +7,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Built-in LLM providers for `llm_call`: OpenAI, OpenAI-compatible endpoints (vLLM, OpenRouter,
+  Together, Groq, LiteLLM), Anthropic, Ollama and AWS Bedrock (SigV4). Configure them in a
+  `providers.json` (`{"providers": {...}}`) and run `boruna run|workflow run --live --providers
+  providers.json`. Keys are read from environment variables named in the file and never reach
+  arguments, logs or evidence; a missing key fails before the run starts. Without `--live` the
+  mock answers. The router sends `llm.call` to the provider named before the slash in the model
+  argument and everything else to the HTTP handler. Requires the `http` feature (included in
+  release binaries). Bedrock signing is verified against the official AWS SigV4 test vectors but
+  has not been run against AWS by the project.
 - `.ax` built-ins that call the network and an LLM through the capability gateway:
   `net_fetch(url)`, `net_request(url, method, body)` and `llm_call(prompt, model)`, all returning
   `String` (language version 1.2). Before this, no `.ax` construct could call `net.fetch` or

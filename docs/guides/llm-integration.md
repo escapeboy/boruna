@@ -1,6 +1,49 @@
 # LLM Integration Guide
 
-Boruna does **not** ship a default LLM handler. The supported integration model is **Bring Your Own Handler (BYOH)** — you implement the `CapabilityHandler` trait against your provider of choice, and pass the handler into `CapabilityGateway::with_handler` at workflow run time.
+Boruna ships five LLM providers that answer `llm_call(prompt, "provider/model")` in `.ax`:
+OpenAI, any OpenAI-compatible endpoint (vLLM, OpenRouter, Together, Groq, LiteLLM), Anthropic,
+Ollama and AWS Bedrock. You turn them on from the CLI with a `providers.json` and `--live`
+(see [Built-in providers](#built-in-providers)). If you embed Boruna in your own Rust program you
+can still plug in your own handler instead: that is the **Bring Your Own Handler (BYOH)** model
+described in the rest of this guide.
+
+## Built-in providers
+
+```json
+{
+  "providers": {
+    "openai":    { "kind": "openai",        "api_key_env": "OPENAI_API_KEY" },
+    "anthropic": { "kind": "anthropic",     "api_key_env": "ANTHROPIC_API_KEY", "max_tokens": 1024 },
+    "local":     { "kind": "ollama",        "base_url": "http://localhost:11434" },
+    "vllm":      { "kind": "openai_compat", "base_url": "http://gpu-box:8000/v1" },
+    "bedrock":   { "kind": "bedrock",       "region": "us-east-1" }
+  }
+}
+```
+
+```bash
+boruna run review.ax --live --providers providers.json
+boruna workflow run my_workflow --policy policy.json --live --providers providers.json --record
+```
+
+- The name before the slash in the model argument picks the provider:
+  `llm_call(p, "local/llama3.1")` goes to the `local` entry with model `llama3.1`.
+- API keys come from the environment variable named in `api_key_env`; the file holds only the
+  variable's name. Bedrock reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optionally
+  `AWS_SESSION_TOKEN`, and signs requests with SigV4. A missing variable is reported before the
+  program runs.
+- Optional per provider: `base_url`, `max_tokens`, `temperature`, `timeout_ms`.
+- Without `--live` the deterministic mock answers and no request is made.
+- The policy still decides: `llm.call` must be allowed, and the calling function must declare
+  `!{llm.call}`.
+- Every call and its reply are recorded (VM event log, and `CapabilityInvoked` in workflow
+  evidence). Keys never appear in arguments, replies, logs or evidence. A `run --record` log
+  replays the recorded replies without calling the provider.
+- Provider replies are not deterministic. Determinism holds for replay of a recorded run, not for
+  two live runs.
+- `--providers` with the older capability-keyed format (`{"llm.call": {...}}`) is still accepted
+  but only validated; it does not call providers.
+- `boruna workflow resume` and `workflow eval` do not take `--providers` yet and use the mock.
 
 This document explains why, what the contract looks like, and how to wire up handlers for common providers (OpenAI, Anthropic, vLLM, Ollama).
 

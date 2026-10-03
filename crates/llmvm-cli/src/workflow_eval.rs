@@ -62,6 +62,7 @@ fn run_one(
         live: false,
         concurrency: 1,
         submit_only: false,
+        llm_providers: None,
     };
 
     let t0 = Instant::now();

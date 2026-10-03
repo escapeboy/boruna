@@ -56,6 +56,9 @@ jobs:
       - name: Run CLI tests with the release feature set (http)
         run: cargo test -p boruna-cli --features http --test cli_live_http
 
+      - name: Run LLM provider tests (http)
+        run: cargo test -p boruna-cli --features http --test cli_llm_providers
+
       - name: Validate example workflows
         run: |
           for dir in examples/workflows/*/; do
