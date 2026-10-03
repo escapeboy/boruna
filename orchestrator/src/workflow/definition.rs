@@ -319,6 +319,21 @@ pub struct StepResult {
     /// `step_checkpoints.attempt_count` in the persistent store.
     #[serde(default = "default_attempt_count")]
     pub attempt_count: u32,
+    /// SHA-256 of the inputs the step ran on (its resolved upstream outputs). `None` for
+    /// steps that never resolved inputs (gates, steps that failed before running).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hash: Option<String>,
+    /// Every capability call the step made, in order, across all attempts, including a
+    /// call the policy denied. Recorded as `CapabilityInvoked` audit events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_calls: Vec<CapabilityCall>,
+}
+
+/// One capability call made by a step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityCall {
+    pub capability: String,
+    pub allowed: bool,
 }
 
 fn default_attempt_count() -> u32 {

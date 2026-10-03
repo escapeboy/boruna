@@ -1725,6 +1725,8 @@ impl WorkflowRunner {
                             capabilities_used: vec![],
                             error: None,
                             attempt_count: 1,
+                            input_hash: None,
+                            capability_calls: Vec::new(),
                         },
                     );
                 }
@@ -1749,6 +1751,8 @@ impl WorkflowRunner {
                             capabilities_used: vec![],
                             error: cp.error_msg.clone(),
                             attempt_count: 1,
+                            input_hash: None,
+                            capability_calls: Vec::new(),
                         },
                     );
                     halt_with_failed_step = Some(cp.step_id.clone());
@@ -1880,6 +1884,8 @@ impl WorkflowRunner {
                             capabilities_used: vec![],
                             error: None,
                             attempt_count: 1,
+                            input_hash: None,
+                            capability_calls: Vec::new(),
                         },
                     );
                 }
@@ -1915,6 +1921,8 @@ impl WorkflowRunner {
                             capabilities_used: vec![],
                             error: Some(err_msg),
                             attempt_count: 1,
+                            input_hash: None,
+                            capability_calls: Vec::new(),
                         },
                     );
                     // get_or_insert: preserve the FIRST failure as the
@@ -2030,6 +2038,8 @@ impl WorkflowRunner {
                     capabilities_used: vec![],
                     error: None,
                     attempt_count: 1,
+                    input_hash: None,
+                    capability_calls: Vec::new(),
                 },
             );
         }
@@ -2216,6 +2226,8 @@ impl WorkflowRunner {
                     capabilities_used: vec![],
                     error: cp.error_msg,
                     attempt_count: 1,
+                    input_hash: None,
+                    capability_calls: Vec::new(),
                 },
             );
         }
@@ -2368,6 +2380,8 @@ impl WorkflowRunner {
                                     capabilities_used: vec![],
                                     error: None,
                                     attempt_count: 1,
+                                    input_hash: None,
+                                    capability_calls: Vec::new(),
                                 },
                             );
                         }
@@ -2445,6 +2459,8 @@ impl WorkflowRunner {
                                 capabilities_used: vec![],
                                 error: Some(err_msg.clone()),
                                 attempt_count: 1,
+                                input_hash: None,
+                                capability_calls: Vec::new(),
                             },
                         );
                     }
@@ -2472,6 +2488,7 @@ impl WorkflowRunner {
                     StepDef,
                     String,
                     BTreeMap<String, boruna_bytecode::Value>,
+                    String,
                 )> = Vec::new();
                 for &step_id in chunk {
                     let step_def = def.steps[step_id].clone();
@@ -2491,7 +2508,14 @@ impl WorkflowRunner {
                                  for step '{step_id}': {e}"
                             ))
                         })?;
-                    dispatches.push((step_id.to_string(), step_def, source_path, resolved_inputs));
+                    let input_hash = hash_step_inputs(&resolved_inputs);
+                    dispatches.push((
+                        step_id.to_string(),
+                        step_def,
+                        source_path,
+                        resolved_inputs,
+                        input_hash,
+                    ));
                 }
 
                 // Spawn workers, tracking step_id alongside each
@@ -2500,36 +2524,39 @@ impl WorkflowRunner {
                 let workflow_dir = options.workflow_dir.clone();
                 let policy = options.policy.clone();
                 let live = options.live;
-                let handles: Vec<(String, StepDef, std::thread::JoinHandle<_>)> = dispatches
-                    .into_iter()
-                    .map(|(step_id, step_def, source, resolved_inputs)| {
-                        let workflow_dir = workflow_dir.clone();
-                        let policy = policy.clone();
-                        let id_for_thread = step_id.clone();
-                        let def_for_thread = step_def.clone();
-                        let start = Instant::now();
-                        let h = std::thread::spawn(move || {
-                            // Workers honor the same RetryPolicy as
-                            // sequential execution. The retry happens
-                            // INSIDE the worker thread; the chunk
-                            // wave waits for ALL workers (including
-                            // ones still retrying) before moving on.
-                            // Wall-clock backoff is bounded by the
-                            // policy's max_attempts.
-                            let result = Self::compile_and_run_step_with_retry(
-                                &id_for_thread,
-                                &source,
-                                &def_for_thread,
-                                &workflow_dir,
-                                &policy,
-                                live,
-                                resolved_inputs,
-                            );
-                            (result, start.elapsed().as_millis() as u64)
-                        });
-                        (step_id, step_def, h)
-                    })
-                    .collect();
+                let handles: Vec<(String, StepDef, String, std::thread::JoinHandle<_>)> =
+                    dispatches
+                        .into_iter()
+                        .map(|(step_id, step_def, source, resolved_inputs, input_hash)| {
+                            let workflow_dir = workflow_dir.clone();
+                            let policy = policy.clone();
+                            let id_for_thread = step_id.clone();
+                            let def_for_thread = step_def.clone();
+                            let start = Instant::now();
+                            let h = std::thread::spawn(move || {
+                                // Workers honor the same RetryPolicy as
+                                // sequential execution. The retry happens
+                                // INSIDE the worker thread; the chunk
+                                // wave waits for ALL workers (including
+                                // ones still retrying) before moving on.
+                                // Wall-clock backoff is bounded by the
+                                // policy's max_attempts.
+                                let mut calls = Vec::new();
+                                let result = Self::compile_and_run_step_with_retry(
+                                    &id_for_thread,
+                                    &source,
+                                    &def_for_thread,
+                                    &workflow_dir,
+                                    &policy,
+                                    live,
+                                    resolved_inputs,
+                                    &mut calls,
+                                );
+                                (result, start.elapsed().as_millis() as u64, calls)
+                            });
+                            (step_id, step_def, input_hash, h)
+                        })
+                        .collect();
 
                 // Join EVERY handle into a results Vec before
                 // processing. This guarantees no thread is left
@@ -2545,13 +2572,17 @@ impl WorkflowRunner {
                 let joined: Vec<(
                     String,
                     StepDef,
+                    String,
                     std::thread::Result<(
                         Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)>,
                         u64,
+                        Vec<CapabilityCall>,
                     )>,
                 )> = handles
                     .into_iter()
-                    .map(|(step_id, step_def, h)| (step_id, step_def, h.join()))
+                    .map(|(step_id, step_def, input_hash, h)| {
+                        (step_id, step_def, input_hash, h.join())
+                    })
                     .collect();
 
                 // Process results. First failure (panic, runtime, or
@@ -2564,9 +2595,9 @@ impl WorkflowRunner {
                 // expected behavior for failed runs at concurrency >
                 // 1 (review-driven 0.3-S4 finding #4).
                 let mut chunk_failed = false;
-                for (step_id, step_def, join_res) in joined {
+                for (step_id, step_def, input_hash, join_res) in joined {
                     match join_res {
-                        Ok((Ok((value, attempt_count)), duration_ms)) => {
+                        Ok((Ok((value, attempt_count)), duration_ms, calls)) => {
                             let output_hash = DataStore::hash_value(&value);
                             data_store
                                 .store_output(&step_id, "result", &value)
@@ -2603,6 +2634,8 @@ impl WorkflowRunner {
                                 Some(&output_hash),
                                 None,
                                 duration_ms,
+                                Some(&input_hash),
+                                &calls,
                             );
                             step_results.insert(
                                 step_id.clone(),
@@ -2614,10 +2647,12 @@ impl WorkflowRunner {
                                     capabilities_used: step_def.capabilities.clone(),
                                     error: None,
                                     attempt_count,
+                                    input_hash: Some(input_hash.clone()),
+                                    capability_calls: calls.clone(),
                                 },
                             );
                         }
-                        Ok((Err((e, attempt_count)), duration_ms)) => {
+                        Ok((Err((e, attempt_count)), duration_ms, calls)) => {
                             let err_msg = e.to_string();
                             store
                                 .upsert_step_checkpoint(&StepCheckpoint {
@@ -2644,6 +2679,8 @@ impl WorkflowRunner {
                                 None,
                                 Some(&err_msg),
                                 duration_ms,
+                                Some(&input_hash),
+                                &calls,
                             );
                             step_results.insert(
                                 step_id.clone(),
@@ -2655,6 +2692,8 @@ impl WorkflowRunner {
                                     capabilities_used: vec![],
                                     error: Some(err_msg),
                                     attempt_count,
+                                    input_hash: Some(input_hash.clone()),
+                                    capability_calls: calls.clone(),
                                 },
                             );
                             chunk_failed = true;
@@ -2692,6 +2731,7 @@ impl WorkflowRunner {
                                     output_blob_ref: None,
                                 })
                                 .map_err(WorkflowRunError::from)?;
+                            // The worker panicked, so its capability calls are unknown.
                             emit_step_terminal_audit(
                                 store,
                                 run_id,
@@ -2700,6 +2740,8 @@ impl WorkflowRunner {
                                 None,
                                 Some(&err_msg),
                                 0,
+                                Some(&input_hash),
+                                &[],
                             );
                             step_results.insert(
                                 step_id.clone(),
@@ -2711,6 +2753,8 @@ impl WorkflowRunner {
                                     capabilities_used: vec![],
                                     error: Some(err_msg),
                                     attempt_count: 1,
+                                    input_hash: Some(input_hash.clone()),
+                                    capability_calls: Vec::new(),
                                 },
                             );
                             chunk_failed = true;
@@ -2804,6 +2848,8 @@ impl WorkflowRunner {
                         capabilities_used: vec![],
                         error: None,
                         attempt_count: 1,
+                        input_hash: None,
+                        capability_calls: Vec::new(),
                     };
                     step_results.insert(step_id.clone(), cp);
                     workflow_status = WorkflowStatus::Paused;
@@ -2874,6 +2920,8 @@ impl WorkflowRunner {
                             capabilities_used: vec![],
                             error: None,
                             attempt_count: 1,
+                            input_hash: None,
+                            capability_calls: Vec::new(),
                         };
                         step_results.insert(step_id.clone(), cp);
                         workflow_status = WorkflowStatus::Paused;
@@ -2903,6 +2951,8 @@ impl WorkflowRunner {
                     }
                 }
                 StepKind::Source { source } => {
+                    let mut input_hash = None;
+                    let mut capability_calls = Vec::new();
                     let result = Self::execute_source_step(
                         step_id,
                         source,
@@ -2911,6 +2961,8 @@ impl WorkflowRunner {
                         &options.policy,
                         data_store,
                         options.live,
+                        &mut input_hash,
+                        &mut capability_calls,
                     );
                     let duration_ms = step_start.elapsed().as_millis() as u64;
 
@@ -2965,6 +3017,8 @@ impl WorkflowRunner {
                                     sr.output_hash.as_deref(),
                                     None,
                                     sr.duration_ms,
+                                    input_hash.as_deref(),
+                                    &capability_calls,
                                 );
                             }
                             step_results.insert(step_id.clone(), sr);
@@ -2981,6 +3035,8 @@ impl WorkflowRunner {
                                     capabilities_used: vec![],
                                     error: Some(err_msg.clone()),
                                     attempt_count,
+                                    input_hash: input_hash.clone(),
+                                    capability_calls: capability_calls.clone(),
                                 },
                             );
                             workflow_status = WorkflowStatus::Failed;
@@ -3011,6 +3067,8 @@ impl WorkflowRunner {
                                     None,
                                     Some(&err_msg),
                                     duration_ms,
+                                    input_hash.as_deref(),
+                                    &capability_calls,
                                 );
                             }
                             break;
@@ -3053,6 +3111,7 @@ impl WorkflowRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_source_step(
         step_id: &str,
         source: &str,
@@ -3061,6 +3120,8 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         data_store: &mut DataStore,
         live: bool,
+        input_hash: &mut Option<String>,
+        calls: &mut Vec<CapabilityCall>,
     ) -> Result<StepResult, (WorkflowRunError, u32)> {
         // 0.3-S14: resolve inputs ONCE up front, then pass the
         // resolved map to the compute path. The .ax step's
@@ -3071,6 +3132,7 @@ impl WorkflowRunner {
         let resolved_inputs = data_store
             .resolve_step_inputs(&step_def.inputs)
             .map_err(|e| (WorkflowRunError::StepFailed(step_id.to_string(), e), 1))?;
+        *input_hash = Some(hash_step_inputs(&resolved_inputs));
 
         // Compute path is wrapped in retry. On retry success, the
         // returned Value is stored once (idempotent for the on-disk
@@ -3088,6 +3150,7 @@ impl WorkflowRunner {
             policy,
             live,
             resolved_inputs,
+            calls,
         )?;
 
         let output_hash = DataStore::hash_value(&value);
@@ -3108,6 +3171,8 @@ impl WorkflowRunner {
             capabilities_used: step_def.capabilities.clone(),
             error: None,
             attempt_count,
+            input_hash: input_hash.clone(),
+            capability_calls: calls.clone(),
         })
     }
 
@@ -3127,6 +3192,7 @@ impl WorkflowRunner {
     /// concurrent worker closure inside [`Self::execute_steps_concurrent`].
     /// Introduced in `0.3-S5` (closes the prior "retry once
     /// regardless of max_attempts" primitive).
+    #[allow(clippy::too_many_arguments)]
     fn compile_and_run_step_with_retry(
         step_id: &str,
         source: &str,
@@ -3135,7 +3201,9 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         live: bool,
         resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
+        calls: &mut Vec<CapabilityCall>,
     ) -> Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)> {
+        // Calls from every attempt are kept: a retried attempt's side effects did happen.
         retry_with_backoff(step_def.retry.as_ref(), step_id, |_attempt| {
             // Each retry attempt gets its own clone of the inputs
             // (the underlying compile+run path takes ownership).
@@ -3149,6 +3217,7 @@ impl WorkflowRunner {
                 policy,
                 live,
                 resolved_inputs.clone(),
+                calls,
             )
         })
     }
@@ -3167,6 +3236,7 @@ impl WorkflowRunner {
     /// the [`error_class`] string. The retry loop consults the class
     /// to decide whether to retry per the policy's `retry_on`
     /// allowlist.
+    #[allow(clippy::too_many_arguments)]
     fn compile_and_run_step(
         step_id: &str,
         source: &str,
@@ -3175,6 +3245,7 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         live: bool,
         resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
+        calls: &mut Vec<CapabilityCall>,
     ) -> Result<boruna_bytecode::Value, (WorkflowRunError, &'static str)> {
         let source_path = Path::new(workflow_dir).join(source);
         let source_code = std::fs::read_to_string(&source_path).map_err(|e| {
@@ -3228,7 +3299,26 @@ impl WorkflowRunner {
         ));
         let gateway = CapabilityGateway::with_handler(step_policy, handler);
         let mut vm = Vm::new(module, gateway);
-        vm.run().map_err(|e| {
+        let outcome = vm.run();
+        // Allowed calls are in the VM event log; a denied call ends the run with an error
+        // and never reaches the log, so it is taken from the error.
+        for event in vm.event_log().events() {
+            if let boruna_vm::replay::Event::CapCall { capability, .. } = event {
+                calls.push(CapabilityCall {
+                    capability: capability.clone(),
+                    allowed: true,
+                });
+            }
+        }
+        if let Err(VmError::CapabilityDenied(cap) | VmError::CapabilityBudgetExceeded(cap)) =
+            &outcome
+        {
+            calls.push(CapabilityCall {
+                capability: cap.name().to_string(),
+                allowed: false,
+            });
+        }
+        outcome.map_err(|e| {
             let class = classify_vm_error(&e);
             (
                 WorkflowRunError::StepFailed(step_id.to_string(), format!("runtime error: {e}")),
@@ -3943,6 +4033,8 @@ fn try_auto_approve_gate(
             capabilities_used: vec![],
             error: None,
             attempt_count: 1,
+            input_hash: None,
+            capability_calls: Vec::new(),
         },
     );
     Ok(true)
@@ -3995,6 +4087,7 @@ fn route_output(
 /// helper centralizes the Completed/Failed mapping so the call sites
 /// stay terse.
 #[cfg(feature = "persist-sqlite")]
+#[allow(clippy::too_many_arguments)]
 fn emit_step_terminal_audit(
     store: &RunCheckpointStore,
     run_id: &str,
@@ -4003,6 +4096,8 @@ fn emit_step_terminal_audit(
     output_hash: Option<&str>,
     error: Option<&str>,
     duration_ms: u64,
+    input_hash: Option<&str>,
+    capability_calls: &[CapabilityCall],
 ) {
     use crate::audit::AuditEvent;
     let event = match status {
@@ -4029,12 +4124,38 @@ fn emit_step_terminal_audit(
         // entrypoints.
         _ => return,
     };
-    if let Err(e) = append_audit_event(store, run_id, event) {
-        eprintln!(
-            "warning: failed to append step-terminal audit event for \
-             step '{step_id}' in run '{run_id}': {e}"
-        );
+    // What the step ran on and every capability it called (allowed or denied), then its
+    // outcome. Written together when the step ends, so a step's entries stay contiguous.
+    let mut events = Vec::with_capacity(capability_calls.len() + 2);
+    if let Some(hash) = input_hash {
+        events.push(AuditEvent::StepStarted {
+            step_id: step_id.to_string(),
+            input_hash: hash.to_string(),
+        });
     }
+    events.extend(
+        capability_calls
+            .iter()
+            .map(|c| AuditEvent::CapabilityInvoked {
+                step_id: step_id.to_string(),
+                capability: c.capability.clone(),
+                allowed: c.allowed,
+            }),
+    );
+    events.push(event);
+    for event in events {
+        if let Err(e) = append_audit_event(store, run_id, event) {
+            eprintln!(
+                "warning: failed to append step audit event for \
+                 step '{step_id}' in run '{run_id}': {e}"
+            );
+        }
+    }
+}
+
+/// Hash of the inputs a step was given (its resolved upstream outputs), for `StepStarted`.
+fn hash_step_inputs(inputs: &BTreeMap<String, boruna_bytecode::Value>) -> String {
+    DataStore::hash_value(&boruna_bytecode::Value::Map(inputs.clone()))
 }
 
 /// Persist a single pause-step's checkpoint and (for triggers) its
@@ -9111,6 +9232,73 @@ mod tests {
             (def, dir)
         }
 
+        /// Audit inputs (sprint: audit-capability-calls): every step records the hash of the
+        /// inputs it ran on and each capability call it made, on both execution paths.
+        #[test]
+        fn step_results_record_input_hash_and_capability_calls() {
+            for concurrency in [1, 2] {
+                let (def, wf_dir) = upstream_downstream_workflow();
+                let options = RunOptions {
+                    policy: Some(Policy::allow_all()),
+                    record: false,
+                    workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                    live: false,
+                    concurrency,
+                    submit_only: false,
+                };
+                let result = WorkflowRunner::run(&def, &options).unwrap();
+                let up = &result.step_results["upstream"];
+                let down = &result.step_results["downstream"];
+                assert!(up.input_hash.is_some(), "concurrency {concurrency}");
+                assert!(up.capability_calls.is_empty(), "upstream reads no input");
+                assert_ne!(
+                    up.input_hash, down.input_hash,
+                    "different inputs, different hash"
+                );
+                assert_eq!(
+                    down.capability_calls,
+                    vec![CapabilityCall {
+                        capability: "step.input".into(),
+                        allowed: true
+                    }],
+                    "concurrency {concurrency}"
+                );
+            }
+        }
+
+        /// A call the policy denies is recorded too (allowed: false), and the step fails.
+        #[test]
+        fn denied_capability_call_is_recorded_as_not_allowed() {
+            let (def, wf_dir) = upstream_downstream_workflow();
+            let mut policy = Policy::allow_all();
+            policy.rules.insert(
+                "step.input".into(),
+                PolicyRule {
+                    allow: false,
+                    budget: 0,
+                },
+            );
+            let options = RunOptions {
+                policy: Some(policy),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: false,
+            };
+            let result = WorkflowRunner::run(&def, &options).unwrap();
+            let down = &result.step_results["downstream"];
+            assert_eq!(down.status, StepStatus::Failed);
+            assert_eq!(
+                down.capability_calls,
+                vec![CapabilityCall {
+                    capability: "step.input".into(),
+                    allowed: false
+                }]
+            );
+            assert!(down.input_hash.is_some());
+        }
+
         #[test]
         fn step_input_pipes_upstream_output_to_downstream() {
             // Headline test: a downstream step's `step_input("msg")`
@@ -11223,25 +11411,35 @@ mod tests {
             assert_eq!(r.status, WorkflowStatus::Completed);
 
             let log = audit_decisions::read_audit_log(data_dir.path(), &r.run_id);
-            // Must have WorkflowStarted + 2 StepCompleted + WorkflowCompleted = 4
-            assert_eq!(log.entries().len(), 4);
-            // Order: WorkflowStarted first.
+            // WorkflowStarted, then per step (topological order a, b) StepStarted with
+            // the input hash followed by StepCompleted, then WorkflowCompleted = 6.
+            // Neither step calls a capability, so there is no CapabilityInvoked.
+            assert_eq!(log.entries().len(), 6);
             assert!(matches!(
                 log.entries()[0].event,
                 AuditEvent::WorkflowStarted { .. }
             ));
-            // Next two are StepCompleted in topological order (a, b).
-            match &log.entries()[1].event {
-                AuditEvent::StepCompleted { step_id, .. } => assert_eq!(step_id, "a"),
-                other => panic!("entry 1 must be StepCompleted(a), got {other:?}"),
+            for (i, step) in [(1, "a"), (3, "b")] {
+                match &log.entries()[i].event {
+                    AuditEvent::StepStarted {
+                        step_id,
+                        input_hash,
+                    } => {
+                        assert_eq!(step_id, step);
+                        assert_eq!(input_hash.len(), 64);
+                    }
+                    other => panic!("entry {i} must be StepStarted({step}), got {other:?}"),
+                }
+                match &log.entries()[i + 1].event {
+                    AuditEvent::StepCompleted { step_id, .. } => assert_eq!(step_id, step),
+                    other => panic!(
+                        "entry {} must be StepCompleted({step}), got {other:?}",
+                        i + 1
+                    ),
+                }
             }
-            match &log.entries()[2].event {
-                AuditEvent::StepCompleted { step_id, .. } => assert_eq!(step_id, "b"),
-                other => panic!("entry 2 must be StepCompleted(b), got {other:?}"),
-            }
-            // Last is WorkflowCompleted.
             assert!(matches!(
-                log.entries()[3].event,
+                log.entries()[5].event,
                 AuditEvent::WorkflowCompleted { .. }
             ));
             log.verify().expect("lifecycle chain must verify");
@@ -11378,19 +11576,23 @@ mod tests {
                 std::fs::read_to_string(output_dir.path().join(&r.run_id).join("audit_log.json"))
                     .unwrap();
             let audit = AuditLog::from_json(&audit_json).unwrap();
-            // Lifecycle events: WorkflowStarted + StepCompleted(only)
-            // + WorkflowCompleted = 3 entries.
-            assert_eq!(audit.entries().len(), 3);
+            // Lifecycle events: WorkflowStarted + StepStarted + StepCompleted
+            // + WorkflowCompleted = 4 entries (the step calls no capability).
+            assert_eq!(audit.entries().len(), 4);
             assert!(matches!(
                 audit.entries()[0].event,
                 AuditEvent::WorkflowStarted { .. }
             ));
             assert!(matches!(
                 audit.entries()[1].event,
-                AuditEvent::StepCompleted { .. }
+                AuditEvent::StepStarted { .. }
             ));
             assert!(matches!(
                 audit.entries()[2].event,
+                AuditEvent::StepCompleted { .. }
+            ));
+            assert!(matches!(
+                audit.entries()[3].event,
                 AuditEvent::WorkflowCompleted { .. }
             ));
             audit.verify().expect("lifecycle chain must verify");

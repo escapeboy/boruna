@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Workflow evidence bundles now record what each step ran on and what it called: a
+  `StepStarted` audit event with the hash of the step's resolved inputs, and one
+  `CapabilityInvoked` event per capability call (including a call the policy denied, with
+  `allowed: false`, and calls from every retry attempt). Both event types already existed but
+  were never emitted. Written in the `--record` bundle and in the persisted audit log used by
+  `evidence create`. Older bundles still verify. `StepResult` gains `input_hash` and
+  `capability_calls` (omitted from JSON when empty).
 - Instruction-count benchmarks (`benches/benches/instructions.rs`, Gungraun under Valgrind) and a
   CI job that fails when a PR makes a benchmark execute more than 3% more instructions. The
   wall-clock bench comparison stays as an informational comment: on the shared runner identical
@@ -18,6 +25,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   from the binary. CI builds it and fails on a missing listed page or a broken internal link.
 
 ### Fixed
+- `docs/concepts/evidence-bundles.md` described bundle files that do not exist (`events/`,
+  `steps/*.input`); it now lists the real files and audit events.
+- `docs/limitations.md` now states that `.ax` has no construct that calls network, LLM, file, clock
+  or random capabilities yet; the only capability a program can call is `step_input`.
 - Language spec errata: records are declared with `type` (not `record`), enum variants have no
   payload or one positional payload and are matched by bare name, and records are not
   destructured in patterns. The spec's own examples now compile.

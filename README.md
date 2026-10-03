@@ -17,7 +17,7 @@ Most AI orchestration tools run workflows and return outputs. When something goe
 
 Boruna answers those questions by design.
 
-Every Boruna workflow run can produce a **tamper-evident evidence bundle**: a hash-chained audit log of every completed step with the hash of its output, every failure, every approval or rejection, and every confidence-gate decision. Anyone can inspect and verify the bundle offline, without a central server and without trusting anyone's word. A single `.ax` program run with `boruna run --record` also records every capability call and its result, so that run can be replayed and checked exactly. (Workflow bundles do not yet record individual capability calls; see [limitations](docs/limitations.md).)
+Every Boruna workflow run can produce a **tamper-evident evidence bundle**: a hash-chained audit log that records, for every step, the hash of the inputs it ran on, every capability it called (allowed or denied) and the hash of its output, plus every failure, every approval or rejection, and every confidence-gate decision. Anyone can inspect and verify the bundle offline, without a central server and without trusting anyone's word.
 
 This makes Boruna suited for teams building AI workflows that touch regulated data, make consequential decisions, or need a defensible audit trail.
 

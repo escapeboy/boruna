@@ -7,30 +7,35 @@ Evidence bundles are the mechanism through which Boruna supports compliance, aud
 ## What an evidence bundle contains
 
 ```
-.boruna/runs/<run-id>/
-├── manifest.json          # Run metadata: workflow ID, start time, policy, step list
-├── audit_log.json         # Hash-chained log of every step execution
-├── events/
-│   └── event_log.json     # Full CapCall/CapResult/actor event stream
-├── steps/
-│   ├── <step-id>.input    # Step input values (serialized)
-│   └── <step-id>.output   # Step output values (serialized)
-└── env_fingerprint.json   # Runtime environment: OS, Boruna version, hash of workflow def
+<evidence-dir>/<run-id>/
+├── manifest.json          # Bundle hash, per-file checksums, format and schema version
+├── bundle.json            # Run summary: workflow, status, steps
+├── workflow.json          # The workflow definition that ran
+├── policy.json            # The capability policy in effect
+├── audit_log.json         # Hash-chained audit log (below)
+└── env_fingerprint.json   # Boruna version, OS and architecture of the host
 ```
+
+Bundles made with `boruna evidence create` from a persisted run also contain
+`outputs/<step-id>/result.json`, and workflows with a confidence gate add
+`confidence_gates.json` and `confidence/`.
 
 ## Hash-chained audit log
 
 The audit log is hash-chained: each entry includes the SHA-256 hash of the previous entry. This makes it impossible to insert, delete, or modify a log entry without breaking the chain.
 
-Each log entry records:
-- Step ID and source file hash
-- Start time and end time
-- Policy in effect
-- Capability calls made
-- Output value hash
-- Previous entry hash
+Each entry has a `sequence` number, the previous entry's hash, a `content_sha256` of its event,
+and the event itself. The events of a workflow run are:
 
-The chain starts with a genesis entry that includes the workflow definition hash and the environment fingerprint.
+- `WorkflowStarted`: hashes of the workflow definition and the policy
+- `StepStarted`: the hash of the inputs a step ran on (its resolved upstream outputs)
+- `CapabilityInvoked`: each capability a step called and whether the policy allowed it
+- `StepCompleted` / `StepFailed`: the hash of the step's output, or its error
+- `ApprovalGranted` / `ApprovalDenied`, `ExternalTriggerReceived`: human and external decisions
+- `PolicyEvaluated`: confidence-gate decisions
+- `WorkflowCompleted`: the final status
+
+The chain starts with `WorkflowStarted`, which carries the hashes of the workflow definition and the policy. The environment fingerprint is a separate file in the bundle, covered by the manifest checksums.
 
 ## Generating a bundle
 

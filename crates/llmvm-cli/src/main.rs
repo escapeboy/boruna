@@ -3051,6 +3051,26 @@ fn run_workflow(
                 builder.add_confidence_gates(&result.confidence_gates)?;
 
                 for (id, sr) in &result.step_results {
+                    // What the step ran on and every capability it called, then its outcome.
+                    if matches!(
+                        sr.status,
+                        boruna_orchestrator::workflow::StepStatus::Completed
+                            | boruna_orchestrator::workflow::StepStatus::Failed
+                    ) {
+                        if let Some(input_hash) = &sr.input_hash {
+                            audit.append(AuditEvent::StepStarted {
+                                step_id: id.clone(),
+                                input_hash: input_hash.clone(),
+                            });
+                        }
+                        for call in &sr.capability_calls {
+                            audit.append(AuditEvent::CapabilityInvoked {
+                                step_id: id.clone(),
+                                capability: call.capability.clone(),
+                                allowed: call.allowed,
+                            });
+                        }
+                    }
                     match &sr.status {
                         boruna_orchestrator::workflow::StepStatus::Completed => {
                             audit.append(AuditEvent::StepCompleted {
