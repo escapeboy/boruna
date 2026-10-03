@@ -8,7 +8,7 @@ Each spec carries a `language_version` / `format_version` / `schema_version` fie
 
 | Surface | Spec document | Implementation | Status | Reader constant |
 |---------|:-------------:|:--------------:|:------:|-----------------|
-| `.ax` language | 1.3 | 1.3 | stable | `boruna_compiler::LANGUAGE_VERSION` |
+| `.ax` language | 2.0 | 2.0 | stable | `boruna_compiler::LANGUAGE_VERSION` |
 | Bytecode format | 1.0 | 1.1 | stable | `boruna_bytecode::BYTECODE_VERSION` |
 | Evidence bundle format | 1.0 | 1.1 | stable | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
 | Workflow DAG schema | 1.0 | 1 | stable | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |

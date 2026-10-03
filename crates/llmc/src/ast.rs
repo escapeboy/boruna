@@ -101,6 +101,10 @@ pub enum Stmt {
         iter: Expr,
         body: Block,
     },
+    /// Leave the innermost `while` or `for` loop (language 2.0).
+    Break,
+    /// Skip to the next iteration of the innermost loop (language 2.0).
+    Continue,
 }
 
 /// Expressions.

@@ -80,6 +80,10 @@ pub enum TokenKind {
     For,
     #[token("in")]
     In,
+    #[token("break")]
+    Break,
+    #[token("continue")]
+    Continue,
 
     // Literals
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]

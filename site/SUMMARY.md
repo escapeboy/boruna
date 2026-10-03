@@ -30,6 +30,7 @@ Internal notes (design-*, architecture-*, test-plan-*, retros, archive/) stay in
 - [Compliance evidence](docs/COMPLIANCE_EVIDENCE.md)
 - [LLM integration](docs/guides/llm-integration.md)
 - [Model evaluation](docs/guides/model-eval.md)
+- [Upgrading to 4.0](docs/guides/upgrading-to-4.md)
 - [Testing apps](docs/TESTING_GUIDE.md)
 - [Traces to regression tests](docs/TRACE_TO_TESTS.md)
 - [App template](docs/APP_TEMPLATE.md)

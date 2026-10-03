@@ -190,6 +190,9 @@ impl CapabilityHandler for MockHandler {
                     "{{\"mock\": true, \"url\": \"{url}\"}}"
                 )))
             }
+            Capability::FsRead if matches!(args, [_, Value::String(op)] if op == "list") => {
+                Ok(Value::List(vec![]))
+            }
             Capability::FsRead => {
                 let path = match args.first() {
                     Some(Value::String(s)) => s.clone(),

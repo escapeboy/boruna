@@ -240,7 +240,15 @@ jobs:
           bench() {
             cargo bench --locked -p boruna-benches --bench instructions -- "$@" 2>&1 | tee bench.log
             grep -q '^Gungraun result:' bench.log || { echo "::error::no instruction benchmarks were measured"; exit 1; }
+            # A benchmark that counts 0 instructions measured nothing; comparing against it
+            # reports every head benchmark as "+inf%".
+            if sed 's/\x1b\[[0-9;]*m//g' bench.log | grep -Eq '^ *Instructions: +0\|'; then
+              echo "::error::an instruction benchmark measured 0 instructions"; exit 1
+            fi
           }
+
+          # Results cached with `target` from earlier runs must not mix with this run's.
+          rm -rf target/gungraun
 
           git fetch origin "$BASE_REF"
           git checkout "origin/$BASE_REF"

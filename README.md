@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.8.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
-> **v3.8.0 is the current release.** Only the latest major line (3.x) is supported; 1.x and 2.x are end of life. See [`docs/lts.md`](./docs/lts.md) for the support and deprecation policy.
+> **v4.0.0 is the current release.** Only the latest major line (4.x) is supported; 1.x, 2.x and 3.x are end of life. Upgrading from 3.x: [docs/guides/upgrading-to-4.md](./docs/guides/upgrading-to-4.md). See [`docs/lts.md`](./docs/lts.md) for the support and deprecation policy.
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 
@@ -207,7 +207,7 @@ Boruna is a Rust workspace with 10 production crates plus a `benches/` member:
 
 ## Status
 
-Boruna is at **v3.8.0**: a **local deterministic engine and CLI**. Since v3.0.0 there is no HTTP server, coordinator, dashboard or `serve` feature. Recent releases added signed, redactable and Rekor-anchorable evidence bundles with compliance reports (3.1–3.2), calibrated confidence gates for approvals (3.3), native builds and tests for macOS, Windows and Linux on x86_64 and Arm (3.4), one-line installers, language 1.1 and several `match` fixes (3.5), audit entries for step inputs and capability calls (3.6), network and LLM calls from `.ax` with built-in providers (3.7), and files, clock and random numbers from `.ax` with folder-limited file access (3.8). See the [CHANGELOG](CHANGELOG.md).
+Boruna is at **v4.0.0**: a **local deterministic engine and CLI**. Since v3.0.0 there is no HTTP server, coordinator, dashboard or `serve` feature. Recent releases added signed, redactable and Rekor-anchorable evidence bundles with compliance reports (3.1–3.2), calibrated confidence gates for approvals (3.3), native builds and tests for macOS, Windows and Linux on x86_64 and Arm (3.4), one-line installers, language 1.1 and several `match` fixes (3.5), audit entries for step inputs and capability calls (3.6), network and LLM calls from `.ax` with built-in providers (3.7), files, clock and random numbers from `.ax` with folder-limited file access (3.8), and `.ax` language 2.0 with compile-time type and `mut` errors, `break` / `continue` and block scoping (4.0). See the [CHANGELOG](CHANGELOG.md).
 
 The project is suited for evaluation, internal tooling, and audit-sensitive AI pipelines. **Operator action**: validate the [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) budget against your workload, and review [`docs/limitations.md`](docs/limitations.md) for known constraints. External security audit booking is the Q4 2026 commitment in `lts.md`.
 

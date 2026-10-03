@@ -154,3 +154,21 @@ fn a_program_function_named_time_now_shadows_the_builtin() {
     assert_eq!(result.unwrap(), Value::Int(7));
     assert!(events.iter().all(|e| !matches!(e, Event::CapCall { .. })));
 }
+
+#[test]
+fn fs_list_append_and_delete_tag_their_operation() {
+    let src = "fn ls(d: String) -> List<String> !{fs.read} {\n    fs_list(d)\n}\nfn add(p: String) -> Bool !{fs.write} {\n    fs_append(p, \"x\")\n}\nfn rm(p: String) -> Bool !{fs.write} {\n    fs_delete(p)\n}\nfn main() -> Int {\n    let names: List<String> = ls(\"d\")\n    let a: Bool = add(\"f\")\n    let r: Bool = rm(\"f\")\n    __builtin_list_len(names)\n}\n";
+    let (result, events) = run_with(src, Policy::allow_all());
+    assert_eq!(result.unwrap(), Value::Int(0));
+    let calls: Vec<(&str, &Vec<Value>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::CapCall { capability, args } => Some((capability.as_str(), args)),
+            _ => None,
+        })
+        .collect();
+    let s = |v: &str| Value::String(v.into());
+    assert_eq!(calls[0], ("fs.read", &vec![s("d"), s("list")]));
+    assert_eq!(calls[1], ("fs.write", &vec![s("f"), s("x"), s("append")]));
+    assert_eq!(calls[2], ("fs.write", &vec![s("f"), s(""), s("delete")]));
+}

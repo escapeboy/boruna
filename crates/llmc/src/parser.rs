@@ -39,6 +39,8 @@ fn display_token(kind: &TokenKind) -> String {
         TokenKind::While => "'while'".into(),
         TokenKind::For => "'for'".into(),
         TokenKind::In => "'in'".into(),
+        TokenKind::Break => "'break'".into(),
+        TokenKind::Continue => "'continue'".into(),
         TokenKind::Ident(s) => format!("'{s}'"),
         TokenKind::IntLit(_) => "<integer literal>".into(),
         TokenKind::FloatLit(_) => "<float literal>".into(),
@@ -113,6 +115,8 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::While => "while",
         TokenKind::For => "for",
         TokenKind::In => "in",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
         _ => return Option::None,
     })
 }
@@ -593,6 +597,14 @@ impl Parser {
                 let condition = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Ok(Stmt::While { condition, body })
+            }
+            Some(TokenKind::Break) => {
+                self.advance();
+                Ok(Stmt::Break)
+            }
+            Some(TokenKind::Continue) => {
+                self.advance();
+                Ok(Stmt::Continue)
             }
             Some(TokenKind::For) => {
                 self.advance();

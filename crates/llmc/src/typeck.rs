@@ -48,6 +48,9 @@ struct TypeChecker {
 /// - `fs_write(path, content) -> Bool`: writes the file, `true` once written.
 /// - `time_now() -> Int`: Unix time in milliseconds.
 /// - `random_int(lo, hi) -> Int`: uniform in `[lo, hi]`, both ends included.
+/// - `fs_list(dir) -> List<String>`: entry names in a folder, sorted (language 2.0).
+/// - `fs_append(path, content) -> Bool`: appends, creating the file if needed (language 2.0).
+/// - `fs_delete(path) -> Bool`: deletes a file; a symlink is removed, not its target (2.0).
 ///
 /// Clock and random results are recorded in the event log, so a replay returns them again.
 pub const CAPABILITY_BUILTINS: &[(&str, Capability, usize)] = &[
@@ -58,6 +61,18 @@ pub const CAPABILITY_BUILTINS: &[(&str, Capability, usize)] = &[
     ("fs_write", Capability::FsWrite, 2),
     ("time_now", Capability::TimeNow, 0),
     ("random_int", Capability::Random, 2),
+    ("fs_list", Capability::FsRead, 1),
+    ("fs_append", Capability::FsWrite, 2),
+    ("fs_delete", Capability::FsWrite, 1),
+];
+
+/// Constant arguments the compiler appends to a built-in call, so the host can tell apart
+/// operations that share a capability. Each tagged form has more arguments than the plain
+/// one (`fs_read` 1, `fs_write` 2), so a plain call can never be mistaken for a tagged one.
+pub const CAPABILITY_BUILTIN_TAGS: &[(&str, &[&str])] = &[
+    ("fs_list", &["list"]),
+    ("fs_append", &["append"]),
+    ("fs_delete", &["", "delete"]),
 ];
 
 /// A function that calls a capability built-in must declare that capability
@@ -96,7 +111,7 @@ fn collect_builtin_calls_block<'a>(block: &'a Block, out: &mut Vec<&'a str>) {
                 collect_builtin_calls_expr(value, out)
             }
             Stmt::Expr(e) | Stmt::Return(Some(e)) => collect_builtin_calls_expr(e, out),
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             Stmt::While { condition, body } => {
                 collect_builtin_calls_expr(condition, out);
                 collect_builtin_calls_block(body, out);
@@ -287,6 +302,7 @@ impl TypeChecker {
             match item {
                 Item::Function(f) => {
                     check_capability_builtins(f, &user_fns)?;
+                    check_loop_control(&f.body, false, false)?;
                     self.check_fn(f)?
                 }
                 Item::TypeDef(t) => self.check_type_def(t)?,
@@ -334,7 +350,7 @@ impl TypeChecker {
             }
             Stmt::Expr(e) => self.check_expr(e, locals)?,
             Stmt::Return(Some(e)) => self.check_expr(e, locals)?,
-            Stmt::Return(None) => {}
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             Stmt::While { condition, body } => {
                 self.check_expr(condition, locals)?;
                 let mut inner = locals.clone();
@@ -459,4 +475,121 @@ impl TypeChecker {
             _ => {}
         }
     }
+}
+
+/// `break` and `continue` must be inside a `while` or `for` body, and must be a statement
+/// there or in the branches of an `if` statement there. Anywhere else (inside an expression,
+/// a `match` arm, a block expression) values may be waiting on the stack, and jumping away
+/// would leave them behind.
+fn check_loop_control(block: &Block, in_loop: bool, allowed: bool) -> Result<(), CompileError> {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Break | Stmt::Continue => {
+                let kw = if matches!(stmt, Stmt::Break) {
+                    "break"
+                } else {
+                    "continue"
+                };
+                if !in_loop {
+                    return Err(CompileError::Type(format!(
+                        "`{kw}` outside of a loop: it must be inside a `while` or `for` body"
+                    )));
+                }
+                if !allowed {
+                    return Err(CompileError::Type(format!(
+                        "`{kw}` must be a statement in a loop body, or in an `if` statement \
+                         there; it cannot be inside an expression or a `match` arm"
+                    )));
+                }
+            }
+            Stmt::While { condition, body } => {
+                loop_control_expr(condition, in_loop)?;
+                check_loop_control(body, true, true)?;
+            }
+            Stmt::For { iter, body, .. } => {
+                loop_control_expr(iter, in_loop)?;
+                check_loop_control(body, true, true)?;
+            }
+            Stmt::Expr(Expr::If {
+                condition,
+                then_block,
+                else_block,
+            }) => {
+                loop_control_expr(condition, in_loop)?;
+                check_loop_control(then_block, in_loop, allowed)?;
+                if let Some(eb) = else_block {
+                    check_loop_control(eb, in_loop, allowed)?;
+                }
+            }
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } => {
+                loop_control_expr(value, in_loop)?
+            }
+            Stmt::Expr(e) | Stmt::Return(Some(e)) => loop_control_expr(e, in_loop)?,
+            Stmt::Return(None) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Blocks nested in an expression: loops inside them are fine, but a bare `break` is not.
+fn loop_control_expr(expr: &Expr, in_loop: bool) -> Result<(), CompileError> {
+    match expr {
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            loop_control_expr(condition, in_loop)?;
+            check_loop_control(then_block, in_loop, false)?;
+            if let Some(eb) = else_block {
+                check_loop_control(eb, in_loop, false)?;
+            }
+        }
+        Expr::Block(b) => check_loop_control(b, in_loop, false)?,
+        Expr::Match { value, arms } => {
+            loop_control_expr(value, in_loop)?;
+            for arm in arms {
+                loop_control_expr(&arm.body, in_loop)?;
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            loop_control_expr(left, in_loop)?;
+            loop_control_expr(right, in_loop)?;
+        }
+        Expr::Unary { expr, .. }
+        | Expr::SomeExpr(expr)
+        | Expr::OkExpr(expr)
+        | Expr::ErrExpr(expr)
+        | Expr::Spawn(expr)
+        | Expr::Emit(expr)
+        | Expr::FieldAccess { object: expr, .. } => loop_control_expr(expr, in_loop)?,
+        Expr::Call { func, args } => {
+            loop_control_expr(func, in_loop)?;
+            for a in args {
+                loop_control_expr(a, in_loop)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, e) in fields {
+                loop_control_expr(e, in_loop)?;
+            }
+            if let Some(s) = spread {
+                loop_control_expr(s, in_loop)?;
+            }
+        }
+        Expr::EnumVariant {
+            payload: Some(p), ..
+        } => loop_control_expr(p, in_loop)?,
+        Expr::List(items) => {
+            for e in items {
+                loop_control_expr(e, in_loop)?;
+            }
+        }
+        Expr::Send { target, message } => {
+            loop_control_expr(target, in_loop)?;
+            loop_control_expr(message, in_loop)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
