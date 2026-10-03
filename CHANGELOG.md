@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Website and docs site generated from the repository's Markdown (`site/`, `scripts/build-site.py`):
+  a landing page, the docs of the latest release and of `master`, and a command reference generated
+  from the binary. CI builds it and fails on a missing listed page or a broken internal link.
+
+### Fixed
+- Broken links in the docs: compliance template paths in `docs/reference/compliance/README.md`,
+  CHANGELOG anchors in `docs/lts.md`, and CHANGELOG links to guides removed in v3.0.0 (now pointing
+  at v2.0.0 on GitHub).
+
 ## [3.5.0] — 2026-10-03
 
 Install in one command on every supported platform, three `match` bugs fixed, and a language
@@ -819,7 +829,7 @@ stdlib version policy clarified.
   reader contract (1.x readers WITH KEK, 1.0 readers without). Additive
   to `format_version: 1.0`; no version bump.
 - **mTLS limitations documented** (sprint `W7`, findings `M-4` /
-  `M-5`). [`docs/guides/coord-mtls.md`](./docs/guides/coord-mtls.md)
+  `M-5`). [`docs/guides/coord-mtls.md`](https://github.com/escapeboy/boruna/blob/v2.0.0/docs/guides/coord-mtls.md)
   gains a "Limitations" section calling out the absence of CRL/OCSP
   revocation and recommending short-lived (≤24h) certs as the v1
   mitigation, plus a "CN comparison semantics" subsection documenting
@@ -834,7 +844,7 @@ stdlib version policy clarified.
   `worker_id` returns `coord.identity_mismatch`. mTLS is
   additive: shared-secret bearer auth (sprint 0.5-S3)
   continues to work unchanged. Operator guide:
-  [`docs/guides/coord-mtls.md`](./docs/guides/coord-mtls.md).
+  [`docs/guides/coord-mtls.md`](https://github.com/escapeboy/boruna/blob/v2.0.0/docs/guides/coord-mtls.md).
   New error_kind: `coord.identity_mismatch`.
 - **Evidence bundle encryption** (sprint `W6-B`). Operators can
   now opt into AES-256-GCM envelope encryption for evidence
@@ -955,7 +965,7 @@ commitments.
   and bypasses bearer auth so external load balancers can
   probe without holding the secret. Deployment topologies and
   failure-mode walkthroughs are documented at
-  [`docs/guides/coord-ha.md`](./docs/guides/coord-ha.md).
+  [`docs/guides/coord-ha.md`](https://github.com/escapeboy/boruna/blob/v2.0.0/docs/guides/coord-ha.md).
 - **Versioned workflow DAG schema** (sprint `W4`). New
   `schema_version: 1` field required on every `workflow.json`.
   Spec at [`docs/spec/workflow-dag-1.0.md`](./docs/spec/workflow-dag-1.0.md).

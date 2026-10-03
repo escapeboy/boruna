@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boruna — tamper-evident record for AI decisions</title>
+<meta name="description" content="Boruna runs AI workflows deterministically under an explicit policy and seals every run into a hash-chained evidence bundle that anyone can verify offline.">
+<link rel="stylesheet" href="/landing.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">Boruna</a>
+  <nav>
+    <a href="/docs/">Docs</a>
+    <a href="/docs/CHANGELOG.html">Changelog</a>
+    <a href="https://github.com/escapeboy/boruna">GitHub</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero">
+  <h1>A tamper-evident record for AI decisions</h1>
+  <p class="lead">Boruna runs AI and LLM workflows deterministically, under an explicit capability
+  policy, and seals every run into a hash-chained evidence bundle. Anyone can verify the bundle
+  offline, and any change to it is detected.</p>
+  <p class="cta">
+    <a class="button" href="#install">Install</a>
+    <a class="button secondary" href="/docs/QUICKSTART.html">Quickstart</a>
+  </p>
+</section>
+
+<section class="points">
+  <article>
+    <h2>Every run is evidence</h2>
+    <p>Each step, policy decision and capability call goes into a hash-chained audit log inside an
+    evidence bundle. <code>boruna evidence verify</code> recomputes every hash and reports any
+    change.</p>
+    <a href="/docs/concepts/evidence-bundles.html#verifying-a-bundle">How bundles are verified →</a>
+  </article>
+  <article>
+    <h2>People decide where it matters</h2>
+    <p>Approval gates pause a workflow until someone runs <code>boruna workflow approve</code>.
+    A calibrated confidence gate lets an answer skip review only when calibration data shows a
+    wrong answer would get through at most a set share of the time.</p>
+    <a href="/docs/spec/workflow-dag-1.0.html">Approval and confidence gates →</a>
+  </article>
+  <article>
+    <h2>Same input, same output</h2>
+    <p>Workflow steps are written in <code>.ax</code> and run on a VM with no ambient randomness,
+    clock or I/O. Network, LLM and file access must be declared and allowed by policy, and their
+    results are recorded so a run can be replayed and checked.</p>
+    <a href="/docs/concepts/determinism.html#replay-verification">How replay works →</a>
+  </article>
+</section>
+
+<section class="compliance">
+  <h2>Reports for EU AI Act, NIST AI RMF and ISO/IEC 42001</h2>
+  <p><code>boruna evidence report --framework eu-ai-act</code> (or <code>nist</code>,
+  <code>iso42001</code>) verifies a bundle and maps what it contains to the obligations each part
+  helps meet. It is a technical mapping for your auditor, not a certificate of compliance.</p>
+  <a href="/docs/reference/compliance/index.html">Compliance workflow templates →</a>
+</section>
+
+<section class="example">
+  <h2>Run a workflow, then verify it</h2>
+  <p>Real output from <code><!-- EXAMPLE_VERSION --></code>, captured when this page was built.</p>
+  <pre><code><!-- EXAMPLE_OUTPUT --></code></pre>
+</section>
+
+<section class="install" id="install">
+  <h2>Install</h2>
+  <p>Linux and macOS:</p>
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/escapeboy/boruna/master/install.sh | sh</code></pre>
+  <p>Windows (PowerShell):</p>
+  <pre><code>irm https://raw.githubusercontent.com/escapeboy/boruna/master/install.ps1 | iex</code></pre>
+  <p>Both scripts check the download against the release's <code>SHA256SUMS</code> before
+  installing. Builds for Linux (x86_64, arm64), macOS (Apple Silicon, Intel) and Windows (x64,
+  Arm), each tested natively in CI. <a href="https://github.com/escapeboy/boruna#install">Manual
+  download and platform table →</a></p>
+</section>
+
+<section class="dev">
+  <h2>For developers and AI agents</h2>
+  <ul>
+    <li><a href="/docs/reference/ax-language.html">The <code>.ax</code> language</a> — small,
+    statically typed and deterministic.</li>
+    <li><a href="/docs/reference/mcp-server.html">MCP server</a> — compile, check, run and seal
+    <code>.ax</code> from Claude Code, Cursor and other agents.</li>
+    <li><a href="/llms.txt"><code>llms.txt</code></a> and <a href="/llms-full.txt"><code>llms-full.txt</code></a>
+    — the language and tooling in a form a model can read in one go.</li>
+    <li><a href="/docs/limitations.html">Limitations</a> — what Boruna does not do, stated plainly.</li>
+  </ul>
+</section>
+</main>
+
+<footer>
+  <p>MIT licensed · <a href="https://github.com/escapeboy/boruna">Source on GitHub</a> ·
+  <a href="/next/">Development docs</a></p>
+</footer>
+</body>
+</html>

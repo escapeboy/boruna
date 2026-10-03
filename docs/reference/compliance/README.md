@@ -6,9 +6,9 @@ gate features satisfy specific compliance requirements.
 
 | Template | Standard | Key Feature |
 |----------|----------|-------------|
-| [`soc2_audit_workflow`](../../examples/compliance/soc2_audit_workflow/) | SOC 2 | Hash-chained evidence bundle as tamper-evident audit trail |
-| [`hipaa_data_pipeline`](../../examples/compliance/hipaa_data_pipeline/) | HIPAA | PHI redaction before evidence bundle write |
-| [`financial_review_pipeline`](../../examples/compliance/financial_review_pipeline/) | SOX / dual-control | Multi-approver approval gates with immutable sign-off record |
+| [`soc2_audit_workflow`](../../../examples/compliance/soc2_audit_workflow/) | SOC 2 | Hash-chained evidence bundle as tamper-evident audit trail |
+| [`hipaa_data_pipeline`](../../../examples/compliance/hipaa_data_pipeline/) | HIPAA | PHI redaction before evidence bundle write |
+| [`financial_review_pipeline`](../../../examples/compliance/financial_review_pipeline/) | SOX / dual-control | Multi-approver approval gates with immutable sign-off record |
 
 ## How to use
 

@@ -1,0 +1,22 @@
+# mdBook configuration for the docs site. scripts/build-site.py copies this next to the staged
+# pages and fills in {site_url} and {ref}; do not run `mdbook build` on this directory directly.
+[book]
+title = "Boruna documentation"
+description = "Tamper-evident record for AI decisions: deterministic, policy-gated, auditable workflows."
+language = "en"
+src = "src"
+
+[build]
+# A page listed in SUMMARY.md that does not exist must fail the build, not become an empty page.
+create-missing = false
+
+[output.html]
+site-url = "{site_url}"
+git-repository-url = "https://github.com/escapeboy/boruna"
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["site.css"]
+no-section-label = true
+
+[output.html.search]
+enable = true
