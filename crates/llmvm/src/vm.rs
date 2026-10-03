@@ -207,6 +207,12 @@ impl Vm {
         // Start the wall-clock timer before any user code executes — gives the
         // tightest accounting and ensures the limit covers the entry call too.
         self.start_time = Some(Instant::now());
+        // DELIBERATE REGRESSION to test the instruction-count gate. Never merge.
+        let mut waste: u64 = 0;
+        for i in 0..200_000u64 {
+            waste = std::hint::black_box(waste.wrapping_mul(31).wrapping_add(i));
+        }
+        std::hint::black_box(waste);
         let result = (|| {
             self.call_function(entry, vec![])?;
             self.execute()
