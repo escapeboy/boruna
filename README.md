@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/escapeboy/boruna/actions/workflows/ci.yml/badge.svg)](https://github.com/escapeboy/boruna/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)](CHANGELOG.md)
 [![Status: Stable](https://img.shields.io/badge/status-stable-green.svg)](docs/stability.md)
 
-> **v3.0.0 is the current release.** The 1.x line remains under long-term support — active through 2027-11-15, security through 2028-05-15. See [`docs/lts.md`](./docs/lts.md) for support windows, deprecation policy, and security-backport SLAs.
+> **v3.5.0 is the current release.** Only the latest major line (3.x) is supported; 1.x and 2.x are end of life. See [`docs/lts.md`](./docs/lts.md) for the support and deprecation policy.
 
 **Deterministic, policy-gated workflow execution for AI systems that must be auditable.**
 

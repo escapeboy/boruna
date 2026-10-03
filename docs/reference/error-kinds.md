@@ -7,8 +7,8 @@ emitted by the Boruna binary and the MCP server.
 
 - These strings are stable per [`docs/lts.md`](../lts.md) §B.6 ("Error
   taxonomy"). Once shipped in a tag, an `error_kind` is never renamed
-  or removed inside the 1.x line.
-- New `error_kind` values MAY be added in 1.x minor releases; integrators
+  or removed within a major release line (see [lts.md §B.6](../lts.md)).
+- New `error_kind` values MAY be added in minor releases; integrators
   MUST tolerate values they don't recognize.
 - Integrators MAY switch on these strings programmatically — the strings
   are part of the LTS-protected contract, not human-readable log copy.
@@ -53,7 +53,7 @@ in `boruna workflow validate` / `boruna workflow run` / the coord
 | `error_kind` | Phase | Where it fires | Sprint | Caller-facing meaning |
 |---|---|---|---|---|
 | `workflow.missing_schema_version` | serialization | `orchestrator/src/workflow/definition.rs::DefinitionError::error_kind` | `W4` | `workflow.json` has no `schema_version` field. Required since v1.0; legacy workflows must be migrated. |
-| `workflow.unsupported_schema_version` | serialization | `orchestrator/src/workflow/definition.rs::DefinitionError::error_kind` | `W4` | `workflow.json` carries a `schema_version` value this binary doesn't accept (e.g. `2` on a 1.x binary). |
+| `workflow.unsupported_schema_version` | serialization | `orchestrator/src/workflow/definition.rs::DefinitionError::error_kind` | `W4` | `workflow.json` carries a `schema_version` value this binary doesn't accept (e.g. `2` on a binary that only reads schema `1`). |
 | `workflow.invalid_json` | serialization | `orchestrator/src/workflow/definition.rs::DefinitionError::error_kind` | `W4` | `workflow.json` is not valid JSON or fails the workflow schema after the version gate. |
 
 ## `policy.*` — policy schema validator

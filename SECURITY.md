@@ -2,15 +2,16 @@
 
 ## Supported Versions
 
-Only the current release receives security patches.
+Only the latest major line is supported, and security fixes ship in its latest release.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✓         |
+| 3.x     | ✓ (latest release) |
+| 2.x     | ✗ end of life since 2026-07-18 |
+| 1.x     | ✗ end of life since 2026-07-18 |
+| 0.x     | ✗ |
 
-Once 1.0 ships, the long-term-support contract in [`docs/lts.md`](docs/lts.md)
-takes effect: 1.x is supported actively for 18 months from 1.0 GA and receives
-security fixes for 24 months. The 0.x line is EOL on 1.0 GA.
+See [`docs/lts.md`](docs/lts.md) for the full support and deprecation policy.
 
 ## Reporting a Vulnerability
 
@@ -39,21 +40,18 @@ Include in your report:
 
 ## Backport Policy
 
-Security fixes are backported to every supported 1.y minor line for which
-the vulnerability applies. Fix versions are cut as patch releases (e.g.
-`1.3.4`) on each affected line; patch releases contain the security fix
-and any trivially related test or doc changes only.
+Security fixes are released as a new patch or minor release of the current major line.
+There are no backports to older minor releases or to earlier major lines; upgrade to the
+latest release to get a fix.
 
 Severity follows [CVSS v4](https://www.first.org/cvss/v4-0/):
 
 - **CRITICAL or HIGH** — fix released within 7 days of confirmed
   disclosure (or an interim advisory with mitigations if no fix is ready).
 - **MEDIUM** — fix released within 30 days of confirmed disclosure.
-- **LOW** — bundled with the next scheduled patch release on each
-  supported line.
+- **LOW** — bundled with the next scheduled release.
 
-Pre-1.0, only the latest 0.x release receives fixes. Full backport contract
-and support-window definitions live in [`docs/lts.md`](docs/lts.md).
+Support-window definitions live in [`docs/lts.md`](docs/lts.md).
 
 ## Disclosure Policy
 
