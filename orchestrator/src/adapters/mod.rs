@@ -135,7 +135,11 @@ impl GateAdapter for TestAdapter {
     }
 }
 
-/// Adapter: `cargo run -p llmvm-cli -- framework trace-hash <file>`
+/// Cargo package of the `boruna` CLI that the replay and diag gates run. The crate lives in
+/// `crates/llmvm-cli/` but the package was renamed; running the directory name fails.
+pub const CLI_PACKAGE: &str = "boruna-cli";
+
+/// Adapter: `cargo run -p boruna-cli -- framework trace-hash <file>`
 pub struct ReplayAdapter {
     pub expected_hashes: Vec<(String, String)>, // (file, expected_hash)
 }
@@ -165,7 +169,7 @@ impl GateAdapter for ReplayAdapter {
                 .args([
                     "run",
                     "-p",
-                    "llmvm-cli",
+                    CLI_PACKAGE,
                     "--",
                     "framework",
                     "trace-hash",
@@ -187,6 +191,8 @@ impl GateAdapter for ReplayAdapter {
                         "expected": expected,
                         "actual": actual_hash,
                         "match": matches,
+                        "exit_code": out.status.code(),
+                        "stderr": tail(&String::from_utf8_lossy(&out.stderr)),
                     }));
                 }
                 Err(e) => {
@@ -215,7 +221,7 @@ impl GateAdapter for ReplayAdapter {
     }
 }
 
-/// Adapter: `cargo run -p llmvm-cli -- framework diag <file>`
+/// Adapter: `cargo run -p boruna-cli -- framework diag <file>`
 pub struct DiagAdapter {
     pub files: Vec<String>,
 }
@@ -231,16 +237,19 @@ impl GateAdapter for DiagAdapter {
 
         for file in &self.files {
             let output = Command::new("cargo")
-                .args(["run", "-p", "llmvm-cli", "--", "framework", "diag", file])
+                .args(["run", "-p", CLI_PACKAGE, "--", "framework", "diag", file])
                 .current_dir(ctx.workspace_root)
                 .output();
 
             match output {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                    // Informational gate, but a failed run must be visible in the report.
                     outputs.push(serde_json::json!({
                         "file": file,
                         "output": stdout,
+                        "exit_code": out.status.code(),
+                        "stderr": tail(&String::from_utf8_lossy(&out.stderr)),
                     }));
                 }
                 Err(e) => {
@@ -262,6 +271,15 @@ impl GateAdapter for DiagAdapter {
             details: serde_json::json!({"diagnostics": outputs}),
         }
     }
+}
+
+/// Last 2000 bytes of a command's stderr, enough to show why it failed.
+fn tail(s: &str) -> String {
+    let start = s.len().saturating_sub(2000);
+    let start = (start..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
+    s[start..].to_string()
 }
 
 /// Adapter: `boruna-pkg verify` — verify package integrity after dependency changes.
@@ -485,6 +503,31 @@ fn parse_test_counts(output: &str) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The replay and diag gates run `cargo run -p CLI_PACKAGE`. They used the directory
+    /// name `llmvm-cli`, which is not a package, so both gates could never run the CLI.
+    #[test]
+    fn cli_package_matches_the_cli_crate_manifest() {
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/llmvm-cli/Cargo.toml"
+        ))
+        .unwrap();
+        let name = manifest
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("name = "))
+            .map(|v| v.trim_matches('"'))
+            .unwrap();
+        assert_eq!(name, CLI_PACKAGE);
+    }
+
+    #[test]
+    fn tail_keeps_the_end_and_respects_char_boundaries() {
+        assert_eq!(tail("short"), "short");
+        let long = "é".repeat(1500); // 3000 bytes, 2-byte chars
+        let t = tail(&long);
+        assert!(t.len() <= 2000 && long.ends_with(&t));
+    }
 
     #[test]
     fn test_parse_test_counts() {
