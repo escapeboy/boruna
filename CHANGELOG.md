@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Instruction-count benchmarks (`benches/benches/instructions.rs`, Gungraun under Valgrind) and a
+  CI job that fails when a PR makes a benchmark execute more than 3% more instructions. The
+  wall-clock bench comparison stays as an informational comment: on the shared runner identical
+  code moved by 10-40% between runs.
 - `scripts/check-doc-examples.py`: every complete `.ax` example in the published docs must
   compile; runs in the "Docs site" CI job.
 - Website and docs site generated from the repository's Markdown (`site/`, `scripts/build-site.py`):
