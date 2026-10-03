@@ -8,6 +8,7 @@ pub mod llm_providers;
 pub mod net_record_replay;
 pub mod policy_validate;
 pub mod replay;
+pub mod system_handler;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 #[cfg(test)]

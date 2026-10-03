@@ -143,6 +143,49 @@ fn main() -> Int {
   is used instead of the built-in. `std-llm` does this: its `llm_call(req, tag)` builds a
   framework effect.
 
+## Files, clock and random numbers
+
+Four more built-ins (language 1.3) work the same way: the calling function declares the
+capability, the policy decides, and each result is recorded so `boruna replay` returns it again.
+
+| Built-in | Capability | Returns |
+|---|---|---|
+| `fs_read(path)` | `fs.read` | the file's UTF-8 contents |
+| `fs_write(path, content)` | `fs.write` | `true` once the file is written |
+| `time_now()` | `time.now` | Unix time in milliseconds |
+| `random_int(lo, hi)` | `random` | a uniform Int in `[lo, hi]`, both ends included |
+
+```ax
+fn stamp() -> Int !{time.now} {
+    time_now()
+}
+
+fn save(path: String, text: String) -> Bool !{fs.write} {
+    fs_write(path, text)
+}
+
+fn main() -> Int {
+    let at: Int = stamp()
+    let ok: Bool = save("reports/last-run.txt", "finished")
+    if ok { 0 } else { 1 }
+}
+```
+
+- Without `--live` the mock answers: `time_now()` is `1700000000000`, `random_int(lo, hi)` is
+  `lo`, `fs_read` returns a placeholder string and `fs_write` writes nothing.
+- With `--live` the values are real. File access also needs an `fs_policy` in the policy file,
+  listing the folders the program may use. A path is resolved (`..` and symlinks included) and
+  must land inside one of them. Without `fs_policy`, every file call is refused:
+
+  ```json
+  {
+    "default_allow": true,
+    "fs_policy": { "allowed_roots": ["./reports"], "max_read_bytes": 1048576 }
+  }
+  ```
+
+  Relative roots are resolved against the directory you run `boruna` from.
+
 ## Intent declarations
 
 A function may declare a single machine-read purpose with an `intent "..."` clause
@@ -244,6 +287,17 @@ let r: Result<Int, String> = Ok(99)
 let out: Int = match r {
     Ok(v) => v
     Err(_) => -1
+}
+```
+
+Integer patterns may be negative:
+
+```ax
+let label: String = match delta {
+    -1 => "down"
+    0 => "same"
+    1 => "up"
+    _ => "jump"
 }
 ```
 

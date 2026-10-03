@@ -2,10 +2,12 @@
 //! configurations and compare the resulting evidence bundles.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use boruna_orchestrator::workflow::{RunOptions, WorkflowDef, WorkflowRunner, WorkflowStatus};
 use boruna_vm::capability_gateway::Policy;
+use boruna_vm::llm_providers::LlmProviders;
 use serde::Serialize;
 
 use crate::evidence_diff;
@@ -48,6 +50,8 @@ fn run_one(
     runs_base: &Path,
     provider_name: &str,
     run_n: u32,
+    live: bool,
+    llm_providers: Option<Arc<LlmProviders>>,
 ) -> Result<RunRecord, Box<dyn std::error::Error>> {
     let run_dir = runs_base.join(provider_name).join(format!("run_{run_n}"));
     std::fs::create_dir_all(&run_dir)?;
@@ -59,10 +63,10 @@ fn run_one(
         policy: Some(Policy::allow_all()),
         record: true,
         workflow_dir: workflow_dir.display().to_string(),
-        live: false,
+        live,
         concurrency: 1,
         submit_only: false,
-        llm_providers: None,
+        llm_providers,
     };
 
     let t0 = Instant::now();
@@ -246,6 +250,30 @@ fn print_report(report: &EvalReport) {
     }
 }
 
+/// Load one side's provider file. The `{"providers": {...}}` format is what `--live` calls;
+/// the older capability-keyed format can only be described, so it runs on the mock.
+fn load_side(
+    path: &Path,
+    live: bool,
+    label: &str,
+) -> Result<(String, Option<Arc<LlmProviders>>), String> {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| label.replace('-', "_"));
+    match crate::provider_registry::load(path, live).map_err(|e| format!("{label}: {e}"))? {
+        Some(p) => Ok((stem, Some(Arc::new(p)))),
+        None if live => Err(format!(
+            "{label}: `workflow eval --live` needs the {{\"providers\": {{...}}}} format \
+             (see docs/guides/llm-integration.md)"
+        )),
+        None => {
+            let reg = ProviderRegistry::from_file(path).map_err(|e| format!("{label}: {e}"))?;
+            Ok((provider_name_from_registry(&reg, path, &stem), None))
+        }
+    }
+}
+
 /// Extract a human-readable provider name from the registry's describe() output.
 /// Falls back to the file's stem if the registry has no entries.
 fn provider_name_from_registry(registry: &ProviderRegistry, path: &Path, fallback: &str) -> String {
@@ -271,19 +299,23 @@ pub fn run_workflow_eval(
     provider_a_path: &Path,
     provider_b_path: &Path,
     runs_per_provider: u32,
+    live: bool,
     data_dir: Option<&Path>,
     json_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reg_a =
-        ProviderRegistry::from_file(provider_a_path).map_err(|e| format!("provider-a: {e}"))?;
-    let reg_b =
-        ProviderRegistry::from_file(provider_b_path).map_err(|e| format!("provider-b: {e}"))?;
-
-    eprintln!("provider-a: {}", reg_a.describe());
-    eprintln!("provider-b: {}", reg_b.describe());
-
-    let name_a = provider_name_from_registry(&reg_a, provider_a_path, "provider_a");
-    let name_b = provider_name_from_registry(&reg_b, provider_b_path, "provider_b");
+    let (mut name_a, llm_a) = load_side(provider_a_path, live, "provider-a")?;
+    let (mut name_b, llm_b) = load_side(provider_b_path, live, "provider-b")?;
+    if name_a == name_b {
+        // Each side writes under its own name; keep the two apart.
+        name_a.push_str("-a");
+        name_b.push_str("-b");
+    }
+    if !live {
+        eprintln!(
+            "warning: without --live both sides use the mock handler, so the comparison \
+             says nothing about the models; add --live to call them"
+        );
+    }
 
     let def_path = workflow_dir.join("workflow.json");
     let json = std::fs::read_to_string(&def_path)
@@ -305,7 +337,15 @@ pub fn run_workflow_eval(
     );
     for n in 1..=runs_per_provider {
         eprintln!("  provider-a run {n}/{runs_per_provider}...");
-        match run_one(&def, workflow_dir, &runs_base, &name_a, n) {
+        match run_one(
+            &def,
+            workflow_dir,
+            &runs_base,
+            &name_a,
+            n,
+            live,
+            llm_a.clone(),
+        ) {
             Ok(rec) => {
                 eprintln!(
                     "    run_id={} elapsed={}ms success={}",
@@ -331,7 +371,15 @@ pub fn run_workflow_eval(
     );
     for n in 1..=runs_per_provider {
         eprintln!("  provider-b run {n}/{runs_per_provider}...");
-        match run_one(&def, workflow_dir, &runs_base, &name_b, n) {
+        match run_one(
+            &def,
+            workflow_dir,
+            &runs_base,
+            &name_b,
+            n,
+            live,
+            llm_b.clone(),
+        ) {
             Ok(rec) => {
                 eprintln!(
                     "    run_id={} elapsed={}ms success={}",

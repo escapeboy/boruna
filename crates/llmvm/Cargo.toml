@@ -25,6 +25,8 @@ ureq = { version = "2", optional = true }
 url = { version = "2", optional = true }
 # SigV4 signing for the Bedrock LLM provider (only with `http`).
 sha2 = { version = "0.10", optional = true }
+# OS entropy for the `random` capability under `--live` (all shipped platforms).
+rand_core = { workspace = true }
 # Tracing facade — always on. Without a subscriber, span macros expand to
 # essentially no-ops (single atomic check). The `telemetry` feature adds
 # the OTel SDK + subscriber that actually consumes the spans.

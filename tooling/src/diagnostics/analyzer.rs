@@ -610,13 +610,46 @@ impl<'a> Analyzer<'a> {
                     env.insert(name.clone(), actual);
                 }
             }
-            Stmt::Assign { value, .. } => self.check_types_in_expr(value, env, fn_sigs, diags),
+            Stmt::Assign { target, value } => {
+                self.check_types_in_expr(value, env, fn_sigs, diags);
+                if let (Some(declared), Some(actual)) =
+                    (env.get(target), self.infer_expr_type(value, env, fn_sigs))
+                {
+                    if &actual != declared {
+                        let mut diag = Diagnostic::warning(
+                            E009_TYPE_ERROR,
+                            format!(
+                                "type mismatch: '{target}' has type '{declared}' but is \
+                                 assigned a value of type '{actual}'"
+                            ),
+                        );
+                        if let Some(l) = find_line_containing(self.source, &format!("{target} =")) {
+                            diag = diag.at(self.file, l, None);
+                        }
+                        diags.push(diag);
+                    }
+                }
+            }
             Stmt::Expr(e) | Stmt::Return(Some(e)) => {
                 self.check_types_in_expr(e, env, fn_sigs, diags)
             }
             Stmt::Return(None) => {}
             Stmt::While { condition, body } => {
                 self.check_types_in_expr(condition, env, fn_sigs, diags);
+                if let Some(actual) = self.infer_expr_type(condition, env, fn_sigs) {
+                    if actual != "Bool" {
+                        let mut diag = Diagnostic::warning(
+                            E009_TYPE_ERROR,
+                            format!(
+                                "type mismatch: a while condition must be Bool, got '{actual}'"
+                            ),
+                        );
+                        if let Some(l) = find_line_containing(self.source, "while ") {
+                            diag = diag.at(self.file, l, None);
+                        }
+                        diags.push(diag);
+                    }
+                }
                 let mut inner = env.clone();
                 self.check_types_in_block(body, &mut inner, fn_sigs, diags);
             }
@@ -1117,6 +1150,31 @@ fn view(state: State) -> String { \"ok\" }
                 && d.message.contains("String")),
             "expected a call-argument type warning, got: {warns:?}"
         );
+    }
+
+    #[test]
+    fn test_assignment_changing_type_warns() {
+        let warns =
+            type_warnings("fn main() -> Int {\n    let mut x: Int = 1\n    x = \"a\"\n    0\n}\n");
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0]
+            .message
+            .contains("assigned a value of type 'String'"));
+    }
+
+    #[test]
+    fn test_non_bool_while_condition_warns() {
+        let warns = type_warnings("fn main() -> Int {\n    while 1 {\n    }\n    0\n}\n");
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert!(warns[0].message.contains("while condition must be Bool"));
+    }
+
+    #[test]
+    fn test_same_type_assignment_and_comparison_while_do_not_warn() {
+        let warns = type_warnings(
+            "fn main() -> Int {\n    let mut i: Int = 0\n    while i < 3 {\n        i = i + 1\n    }\n    i = 5\n    i\n}\n",
+        );
+        assert!(warns.is_empty(), "{warns:?}");
     }
 
     #[test]

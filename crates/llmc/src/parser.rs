@@ -147,6 +147,36 @@ impl Parser {
         None
     }
 
+    /// True at a newline followed by `- <int> =>`: the start of a match arm with a negative
+    /// pattern. `=>` appears only in match arms, so no valid expression continues this way.
+    fn at_negative_match_arm(&self) -> bool {
+        let mut i = self.pos;
+        let mut newline = false;
+        while i < self.tokens.len() && self.tokens[i].kind == TokenKind::Newline {
+            newline = true;
+            i += 1;
+        }
+        newline
+            && matches!(self.tokens.get(i).map(|t| &t.kind), Some(TokenKind::Minus))
+            && matches!(
+                self.tokens.get(i + 1).map(|t| &t.kind),
+                Some(TokenKind::IntLit(_))
+            )
+            && matches!(
+                self.tokens.get(i + 2).map(|t| &t.kind),
+                Some(TokenKind::FatArrow)
+            )
+    }
+
+    /// The token right after the one `peek` returns (no newline skipping in between).
+    fn peek_next(&self) -> Option<&TokenKind> {
+        let mut i = self.pos;
+        while i < self.tokens.len() && self.tokens[i].kind == TokenKind::Newline {
+            i += 1;
+        }
+        self.tokens.get(i + 1).map(|t| &t.kind)
+    }
+
     fn current_line(&self) -> usize {
         if self.pos < self.tokens.len() {
             self.tokens[self.pos].line
@@ -684,6 +714,8 @@ impl Parser {
         loop {
             let op = match self.peek() {
                 Some(TokenKind::Plus) => BinOp::Add,
+                // `-1 =>` on a new line starts the next match arm, not a subtraction.
+                Some(TokenKind::Minus) if self.at_negative_match_arm() => break,
                 Some(TokenKind::Minus) => BinOp::Sub,
                 _ => break,
             };
@@ -1032,6 +1064,15 @@ impl Parser {
             Some(TokenKind::IntLit(_)) => {
                 if let Some(TokenKind::IntLit(n)) = self.advance() {
                     Ok(Pattern::IntLit(n))
+                } else {
+                    unreachable!()
+                }
+            }
+            // A negative integer literal: `-` directly followed by an integer.
+            Some(TokenKind::Minus) if matches!(self.peek_next(), Some(TokenKind::IntLit(_))) => {
+                self.advance();
+                if let Some(TokenKind::IntLit(n)) = self.advance() {
+                    Ok(Pattern::IntLit(n.wrapping_neg()))
                 } else {
                     unreachable!()
                 }

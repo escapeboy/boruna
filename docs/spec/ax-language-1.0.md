@@ -6,7 +6,7 @@ last_revised: 2026-04-28
 audience: language implementers, compiler authors, security auditors
 ---
 
-# `.ax` Language Specification — Version 1.2
+# `.ax` Language Specification — Version 1.3
 
 This document is the **formal specification** of the `.ax` source language. It is the authoritative reference for any independent implementation of an `.ax` parser, type checker, or compiler.
 
@@ -18,13 +18,13 @@ The reference implementation lives in `crates/llmc/` (lexer, parser, typechecker
 
 ### 1.1 Version identifier
 
-The current language version is **`1.2`**. Implementations MUST expose this value programmatically. Each 1.x version is the previous one plus the additions listed in §13; every 1.0 program is a 1.2 program.
+The current language version is **`1.3`**. Implementations MUST expose this value programmatically. Each 1.x version is the previous one plus the additions listed in §13; every 1.0 program is a 1.3 program.
 
 In the reference implementation:
 
 ```rust
 // crates/llmc/src/lib.rs
-pub const LANGUAGE_VERSION: &str = "1.2";
+pub const LANGUAGE_VERSION: &str = "1.3";
 ```
 
 The version string is a `<major>.<minor>` decimal number. A program written against `1.x` MUST compile against any `1.y` implementation where `y >= x`.
@@ -265,9 +265,8 @@ Pattern    ::= "_"                                 (* wildcard *)
 An enum variant pattern names the variant without its enum (`Circle(r)`, not `Shape::Circle(r)`).
 Records are not destructured in patterns; match them with a binding and use field access.
 
-Known gap in the reference implementation: a negative integer literal (`-1`) is not accepted as a
-pattern (parse error "expected pattern, found Minus"). Use a guard-free alternative such as an
-`if` on the value until this is supported.
+An integer literal pattern may be negative: `-1 => ...` (added in 1.3). On a new line, `- <int> =>`
+starts the next arm; it is never read as a subtraction continuing the previous arm's body.
 
 ## 4. Type system
 
@@ -455,8 +454,9 @@ x : T (declared mut) ∈ Γ      Γ ⊢ e : T
 Γ ⊢ x = e   ok
 ```
 
-- The assigned value MUST have the binding's type. The reference implementation does not check
-  this yet; a program that assigns a value of another type has unspecified behaviour.
+- The assigned value MUST have the binding's type. Since 1.3 tooling reports an assignment whose
+  value has a known, different type as warning **E009**; it becomes a compile error in language
+  version 2.0. A program that assigns a value of another type has unspecified behaviour.
 - Rebinding a binding declared without `mut`, a function parameter or a `for` loop variable is
   not permitted by this specification. The reference implementation still accepts it, because
   1.0 programs (including two standard libraries) relied on it, and §1.2 forbids tightening
@@ -466,8 +466,8 @@ x : T (declared mut) ∈ Γ      Γ ⊢ e : T
   enclosing scope. A `let` inside a block introduces a new binding that ends with the block.
 
 **While loops.** `while cond { body }` evaluates `cond`; while it is `true` it runs `body` and
-evaluates `cond` again. `cond` MUST have type `Bool` (the reference implementation does not check
-this yet). A `while` statement has no value.
+evaluates `cond` again. `cond` MUST have type `Bool`. Since 1.3 tooling reports a condition of a known non-`Bool` type as
+warning **E009** (a compile error in language version 2.0). A `while` statement has no value.
 
 **For loops.** `for v in e { body }` evaluates `e` once. `e` MUST have type `List<T>`; iterating
 anything else is a runtime error in the reference implementation. `body` runs once per element in
@@ -525,7 +525,7 @@ All built-ins are pure (no capability annotation). Their semantics are defined b
 
 All list built-ins are non-mutating; the original list is unchanged. This is consistent with the immutability requirement in §7.2.
 
-### Capability built-ins (added in 1.2)
+### Capability built-ins (added in 1.2; files, clock and random numbers in 1.3)
 
 These built-ins perform side effects through the capability gateway (§6.5).
 
@@ -534,6 +534,10 @@ These built-ins perform side effects through the capability gateway (§6.5).
 | `net_fetch` | `(String) -> String` | `net.fetch` | HTTP GET of the URL; returns the response body. |
 | `net_request` | `(String, String, String) -> String` | `net.fetch` | `(url, method, body)`; an empty body sends none. |
 | `llm_call` | `(String, String) -> String` | `llm.call` | `(prompt, model)`; `model` is `"provider/model"`; returns the reply text. |
+| `fs_read` | `(String) -> String` | `fs.read` | Returns the UTF-8 contents of the file at the path. |
+| `fs_write` | `(String, String) -> Bool` | `fs.write` | `(path, content)`; writes the file and returns `true`. Failure is a runtime error. |
+| `time_now` | `() -> Int` | `time.now` | Unix time in milliseconds. |
+| `random_int` | `(Int, Int) -> Int` | `random` | `(lo, hi)`; uniform in `[lo, hi]`, both ends included. `lo > hi` is a runtime error. |
 
 - A function whose body calls one of these MUST declare the listed capability in its annotation
   (§6.1); otherwise the program is rejected at compile time.
@@ -543,8 +547,10 @@ These built-ins perform side effects through the capability gateway (§6.5).
 - Each call is a capability call: the runtime policy is consulted and the call and its result are
   recorded in the event log, so a recorded run replays with the same results (§7.3).
 - What produces the result is the host's capability handler. The reference CLI uses a
-  deterministic mock unless run with `--live` (HTTP, requires the `http` build feature); LLM
-  replies come from a handler registered by the embedding host.
+  deterministic mock unless run with `--live`. With `--live`: HTTP (the `http` build feature,
+  included in release binaries), LLM replies from the providers in `--providers`, the system
+  clock, OS randomness, and files inside the policy's `fs_policy.allowed_roots` (no list means no
+  file access). Mock values: `time_now()` is `1700000000000`, `random_int(lo, hi)` is `lo`.
 
 ## 6. Capability semantics
 
@@ -768,3 +774,6 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
 - **1.2** (2026-10-03) — Additive (§1.2). Capability built-ins `net_fetch`, `net_request` and
   `llm_call` (§5a). Before 1.2 no source construct could call `net.fetch` or `llm.call`; the
   annotations only declared intent.
+- **1.3** (2026-10-03) — Additive (§1.2). Capability built-ins `fs_read`, `fs_write`, `time_now`
+  and `random_int` (§5a). Negative integer literal patterns (§3.5). Tooling warns (E009) on an
+  assignment of a different type and on a non-`Bool` `while` condition (§4.5).

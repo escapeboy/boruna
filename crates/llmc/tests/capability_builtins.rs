@@ -108,3 +108,49 @@ fn a_function_defined_in_the_program_shadows_the_builtin() {
     assert_eq!(result.unwrap(), Value::Int(42));
     assert!(events.is_empty(), "the user function ran, not the gateway");
 }
+
+const SYSTEM: &str = "fn stamp() -> Int !{time.now} {\n    time_now()\n}\nfn roll() -> Int !{random} {\n    random_int(3, 9)\n}\nfn save(p: String) -> Bool !{fs.write} {\n    fs_write(p, \"x\")\n}\nfn load(p: String) -> String !{fs.read} {\n    fs_read(p)\n}\nfn main() -> Int {\n    let ok: Bool = save(\"f.txt\")\n    let body: String = load(\"f.txt\")\n    stamp() + roll() + __builtin_string_len(body)\n}\n";
+
+#[test]
+fn fs_time_and_random_builtins_go_through_the_gateway() {
+    let (result, events) = run_with(SYSTEM, Policy::allow_all());
+    // Mock: time 1_700_000_000_000, random_int(lo, hi) -> lo, fs_read "mock file content for f.txt".
+    let body_len = "mock file content for f.txt".len() as i64;
+    assert_eq!(
+        result.unwrap(),
+        Value::Int(1_700_000_000_000 + 3 + body_len)
+    );
+    let caps: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::CapCall { capability, .. } => Some(capability.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(caps, vec!["fs.write", "fs.read", "time.now", "random"]);
+}
+
+#[test]
+fn fs_time_and_random_need_their_capability_declared() {
+    for (call, cap) in [
+        ("time_now()", "time.now"),
+        ("random_int(1, 2)", "random"),
+        ("__builtin_string_len(fs_read(\"a\"))", "fs.read"),
+        ("if fs_write(\"a\", \"b\") { 1 } else { 0 }", "fs.write"),
+    ] {
+        let src = format!("fn main() -> Int {{\n    {call}\n}}\n");
+        let err = compile("test", &src).unwrap_err().to_string();
+        assert!(
+            err.contains("capability not declared") && err.contains(cap),
+            "{call}: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_program_function_named_time_now_shadows_the_builtin() {
+    let src = "fn time_now() -> Int {\n    7\n}\nfn main() -> Int {\n    time_now()\n}\n";
+    let (result, events) = run_with(src, Policy::deny_all());
+    assert_eq!(result.unwrap(), Value::Int(7));
+    assert!(events.iter().all(|e| !matches!(e, Event::CapCall { .. })));
+}

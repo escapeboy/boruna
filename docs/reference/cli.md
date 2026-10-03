@@ -67,7 +67,7 @@ boruna run <file.ax> [options]
 Options:
   --policy <name>    Capability policy: allow-all, deny-all (default: deny-all)
   --record           Write an event log to .boruna/runs/<id>/
-  --live             Enable real capability handlers (requires http feature)
+  --live             Real side effects: HTTP, LLM providers, files (fs_policy), clock, random
   --trace            Emit a full execution trace to stdout
   --step-limit <n>   Abort if execution exceeds n steps
   --watch            Re-run on every change to the file (post-1.0)
@@ -300,7 +300,7 @@ boruna workflow run <workflow-dir/> [options]
 Options for run:
   --policy <name>    Capability policy (default: deny-all)
   --record           Write evidence bundle to .boruna/runs/<id>/
-  --live             Enable real capability handlers
+  --live             Real side effects: HTTP, LLM providers, files (fs_policy), clock, random
   --replay <dir>     Replay from an existing evidence bundle
   --verify           (with --replay) Verify outputs match recorded values
 ```
@@ -335,7 +335,8 @@ Options:
   --policy <name>          Capability policy (default: deny-all)
   --data-dir <dir>         Directory for runs.db and per-run output (default: .boruna/data)
   --max-concurrency <n>    Maximum concurrent runs; skips tick if a run is already active (default: 1)
-  --live                   Enable real capability handlers (requires http feature)
+  --live                   Real side effects: HTTP, LLM providers, files (fs_policy), clock, random
+  --providers <file>       LLM providers (`providers.json`) for llm_call under --live
 ```
 
 When a scheduled tick fires while a previous run is still active, that tick is skipped.
@@ -351,6 +352,7 @@ Options:
   --providers-a <file>     First provider config JSON file (required)
   --providers-b <file>     Second provider config JSON file (required)
   --runs <n>               Runs per provider (default: 1)
+  --live                   Call the real providers (without it both sides use the mock)
   --data-dir <dir>         Directory for evidence bundles
   --json                   Machine-readable output
 ```
