@@ -69,6 +69,4 @@ library_benchmark_group!(name = compiler, benchmarks = compile_source);
 library_benchmark_group!(name = vm, benchmarks = vm_run);
 library_benchmark_group!(name = evidence, benchmarks = evidence_verify);
 
-fn main() {
-    main!(library_benchmark_groups = compiler, vm, evidence);
-}
+main!(library_benchmark_groups = compiler, vm, evidence);

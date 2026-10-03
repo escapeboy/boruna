@@ -236,7 +236,11 @@ jobs:
               cargo install gungraun-runner --version "$version" --locked
             fi
           }
-          bench() { cargo bench --locked -p boruna-benches --bench instructions -- "$@"; }
+          # Fail if the harness ran but measured nothing (it once did, and passed green).
+          bench() {
+            cargo bench --locked -p boruna-benches --bench instructions -- "$@" 2>&1 | tee bench.log
+            grep -q '^Gungraun result:' bench.log || { echo "::error::no instruction benchmarks were measured"; exit 1; }
+          }
 
           git fetch origin "$BASE_REF"
           git checkout "origin/$BASE_REF"
