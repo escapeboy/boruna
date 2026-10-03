@@ -17,6 +17,10 @@ cargo build --workspace
 
 This builds all 11 workspace members (10 production crates + `benches/`). Expect 1-2 minutes on first build.
 
+> **No Rust?** Install the prebuilt binaries instead (see [Install](../README.md#install)), still
+> clone the repository for the examples, and write `boruna` wherever this guide says
+> `cargo run --bin boruna --`.
+
 ## 2. Run hello world
 
 ```bash

@@ -6,6 +6,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `install.sh` (Linux, macOS) and `install.ps1` (Windows): one-line install of the release
+  binaries. They pick the build for the OS and CPU, verify it against `SHA256SUMS` and install
+  nothing on a mismatch. Tested in CI on all five native platforms, including a tampered archive
+  and Windows PowerShell 5.1.
+
 ## [3.4.0] — 2026-10-03
 
 Platform release. Boruna now ships and is tested natively on macOS (Apple Silicon and Intel), Windows (x64 and Arm) and Linux (x86_64 and arm64). No change to workflows, workflow hashes or evidence bundles.

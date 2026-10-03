@@ -190,6 +190,37 @@ jobs:
           pwsh -NoProfile -Command "Compress-Archive -Path 'pkgcheck' -DestinationPath 'pkgcheck.zip'"
           sha256sum pkgcheck.zip
 
+      - name: Installer tests (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+            shellcheck install.sh scripts/test-install.sh
+          fi
+          sh scripts/test-install.sh
+          # The published release, end to end, exactly as the README tells users to run it.
+          BORUNA_INSTALL_DIR="$RUNNER_TEMP/boruna-bin" sh install.sh
+          "$RUNNER_TEMP/boruna-bin/boruna" --version
+
+      - name: Installer tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File scripts/test-install.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'install.ps1 tests failed under PowerShell 7' }
+          powershell -NoProfile -File scripts/test-install.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'install.ps1 tests failed under Windows PowerShell 5.1' }
+          # The published release, end to end, exactly as the README tells users to run it.
+          $env:BORUNA_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'boruna-bin'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          & (Join-Path $env:BORUNA_INSTALL_DIR 'boruna.exe') --version
+          if (-not (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $env:BORUNA_INSTALL_DIR)) {
+            throw 'install.ps1 did not add the install folder to the user PATH'
+          }
+
       - name: Smoke test (version, workflow run, evidence verify)
         shell: bash
         run: |
