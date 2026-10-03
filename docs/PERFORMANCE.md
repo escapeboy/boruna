@@ -1,7 +1,7 @@
 # Performance Baseline
 
-This document is the published baseline for Boruna's performance budget
-(roadmap milestone for 1.0.0). It captures **reproducible benchmarks**,
+This document is the published baseline for Boruna's performance budget.
+It captures **reproducible benchmarks**,
 not portable absolute numbers — your machine will measure differently,
 and that's fine. The goal is a stable harness so we can detect
 regressions over time.
@@ -73,9 +73,10 @@ program in hundreds of microseconds; the VM sustains ~2.7 M
 arithmetic-loop iterations per second; an evidence bundle round-trip
 (build + verify, 5 steps) takes ~11 ms total.
 
-## 1.x performance budget commitments
+## Performance budget
 
-These are conservative ceilings — roughly 2x the baseline median plus
+These ceilings were set from the 2026-04-28 baseline above and are not
+tied to a release line. They are conservative — roughly 2x the baseline median plus
 headroom — that we commit to NOT regressing past on hardware in the
 same class as the baseline machine. CI does not enforce them today
 (see "CI" below); they're a contract for human review of perf-
