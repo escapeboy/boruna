@@ -119,6 +119,15 @@ fn classify_type_error(msg: &str, source: &str) -> (&'static str, Option<usize>)
             .unwrap_or("");
         let line = find_identifier_line(source, name);
         (E004_UNDEFINED_FN, line)
+    } else if first_line.starts_with("capability not declared: ") {
+        // "... calls <builtin>, which needs ..." — point at the built-in call.
+        let builtin = first_line
+            .split(" calls ")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .unwrap_or("");
+        let line = find_identifier_line(source, builtin);
+        (E007_CAPABILITY_VIOLATION, line)
     } else {
         (E009_TYPE_ERROR, None)
     }

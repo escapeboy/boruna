@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `.ax` built-ins that call the network and an LLM through the capability gateway:
+  `net_fetch(url)`, `net_request(url, method, body)` and `llm_call(prompt, model)`, all returning
+  `String` (language version 1.2). Before this, no `.ax` construct could call `net.fetch` or
+  `llm.call`; the annotations only declared intent. The calling function must declare the
+  capability (`!{net.fetch}` / `!{llm.call}`) or compilation fails with `E007`; the policy decides
+  at runtime; every call is in the event log (replays exactly) and in workflow evidence as
+  `CapabilityInvoked`. By default a deterministic mock answers; `--live` (with the `http` build
+  feature) makes real HTTP requests; real LLM replies need a handler registered by the
+  embedding program.
+
+### Changed
+- The mock answer for `llm.call` is now a `String` (a JSON marker with the model and prompt
+  length) instead of a map, matching `llm_call`'s return type and the real provider handlers.
+
 ## [3.6.0] — 2026-10-03
 
 Workflow evidence now records what each step ran on and every capability it called. The

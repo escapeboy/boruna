@@ -175,11 +175,21 @@ impl CapabilityHandler for MockHandler {
             Capability::DbQuery => Ok(Value::List(vec![])),
             Capability::UiRender => Ok(Value::Unit),
             Capability::LlmCall => {
-                // Mock LLM returns a structured JSON object
-                let mut result = std::collections::BTreeMap::new();
-                result.insert("status".into(), Value::String("ok".into()));
-                result.insert("mock".into(), Value::Bool(true));
-                Ok(Value::Map(result))
+                // `llm_call(prompt, model)` returns the reply text, so the mock returns a
+                // String too: a fixed JSON marker naming the model and the prompt size, so a
+                // run without a real provider is deterministic and obviously not a real reply.
+                let model = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(other) => format!("{other}"),
+                    None => String::new(),
+                };
+                let prompt_chars = match args.first() {
+                    Some(Value::String(s)) => s.chars().count(),
+                    _ => 0,
+                };
+                Ok(Value::String(format!(
+                    "{{\"mock\": true, \"model\": \"{model}\", \"prompt_chars\": {prompt_chars}}}"
+                )))
             }
             Capability::ActorSpawn | Capability::ActorSend => {
                 // Actor ops are handled at the opcode level, not through the gateway
