@@ -48,6 +48,9 @@ workflow.json → Validator → Runner → Evidence Bundle
 - `boruna-framework` — App protocol (Elm architecture)
 - `boruna-tooling` — Diagnostics, repair, trace-to-tests, templates
 - `boruna-pkg` — Package system with integrity verification
+- `boruna-cli` — The `boruna` command-line binary (workflow, evidence, lang, framework, trace2tests, ...)
+- `boruna-mcp` — MCP server binary exposing the toolchain to AI coding agents over stdio
+- `boruna-lsp` — Language server for `.ax` files (diagnostics, completion, formatting)
 
 ## Workflow Lifecycle
 
@@ -56,12 +59,13 @@ workflow.json → Validator → Runner → Evidence Bundle
 3. **Run** — `boruna workflow run <dir> --policy <policy>` executes steps
 4. **Record** — `--record` flag generates evidence bundle
 5. **Verify** — `boruna evidence verify <dir>` checks bundle integrity
-6. **Replay** — Re-execute from recorded event log for determinism verification
+6. **Replay** — There is no workflow-level replay command. For a single `.ax` program, `boruna run <file> --record <log.json>` saves the VM event log and `boruna replay <file> <log.json>` re-runs the program (`.ax` or `.axbc`) against the recorded capability results and reports whether the replayed event log matches.
 
 ## Schema Versioning
 
-All serializable formats include `schema_version` for forward compatibility:
-- Workflow definition: v1
-- Policy: v1
-- Audit log: v1
-- Evidence bundle manifest: v1
+Versioned formats and their version fields:
+- Workflow definition: `schema_version: 1` (required; unsupported versions are rejected)
+- Policy: `schema_version: 1`
+- Evidence bundle manifest: `schema_version: 1` plus `format_version: "1.1"` (readers accept any `1.x`, reject a different major)
+- VM event log (`EventLog`): `version: 2`
+- Audit log: no version field. A verifier detects the entry form per entry: 1.1 commitment-chain entries carry `content_sha256`, legacy 1.0 entries do not

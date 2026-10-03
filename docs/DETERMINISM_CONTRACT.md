@@ -21,6 +21,7 @@ These sources of non-determinism are kept outside the pure core:
 | Network I/O | `http_request` effect → capability gateway → logged     |
 | File I/O    | `fs_read`/`fs_write` effects → capability gateway       |
 | Database    | `db_query` effect → capability gateway                  |
+| LLM calls   | `llm_call` effect → `llm.call` capability → logged      |
 
 All external interactions go through the capability gateway, which logs
 every call and result in the `EventLog`. Replay substitutes recorded
@@ -41,6 +42,7 @@ The VM `EventLog` logs:
 - `CapResult` — capability name + return value
 - `UiEmit` — emitted UI tree
 - `ActorSpawn`, `MessageSend`, `MessageReceive`, `SchedulerTick`
+- `ContractCheck` — a `requires`/`ensures` clause or an output guard was evaluated (recorded for both pass and fail)
 
 ## Replay Contract
 
@@ -55,19 +57,19 @@ If verification fails, either:
 ## Multi-Actor Determinism
 
 In single-actor mode, messages are processed FIFO. In multi-actor mode,
-the VM uses round-robin scheduling across actors. The exact scheduling
-order is captured in the EventLog via `SchedulerTick`, `ActorSpawn`,
-`MessageSend`, and `MessageReceive` events.
+the `ActorSystem` (`crates/llmvm/src/actor.rs`) uses deterministic
+round-robin scheduling: each round runs every runnable actor in spawn
+order with a fixed step budget, messages sent during a round are collected and
+delivered at the end of the round sorted by `(target_id, sender_id)`, and
+blocked actors with non-empty mailboxes are then woken. Nothing in this
+loop depends on wall-clock time, thread timing, or hash ordering.
 
-During replay, the EventLog enforces the identical scheduling sequence.
-This means multi-actor execution is deterministic as long as it is replayed
-from the same EventLog. Two independent runs with the same bytecode and
-messages are NOT guaranteed to produce the same scheduling order — only
-record-then-replay guarantees identical execution.
-
-If your application requires fully deterministic multi-actor ordering
-without replay, restrict to single-actor mode or use explicit message
-sequencing in your update logic.
+Two independent runs with the same bytecode, the same messages, and the
+same capability results therefore produce the same scheduling order. The
+order is also captured in the EventLog via `SchedulerTick`, `ActorSpawn`,
+`MessageSend`, and `MessageReceive` events, and `ReplayEngine::verify_full()`
+compares these events, so replay can confirm that a recorded run and its
+replay scheduled identically.
 
 ## Enforcement
 
