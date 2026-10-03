@@ -38,11 +38,24 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: self-hosted
             use_cross: true
-          # macOS arm64 runs on a GitHub-hosted runner. Apple Silicon is the
-          # only Mac target shipped — Intel macOS users build from source.
+          # macOS and Windows run on GitHub-hosted native runners, so every
+          # binary is built and linked on the architecture it ships for.
           - target: aarch64-apple-darwin
             os: macos-14
             use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+            exe: .exe
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            exe: .exe
+            archive: zip
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +110,7 @@ jobs:
 
       - name: Build binaries (cargo)
         if: matrix.use_cross == false
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -111,22 +125,31 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+          ARCHIVE: ${{ matrix.archive || 'tar.gz' }}
         run: |
           version="${TAG#v}"
           dir="boruna-${version}-${TARGET}"
           mkdir "$dir"
           for bin in boruna boruna-mcp boruna-pkg boruna-orch; do
-            cp "target/${TARGET}/release/$bin" "$dir/"
+            cp "target/${TARGET}/release/${bin}${EXE}" "$dir/"
           done
           cp LICENSE README.md CHANGELOG.md "$dir/"
-          tar -czf "${dir}.tar.gz" "$dir"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${dir}.tar.gz" > "${dir}.tar.gz.sha256"
+          if [ "$ARCHIVE" = "zip" ]; then
+            # Windows users expect .zip; Compress-Archive ships with every runner image.
+            pwsh -NoProfile -Command "Compress-Archive -Path '$dir' -DestinationPath '${dir}.zip'"
+            asset="${dir}.zip"
           else
-            shasum -a 256 "${dir}.tar.gz" > "${dir}.tar.gz.sha256"
+            tar -czf "${dir}.tar.gz" "$dir"
+            asset="${dir}.tar.gz"
           fi
-          echo "asset=${dir}.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "checksum=${dir}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "${asset}.sha256"
+          else
+            shasum -a 256 "$asset" > "${asset}.sha256"
+          fi
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${asset}.sha256" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -196,7 +219,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p flat
-          find dist -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} flat/ \;
+          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} flat/ \;
           ls -la flat
           ( cd flat && cat *.sha256 > SHA256SUMS && rm *.sha256 )
           ls -la flat
@@ -209,5 +232,6 @@ jobs:
           body_path: ${{ steps.changelog.outputs.notes_file }}
           files: |
             flat/*.tar.gz
+            flat/*.zip
             flat/SHA256SUMS
           fail_on_unmatched_files: true

@@ -181,6 +181,15 @@ jobs:
             head -c 600 /tmp/err.txt
           done
 
+      - name: Packaging tools used by release.yml (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir pkgcheck && cp target/debug/boruna.exe pkgcheck/
+          pwsh -NoProfile -Command "Compress-Archive -Path 'pkgcheck' -DestinationPath 'pkgcheck.zip'"
+          sha256sum pkgcheck.zip
+
       - name: Smoke test (version, workflow run, evidence verify)
         shell: bash
         run: |
