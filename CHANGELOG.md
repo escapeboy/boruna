@@ -25,6 +25,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - The mock answer for `llm.call` is now a `String` (a JSON marker with the model and prompt
   length) instead of a map, matching `llm_call`'s return type and the real provider handlers.
 
+### Fixed
+- `boruna workflow run --live` always used the mock, even in a build with `--features http`: the
+  CLI's `http` feature was not forwarded to the orchestrator. Fixed, with a test that fails
+  without the fix.
+
 ## [3.6.0] — 2026-10-03
 
 Workflow evidence now records what each step ran on and every capability it called. The
