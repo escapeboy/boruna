@@ -1294,9 +1294,10 @@ fn main() {
         libc::sigaddset(&mut set, libc::SIGPIPE);
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
     }
-    // Second line of defence, and the only one on Windows: if a write to stdout still fails
-    // because the reader is gone, `println!` panics. Exit quietly with the shell's
-    // broken-pipe status instead of printing a panic.
+    // Second line of defence: if a write to stdout still fails because the reader is gone,
+    // `println!` panics. Exit quietly with the shell's broken-pipe status instead of printing
+    // a panic. Windows reports a closed pipe as os error 232 ("The pipe is being closed") or
+    // 109; that path is not covered by a test.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let msg = info
@@ -1305,7 +1306,10 @@ fn main() {
             .map(String::as_str)
             .or_else(|| info.payload().downcast_ref::<&str>().copied())
             .unwrap_or("");
-        if msg.starts_with("failed printing to stdout") && msg.contains("Broken pipe") {
+        let closed_pipe = ["Broken pipe", "os error 232", "os error 109"]
+            .iter()
+            .any(|m| msg.contains(m));
+        if msg.starts_with("failed printing to stdout") && closed_pipe {
             std::process::exit(141);
         }
         default_hook(info);
