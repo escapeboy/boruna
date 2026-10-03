@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use boruna_bytecode::{Capability, Module, Op, Value};
+use boruna_bytecode::{Capability, Module, Op, Value, RESULT_TYPE_ID, SOME_TYPE_ID};
 
 use crate::actor::Message;
 use crate::capability_gateway::CapabilityGateway;
@@ -513,12 +513,22 @@ impl Vm {
                     self.push(Value::Record { type_id, fields })?;
                 }
                 Op::MakeEnum(type_id, variant) => {
-                    let payload = self.pop()?;
-                    self.push(Value::Enum {
-                        type_id,
-                        variant,
-                        payload: Box::new(payload),
-                    })?;
+                    let payload = Box::new(self.pop()?);
+                    // `Some(x)`, `Ok(x)` and `Err(x)` literals compile to these reserved
+                    // type ids. Building the real variants here is what lets them match
+                    // `Some(..)`/`Ok(..)`/`Err(..)` patterns and compare equal to the
+                    // values builtins return; as `Value::Enum` they matched neither.
+                    let value = match (type_id, variant) {
+                        (SOME_TYPE_ID, 1) => Value::Some(payload),
+                        (RESULT_TYPE_ID, 0) => Value::Ok(payload),
+                        (RESULT_TYPE_ID, 1) => Value::Err(payload),
+                        _ => Value::Enum {
+                            type_id,
+                            variant,
+                            payload,
+                        },
+                    };
+                    self.push(value)?;
                 }
                 Op::GetField(idx) => {
                     let val = self.pop()?;

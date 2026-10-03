@@ -262,6 +262,10 @@ FieldPat   ::= Identifier [":" Pattern]
 
 A `FieldPat` of the form `name` is shorthand for `name: name`.
 
+Known gap in the reference implementation: a negative integer literal (`-1`) is not accepted as a
+pattern (parse error "expected pattern, found Minus"). Use a guard-free alternative such as an
+`if` on the value until this is supported.
+
 ## 4. Type system
 
 Types: `Int`, `Float`, `String`, `Bool`, `Unit`, `Option<T>`, `Result<T, E>`, `List<T>`, `Map<K, V>`, user-declared records, user-declared enums.
