@@ -42,7 +42,7 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 ## Evidence and audit limitations
 
-**Workflow bundles do not record individual capability calls.** The audit log of a `workflow run --record` bundle records completed and failed steps with the hash of each output, approvals and rejections, external triggers, and confidence-gate decisions. The `StepStarted` (input hash) and `CapabilityInvoked` audit events exist but are not emitted yet, and the VM event log (which does record every capability call and result) is not added to workflow bundles. A single program run with `boruna run --record` does record every capability call and can be replayed.
+**Steps cannot reach the outside world yet.** `.ax` has no built-in for network, LLM, file, clock or random access. The only capability a program can actually call today is `step_input` (reading an upstream step's output). Annotations such as `!{net.fetch}` declare intent and are part of a function's capability set and identity hash, and the gateway checks and records any call that reaches it, but no `.ax` source construct issues a `net.fetch`, `llm.call`, `fs.*`, `time.now` or `random` call yet. The LLM steps in the example workflows return fixed values. Workflow audit logs record every capability call that does happen (`CapabilityInvoked`, allowed or denied) and the hash of each step's inputs (`StepStarted`).
 
 **Evidence bundles are local files; remote storage is operator-owned.** Evidence bundles write to `<data-dir>/runs/<run-id>/`. Pluggable storage adapters (S3 / object storage / document store) are roadmap 0.7.x or 1.x. Today, ship bundles to remote storage with your own pipeline (rsync, S3 upload, etc.).
 

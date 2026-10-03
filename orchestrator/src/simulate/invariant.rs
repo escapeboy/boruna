@@ -508,6 +508,8 @@ mod tests {
             capabilities_used: vec![],
             error: None,
             attempt_count: 1,
+            input_hash: None,
+            capability_calls: vec![],
         }
     }
 
