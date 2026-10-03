@@ -1,0 +1,12 @@
+/* Small additions to the default mdBook theme. */
+.version-banner {
+    border-left: 4px solid #d97706;
+    background: rgba(217, 119, 6, 0.08);
+    padding: 0.6em 1em;
+    margin: 0 0 1.5em;
+    font-size: 0.95em;
+}
+.edit-link {
+    margin-top: 3em;
+    font-size: 0.85em;
+}

@@ -219,6 +219,42 @@ jobs:
           run_id="$(ls "$out/evidence" | head -1)"
           cargo run -q --locked --bin boruna -- evidence verify "$out/evidence/$run_id"
 
+  site:
+    # Builds the website (landing page + docs from the repository's Markdown) and fails on a
+    # missing listed page or a broken internal link. Deployment is a separate workflow.
+    name: Docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: site-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: site-${{ runner.os }}-
+
+      - name: Install mdBook
+        run: |
+          curl -fsSL https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Build boruna
+        run: cargo build --release --locked -p boruna-cli
+
+      - name: Build site
+        run: python3 scripts/build-site.py --out public --next-root . --next-boruna target/release/boruna
+
+      - name: Check internal links
+        run: python3 scripts/check-site-links.py public
+
   clippy:
     name: Clippy
     runs-on: self-hosted
