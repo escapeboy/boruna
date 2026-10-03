@@ -6,6 +6,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-10-03
+
+Install in one command on every supported platform, three `match` bugs fixed, and a language
+specification that matches what the compiler accepts. Additive for programs that compiled
+before, but see **Fixed**: programs that use integer patterns or nested `match` now behave
+correctly, so their bytecode and module hashes change.
+
 ### Added
 - `install.sh` (Linux, macOS) and `install.ps1` (Windows): one-line install of the release
   binaries. They pick the build for the OS and CPU, verify it against `SHA256SUMS` and install
