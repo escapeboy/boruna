@@ -166,7 +166,7 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Smoke test (version, workflow run, evidence verify)
         shell: bash
