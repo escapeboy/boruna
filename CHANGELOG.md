@@ -6,6 +6,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-10-03
+
+Additive feature release — no breaking changes. Two ideas from the agentlanguages.dev review:
+a calibrated way to let confident answers skip a human reviewer, and agent documentation that
+is generated from the binary so it cannot drift from the commands that exist. Existing
+workflows, workflow hashes and evidence bundles are unchanged.
+
 ### Added
 
 - **Calibrated confidence for approval gates** — borrowed from conformal prediction
@@ -38,6 +45,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - `ax-language` skill pointed agents at `boruna check`, which does not exist. The command is
   `boruna lang check`.
+- `crates/llmvm/src/actor.rs`: `drain(..).collect()` replaced with `std::mem::take` (rust 1.98
+  clippy `drain_collect`, which `-D warnings` rejects). Behavior is unchanged.
 
 ## [3.2.0] — 2026-07-18
 
