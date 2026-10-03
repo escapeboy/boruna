@@ -68,8 +68,8 @@ the full on-disk contract see
 |--------|------------------|--------------|
 | **A third party edits a bundle file after it was sealed.** | The hash chain plus `file_checksums` plus `bundle_hash` make a naive edit detectable: any changed byte fails its SHA-256 check, and any spliced/removed audit entry breaks the chain. `verify_bundle` reports the failing check. | A *naive* edit is caught by plain `verify`. A *motivated* attacker who holds the whole bundle can rewrite the file **and** recompute every checksum **and** recompute `bundle_hash` so the bundle is internally self-consistent — this defeats plain `verify` (documented in-code as the "F1 weakness"). Closing it requires an **external anchor** or a **signature under a pinned key** — see §4. Tamper-*evidence*, not tamper-*proofing*. |
 | **The recorder/producer is malicious and seals a FALSE record at write time.** | Nothing. The bundle faithfully seals whatever the producer fed it. A signature (if present) attests *which key sealed these bytes* — the producer's identity — not that the sealed facts are true. | **Not prevented, by construction.** Garbage-in is sealed as faithfully as truth-in. Evidence bundles are a *tamper-evidence* mechanism, not a *truth oracle*. Detecting a lying producer requires controls outside the bundle (independent corroboration, dual control over the recorder, a trusted execution environment — see §5). |
-| **The signing key is compromised.** | With a valid key an attacker can forge or backdate the entire bundle, sign it, and it will verify under that key — hash-chaining is single-writer and provides no defense once the writer's key is held. Pinning a `trusted_pubkey` at verify time limits acceptance to a specific key, so a *different* attacker key is rejected. | If the *legitimate* key itself is stolen, pinning does not help — the forged bundle carries the pinned key. There is no revocation, no key rotation history, and no witnessed record of *when* a signature was made. Mitigation direction (not yet implemented): anchoring signatures in an append-only **transparency log** and/or **keyless, identity-bound signing**, so a signature is bound to a witnessed moment and a verifiable identity rather than to a long-lived secret. |
-| **Backdating — sealing a record now but claiming it was produced earlier.** | The manifest carries `started_at` / `completed_at` / `created_at` timestamps, but these are **self-reported wall-clock values written by the producer**. Nothing external witnesses them. | **No trusted timestamp today.** A producer (or a key holder) can set these fields to any value. Mitigation direction (not yet implemented): anchoring the `bundle_hash` in an external append-only log (e.g. a Rekor-style transparency log) at seal time, so the *earliest-existence* time of the bundle is witnessed by a third party rather than asserted by the producer. |
+| **The signing key is compromised.** | With a valid key an attacker can forge or backdate the entire bundle, sign it, and it will verify under that key — hash-chaining is single-writer and provides no defense once the writer's key is held. Pinning a `trusted_pubkey` at verify time limits acceptance to a specific key, so a *different* attacker key is rejected. | If the *legitimate* key itself is stolen, pinning does not help — the forged bundle carries the pinned key. There is no revocation and no key rotation history. If the operator anchored the signed bundle with `boruna evidence anchor` (§4), the original signature is bound to a witnessed moment in a Rekor log, so a forged bundle made later with the stolen key cannot claim an earlier log entry. Without an anchor there is no witnessed record of *when* a signature was made. **Keyless, identity-bound signing** (binding a signature to a verifiable identity instead of a long-lived secret) is not implemented; it is only a design note (`orchestrator/docs/keyless-signing.md`). |
+| **Backdating — sealing a record now but claiming it was produced earlier.** | The manifest carries `started_at` / `completed_at` / `created_at` timestamps, but these are **self-reported wall-clock values written by the producer**. Nothing external witnesses them. | **No trusted timestamp unless the bundle is anchored.** A producer (or a key holder) can set these fields to any value. Since v3.2.0, `boruna evidence anchor` records the signed `bundle_hash` in a Sigstore Rekor transparency log; the log's `integratedTime` is a third-party witness that the bundle existed no later than that moment (§4). Limits: it only helps when the operator actually anchors the bundle, ideally right after sealing; it bounds *when the bundle existed*, it does not make the self-reported `started_at` / `completed_at` true; and an unsigned bundle cannot be anchored. |
 | **Non-determinism, especially LLM calls, undermines "reproducibility".** | Replay re-executes the workflow against the **recorded** capability results: LLM calls, HTTP fetches, and other effects return their captured responses instead of hitting live services, and `--verify` checks that the replay reproduces the same output hashes. This proves the recorded run is *internally consistent* — the recorded inputs deterministically produce the recorded outputs. | Replay proves reproducibility **given the recorded capability results** — it does **not** prove that the model (or any external service) would return the same thing if called again live. A non-deterministic model is captured, not tamed: the bundle pins *what the model said this time*, not *what the model will say next time*. Do not read a passing replay as "the model is deterministic." |
 | **The environment fingerprint is forged.** | `env_fingerprint.json` records OS, architecture, and Boruna version, and it is checksummed and covered by `bundle_hash` like every other file — so it cannot be changed *after* sealing without detection. | The fingerprint is **self-reported by the recording process, not hardware-attested.** A malicious or misconfigured producer can write any values it likes *at seal time*; the integrity check only proves those values were not altered afterward, not that they were true. Mitigation direction (not yet implemented): **TEE remote attestation**, binding the fingerprint to a hardware root of trust that attests the actual code image and platform that ran. |
 
@@ -85,7 +85,8 @@ It does **not**, by itself, catch an attacker who controls the whole
 bundle, because that attacker can make the manifest agree with their
 forgery. Two independent, composable checks close this gap; neither is on
 by default, and each roots trust in something the attacker does not
-control:
+control (a third, transparency-log anchoring, adds a witnessed time; see
+below):
 
 1. **External anchor** (`--expected-bundle-hash` /
    `expected_bundle_hash`). You record the `bundle_hash` out-of-band at
@@ -111,17 +112,42 @@ truth claim about the content (contrast the malicious-producer row in
 an accountable identity and is not shared — conditions the bundle format
 cannot enforce on its own.
 
+**Transparency-log anchoring** (`boruna evidence anchor <dir>`, since
+v3.2.0, `orchestrator/src/audit/anchor.rs`). For a *signed* bundle, it
+builds a Rekor `hashedrekord` entry from `bundle_hash` and the ed25519
+signature. Three modes:
+
+- live (default): submits the entry to `--rekor-url` (the public
+  `https://rekor.sigstore.dev` by default, or a private Rekor for
+  air-gapped deployments) and stores the returned entry with its
+  inclusion proof as `rekor-entry.json`. This needs a build with the
+  opt-in `rekor` cargo feature; the default build makes no network calls.
+- `--offline`: writes the entry payload without any network call, for
+  submission by other means.
+- `--verify`: offline, recomputes the RFC 6962 Merkle root from the
+  stored entry and inclusion proof, and checks that the entry commits to
+  this bundle's `bundle_hash`.
+
+What it proves, once anchored: the bundle (with that signature) existed
+no later than the log's `integratedTime`, as witnessed by the log
+operator rather than asserted by the producer. A later rewrite of the
+bundle changes `bundle_hash` and no longer matches the anchored entry.
+
+Limits: it only exists if the operator runs it, and only for signed
+bundles. It says nothing about whether the content is true. `--verify`
+checks the proof against the `rootHash` stored in the entry; it does not
+verify the signed entry timestamp (SET) or the log checkpoint against
+Rekor's public key. A verifier who needs the witness to hold against a
+forged `rekor-entry.json` must also check the entry against the log
+itself (or verify the SET with Rekor's key using other tooling).
+
 ---
 
 ## 5. Mitigation directions (not yet implemented)
 
-The residual gaps in §3 are real. The honest position is that they are
-*known* and have *known* remedies on the roadmap, none of which ship
-today:
+Some residual gaps in §3 remain. They are *known* and have *known*
+remedies, but these do not ship today:
 
-- **Transparency-log anchoring** (Rekor-style): witness the `bundle_hash`
-  in an external append-only log at seal time, giving a third-party-
-  attested earliest-existence timestamp and defeating silent backdating.
 - **Keyless / identity-bound signing**: bind a signature to a verifiable
   workload identity for a short-lived credential, reducing the blast
   radius of a stolen long-lived key.
@@ -132,8 +158,9 @@ today:
 Until these land, treat the corresponding claims conservatively: a bundle
 proves post-seal integrity and internal replay-consistency, anchored or
 signed bundles additionally prove origin against a chosen root of trust,
-and *nothing in the bundle* proves the producer was honest or that the
-timestamps are true.
+a Rekor-anchored bundle additionally has a third-party-witnessed
+latest-possible existence time, and *nothing in the bundle* proves the
+producer was honest or that the self-reported timestamps are true.
 
 ---
 

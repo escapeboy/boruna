@@ -165,11 +165,13 @@ Deployment (done, PRs #94 and this one):
   both `fleetq.net` and the new host), so the site has its own Web Analytics site and the beacon is
   in `site/theme/head.hbs` and the landing page. The token is public by design.
 
-Left for later PRs:
-- Compiling `.ax` examples in the docs (F19).
-- Pages held back until fixed: the 10 FIX documents from the review, `concepts/threat-model.md`
-  (says Rekor anchoring is not implemented; `evidence anchor` exists since v3.2.0),
-  `roadmap.md` ("Current: 1.4.0"), and the unreviewed `faq.md`, `SECURITY_MODEL.md`,
-  `COMPLIANCE_EVIDENCE.md`. `LLM_EFFECT_SPEC.md`, `language-guide.md` and `INTEGRATION_GUIDE.md`
-  move to `docs/archive/`.
+Docs content (done in the follow-up PR):
+- The 10 FIX documents, `threat-model.md`, `roadmap.md`, `faq.md`, `SECURITY_MODEL.md` and
+  `COMPLIANCE_EVIDENCE.md` were corrected against the code and are published.
+  `LLM_EFFECT_SPEC.md`, `language-guide.md` and `INTEGRATION_GUIDE.md` are in `docs/archive/`.
+- `scripts/check-doc-examples.py` compiles every complete `.ax` example (a block with `fn main`)
+  in the published pages; CI runs it. A block that is deliberately not standalone is marked with
+  `<!-- ax-check: skip (reason) -->` on the line before the fence.
+- Still held back: `stability.md` and `lts.md` describe the 1.x LTS line; whether 1.x is still
+  supported after 2.0 and 3.0 is a decision for the project owner.
 

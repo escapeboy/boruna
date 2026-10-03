@@ -18,7 +18,7 @@ Boruna's design priorities are different:
 |---|---|---|
 | Primary goal | LLM integration | Deterministic execution |
 | Side effects | Implicit | Declared and gated |
-| Audit trail | Not built-in | Hash-chained, always |
+| Audit trail | Not built-in | Hash-chained evidence bundle (`--record`) |
 | Replay | Not supported | First-class |
 | Policy enforcement | None | Capability-based |
 | Language | Python | .ax (custom, Rust VM) |
@@ -39,7 +39,7 @@ Temporal is a better choice if you need multi-step business processes with human
 
 ## Is .ax Turing-complete?
 
-Yes. `.ax` supports recursion and is Turing-complete in the theoretical sense. In practice, the `--step-limit` flag on `boruna run` enforces a bound on VM steps, which prevents runaway execution in production workflows.
+Yes. `.ax` supports recursion and is Turing-complete in the theoretical sense. In practice, the `--max-steps` flag on `boruna run` (default 10,000,000) bounds the number of VM steps, which prevents runaway execution.
 
 ## Can I call external APIs and LLMs?
 
@@ -51,20 +51,21 @@ In demo mode (default), capability calls are stubbed. In `--live` mode (with the
 
 No. LLMs are probabilistic. Running the same prompt twice will produce different outputs. Boruna cannot change this.
 
-What Boruna guarantees: the LLM response is recorded in the evidence bundle. If you replay the workflow from its evidence bundle, the recorded response is substituted — so the replay is deterministic even if the original call wasn't.
+What Boruna guarantees: the response is recorded. `boruna run --record <file>` writes the VM event log with every capability result, and `boruna replay` substitutes the recorded results, so the replay is deterministic even if the original call wasn't. For workflows, each step's output hash is in the hash-chained audit log of the evidence bundle.
 
 This lets you verify that a workflow produced a specific output on a specific run, without requiring the LLM to reproduce the response.
 
 ## What is the evidence bundle format?
 
 A directory containing:
-- `manifest.json` — run metadata
-- `audit_log.json` — hash-chained step execution log
-- `events/event_log.json` — full capability call stream
-- `steps/<step-id>.input` and `.output` — step I/O
+- `manifest.json` — run metadata, per-file SHA-256 checksums, `bundle_hash`, optional ed25519 signature and encryption info
+- `bundle.json` — bundle format version (`1.1`) and component list
+- `workflow.json`, `policy.json` — the exact workflow definition and policy used
+- `audit_log.json` — hash-chained log of workflow, step and approval events
 - `env_fingerprint.json` — runtime environment snapshot
+- `outputs/<step-id>/result.json` — per-step outputs (written by `boruna evidence create`)
 
-See [Evidence Bundles](./concepts/evidence-bundles.md) for the full specification.
+`boruna evidence verify <dir>` checks it. See [Evidence Bundles](./concepts/evidence-bundles.md) for the full specification.
 
 ## Can I use Boruna without the .ax language?
 
@@ -72,11 +73,11 @@ Not currently. The VM, capability enforcement, and determinism guarantees are ti
 
 ## What Rust version does Boruna require?
 
-Minimum supported Rust version: **1.75.0** (stable). No nightly features are required.
+Release binaries (installed with `install.sh` or `install.ps1`) need no Rust toolchain. To build from source you need stable Rust; no nightly features are required. CI builds with the current stable toolchain only, and the workspace does not declare a minimum Rust version, so older toolchains are untested.
 
 ## Is there a hosted version?
 
-Not yet. Boruna runs locally or in whatever environment you deploy it to. A hosted platform is on the long-term roadmap.
+No. Since v3.0.0 Boruna is a local engine and CLI only. The HTTP server, coordinator, distributed workers and dashboards were removed in v3.0.0.
 
 ## How do I report a security vulnerability?
 
@@ -84,7 +85,7 @@ See [SECURITY.md](../SECURITY.md). Use GitHub Security Advisories for responsibl
 
 ## Is Boruna production-ready?
 
-Boruna is at 1.3.0, on the 1.x LTS line. The core engine, workflow DAG, evidence bundles, capability enforcement, and all 13 stdlib packages are stable and LTS-protected. External security audit is booked for Q4 2026. See [Stability](./stability.md) for the full maturity assessment and [lts.md](./lts.md) for the support contract.
+Boruna is at 3.5.0. It is a local engine and CLI; there is no server component since v3.0.0. The core engine, workflow DAG, evidence bundles and capability enforcement are covered by the test suite and CI on Linux, macOS and Windows, and there are 14 stdlib packages. No external security audit has been completed yet. See [Stability](./stability.md) for the maturity assessment and [lts.md](./lts.md) for the support contract (written for the 1.x line).
 
 ## How do I contribute?
 

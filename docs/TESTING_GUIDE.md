@@ -126,6 +126,7 @@ Comma-separated for sequences: `add:0,add:0,complete:0`
 
 Include `fn main() -> Int` for standalone execution:
 
+<!-- ax-check: skip (goes inside an app that defines State, Msg, init and update) -->
 ```ax
 fn main() -> Int {
     let s0: State = init()

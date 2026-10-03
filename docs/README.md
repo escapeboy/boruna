@@ -72,7 +72,7 @@ Frozen contracts (LTS-protected at 1.0 GA):
 
 Deep technical documentation:
 
-- [Language Guide](./language-guide.md) — extended .ax language documentation
+- [.ax Language Reference](./reference/ax-language.md) — syntax, types and capabilities, with examples
 - [Determinism Contract](./DETERMINISM_CONTRACT.md) — formal determinism specification
 - [Framework Spec](./FRAMEWORK_SPEC.md) — Elm-architecture app protocol
 - [Compliance Evidence](./COMPLIANCE_EVIDENCE.md) — evidence bundle format specification

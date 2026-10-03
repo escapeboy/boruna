@@ -1,6 +1,6 @@
 # Framework Public API
 
-Stability: **Experimental** within the Boruna 1.x line. The framework is the Elm-architecture runtime exposed by `boruna_framework`; it ships with the rest of Boruna under the workspace version (currently `v1.0.0-rc2`) but its public types are NOT included in the [LTS contract](./lts.md) §B. Expect API changes between Boruna 1.x minor releases as adoption feedback comes in. See [stability.md](./stability.md) for the tier definitions and [lts.md](./lts.md) for the surfaces that ARE LTS-protected.
+Stability: **Experimental**. The framework is the Elm-architecture runtime exposed by `boruna_framework`; it ships with the rest of Boruna under the workspace version but its public types are NOT included in the [LTS contract](./lts.md) §B. Expect API changes between minor releases as adoption feedback comes in. See [stability.md](./stability.md) for the tier definitions and [lts.md](./lts.md) for the surfaces that ARE LTS-protected.
 
 All unlisted types/functions are internal and may change without notice.
 
@@ -8,6 +8,7 @@ All unlisted types/functions are internal and may change without notice.
 
 ```rust
 pub use error::FrameworkError;
+pub use executor::{EffectExecutor, HostEffectExecutor, MockEffectExecutor};
 pub use runtime::AppRuntime;
 pub use validate::AppValidator;
 pub use testing::TestHarness;
@@ -85,6 +86,7 @@ impl AppRuntime {
     pub fn policy(&self) -> &PolicySet;
     pub fn state_machine(&self) -> &StateMachine;
     pub fn send(&mut self, msg: AppMessage) -> Result<(Value, Vec<Effect>, Option<Value>), FrameworkError>;
+    pub fn send_with_executor(&mut self, msg: AppMessage, executor: &mut dyn EffectExecutor) -> Result<(Value, Vec<AppMessage>, Option<Value>), FrameworkError>;
     pub fn view(&self) -> Result<Value, FrameworkError>;
     pub fn snapshot(&self) -> String;
     pub fn rewind(&mut self, cycle: u64) -> Result<(), FrameworkError>;
@@ -104,16 +106,41 @@ pub struct Effect {
 pub enum EffectKind {
     HttpRequest, DbQuery, FsRead, FsWrite,
     Timer, Random, SpawnActor, EmitUi,
+    LlmCall, SendToActor,
 }
 
 impl EffectKind {
-    pub fn from_str(s: &str) -> Option<Self>;
+    pub fn parse_str(s: &str) -> Option<Self>;
     pub fn capability_name(&self) -> &'static str;
     pub fn as_str(&self) -> &'static str;
 }
 
 pub fn parse_effects(effects_value: &Value) -> Vec<Effect>;
 pub fn parse_update_result(value: &Value) -> Option<(Value, Vec<Effect>)>;
+```
+
+## boruna_framework::executor
+
+```rust
+pub trait EffectExecutor {
+    fn execute(&mut self, effects: Vec<Effect>) -> Result<Vec<AppMessage>, FrameworkError>;
+}
+
+pub struct MockEffectExecutor { /* private fields */ }
+
+impl MockEffectExecutor {
+    pub fn new() -> Self;
+    pub fn set_response(&mut self, callback_tag: impl Into<String>, value: Value);
+    pub fn set_default_response(&mut self, value: Value);
+}
+
+pub struct HostEffectExecutor { /* private fields */ }
+
+impl HostEffectExecutor {
+    pub fn new() -> Self;
+    pub fn with_handler(policy: Policy, handler: Box<dyn CapabilityHandler>) -> Self;
+    pub fn event_log(&self) -> &EventLog;
+}
 ```
 
 ## boruna_framework::state
@@ -171,6 +198,7 @@ pub fn ui_tree_to_value(node: &UINode) -> Value;
 
 ```rust
 pub struct PolicySet {
+    pub schema_version: u32,
     pub capabilities: Vec<String>,
     pub max_effects_per_cycle: u64,
     pub max_steps: u64,
@@ -181,6 +209,7 @@ impl PolicySet {
     pub fn from_value(value: &Value) -> Self;
     pub fn check_effect(&self, effect: &Effect) -> Result<(), FrameworkError>;
     pub fn check_batch(&self, effects: &[Effect]) -> Result<(), FrameworkError>;
+    pub fn to_json(&self) -> String;
 }
 ```
 
@@ -194,10 +223,11 @@ impl TestHarness {
     pub fn state(&self) -> &Value;
     pub fn cycle(&self) -> u64;
     pub fn send(&mut self, msg: AppMessage) -> Result<(Value, Vec<Effect>), FrameworkError>;
+    pub fn send_with_effects(&mut self, msg: AppMessage, executor: &mut dyn EffectExecutor) -> Result<(Value, Vec<AppMessage>), FrameworkError>;
     pub fn simulate(&mut self, messages: Vec<AppMessage>) -> Result<Value, FrameworkError>;
-    pub fn assert_state_field(field_index: usize, expected: &Value) -> Result<(), FrameworkError>;
-    pub fn assert_effects(expected_kinds: &[&str]) -> Result<(), FrameworkError>;
-    pub fn assert_state(expected: &Value) -> Result<(), FrameworkError>;
+    pub fn assert_state_field(&self, field_index: usize, expected: &Value) -> Result<(), FrameworkError>;
+    pub fn assert_effects(&self, expected_kinds: &[&str]) -> Result<(), FrameworkError>;
+    pub fn assert_state(&self, expected: &Value) -> Result<(), FrameworkError>;
     pub fn cycle_log(&self) -> &[CycleRecord];
     pub fn snapshot(&self) -> String;
     pub fn rewind(&mut self, cycle: u64) -> Result<(), FrameworkError>;

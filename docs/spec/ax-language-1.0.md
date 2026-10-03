@@ -85,7 +85,7 @@ Identifiers are case-sensitive. The identifier `_` (single underscore) is a **wi
 **Keywords** (have meaning; MUST NOT be used as identifiers):
 
 ```
-fn   let   if   else   match   record   enum   true   false
+fn   let   if   else   match   type   enum   true   false
 Some None Ok  Err
 mut  while for  in                                  (added in 1.1, §4.5)
 ```
@@ -101,10 +101,13 @@ Int Float String Bool Unit Option Result List Map
 ```
 loop return break continue trait impl import module
 where as pub priv async await yield static const ref self Self
-type spawn actor receive
+spawn actor receive record
 ```
 
-(`mut`, `for`, `while` and `in` moved from this list to the keywords in 1.1. The reference
+(`mut`, `for`, `while` and `in` moved from this list to the keywords in 1.1. Erratum in 1.1: 1.0 listed
+`record` as the keyword for record declarations and `type` as reserved, but the reference
+implementation has always used `type` to declare records and never accepted `record`; the two
+lists now say so. The reference
 implementation already gives some of the remaining words a meaning, for example `return`,
 `import`, `spawn` and `receive`; those are not yet specified here.)
 
@@ -148,7 +151,7 @@ EBNF conventions: `{X}` = zero or more, `[X]` = optional, `|` = alternation, `"x
 
 ```
 Program ::= {Item}
-Item    ::= FnDecl | RecordDecl | EnumDecl
+Item    ::= FnDecl | TypeDecl | EnumDecl
 ```
 
 Every `.ax` source file is a Program. A standalone executable program MUST contain a top-level item `fn main() -> Int`.
@@ -162,11 +165,11 @@ Param      ::= Identifier ":" Type
 CapAnnot   ::= "!{" CapName {"," CapName} "}"
 CapName    ::= Identifier {"." Identifier}
 
-RecordDecl ::= "record" Identifier "{" {FieldDecl ","} "}"
+TypeDecl   ::= "type" Identifier "{" FieldDecl {"," FieldDecl} [","] "}"   (a record type)
 FieldDecl  ::= Identifier ":" Type
 
-EnumDecl   ::= "enum" Identifier "{" {VariantDecl ","} "}"
-VariantDecl::= Identifier "{" {FieldDecl ","} "}"
+EnumDecl   ::= "enum" Identifier "{" VariantDecl {"," VariantDecl} [","] "}"
+VariantDecl::= Identifier ["(" Type ")"]       (no payload, or one positional payload)
 ```
 
 Trailing commas are permitted in `Params`, `FieldDecl` lists, and `VariantDecl` lists.
@@ -218,7 +221,7 @@ RecordLit  ::= TypeName "{" [Spread ","] {FieldInit ","} "}"
 Spread     ::= ".." Expr
 FieldInit  ::= Identifier ":" Expr
 
-EnumLit    ::= TypeName "::" Identifier "{" {FieldInit ","} "}"
+EnumLit    ::= TypeName "::" Identifier ["(" Expr ")"]
 
 ListLit    ::= "[" [Expr {"," Expr}] "]"
 MapLit     ::= "{" [MapEntry {"," MapEntry}] "}"
@@ -256,11 +259,11 @@ Pattern    ::= "_"                                 (* wildcard *)
              | "None"
              | "Ok"   "(" Pattern ")"
              | "Err"  "(" Pattern ")"
-             | TypeName "::" Identifier "{" {FieldPat ","} "}"
-FieldPat   ::= Identifier [":" Pattern]
+             | Identifier ["(" Pattern ")"]          (* enum variant, by bare variant name *)
 ```
 
-A `FieldPat` of the form `name` is shorthand for `name: name`.
+An enum variant pattern names the variant without its enum (`Circle(r)`, not `Shape::Circle(r)`).
+Records are not destructured in patterns; match them with a binding and use field access.
 
 Known gap in the reference implementation: a negative integer literal (`-1`) is not accepted as a
 pattern (parse error "expected pattern, found Minus"). Use a guard-free alternative such as an
@@ -663,7 +666,7 @@ fn main() -> Int {
 
 **Record spread:**
 ```ax
-record Point {
+type Point {
     x: Int,
     y: Int,
 }
@@ -694,19 +697,20 @@ fn main() -> Int {
 **Match exhaustiveness over an enum:**
 ```ax
 enum Shape {
-    Circle    { radius: Float },
-    Rectangle { width: Float, height: Float },
+    Circle(Float),
+    Square(Float),
 }
 
 fn label(s: Shape) -> String {
     match s {
-        Shape::Circle    { radius } => "circle"
-        Shape::Rectangle { width, height } => "rectangle"
+        Circle(r) => "circle",
+        Square(side) => "square",
     }
 }
 
 fn main() -> Int {
-    0
+    let s: Shape = Shape::Circle(1.5)
+    if label(s) == "circle" { 1 } else { 0 }
 }
 ```
 
@@ -735,3 +739,8 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
 - **1.1** (2026-10-03) — Additive (§1.2). Specifies what the implementation has accepted since
   Boruna v2.0: `let mut`, assignment, `while` and `for` (§4.5); `mut`, `while`, `for` and `in`
   become keywords. Rebinding a binding that is not `mut` stays accepted but is warning E010.
+  Errata (the 1.0 text never matched the reference implementation): records are declared with
+  `type`, not `record`; an enum variant has no payload or one positional payload (`Circle(Float)`),
+  constructed as `Shape::Circle(1.5)` and matched by bare name (`Circle(r)`); records are not
+  destructured in patterns. Fixed in §2.4, §3.1, §3.2, §3.4, §3.5 and the §9 examples, which now
+  compile.
