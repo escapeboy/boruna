@@ -44,7 +44,29 @@ This makes Boruna suited for teams building AI workflows that touch regulated da
 
 ## Install
 
-Pre-built static binaries are published on every tagged release:
+Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/escapeboy/boruna/master/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/escapeboy/boruna/master/install.ps1 | iex
+```
+
+Both scripts pick the right build for your OS and CPU, check it against the release's `SHA256SUMS`
+and refuse to install on a mismatch, then put `boruna`, `boruna-mcp`, `boruna-pkg` and
+`boruna-orch` in `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\boruna\bin`, added to your
+user PATH). Set `BORUNA_VERSION=v3.4.0` to pin a version or `BORUNA_INSTALL_DIR` to choose the
+folder. Read [`install.sh`](install.sh) / [`install.ps1`](install.ps1) first if you prefer not to
+pipe a script into your shell.
+
+Check the installation with `boruna --version` and `boruna doctor`.
+
+<details>
+<summary>Manual download with checksum check</summary>
 
 ```bash
 # Linux x86_64 (musl — works on Alpine, Ubuntu, Debian, ...)
@@ -70,6 +92,8 @@ Invoke-WebRequest "$base/$zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath .
 .\boruna-*-$target\boruna.exe --version
 ```
+
+</details>
 
 ### Supported platforms
 
