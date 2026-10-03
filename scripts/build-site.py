@@ -162,6 +162,7 @@ def build_book(root: Path, ref: str, summary: Path, out: Path, site_url: str,
         config = (SITE_DIR / "book.toml").read_text().replace("{site_url}", site_url)
         (work / "book.toml").write_text(config)
         shutil.copy(SITE_DIR / "site.css", work / "site.css")
+        shutil.copytree(SITE_DIR / "theme", work / "theme")
         subprocess.run(["mdbook", "build", str(work), "--dest-dir", str(out)], check=True)
 
 

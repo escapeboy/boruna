@@ -156,9 +156,16 @@ All six questions from the brainstorm are answered in "Decisions already made".
 - **`scripts/check-site-links.py`** fails on any broken internal link or anchor in the built HTML.
 - **CI job "Docs site"** builds the site from `master` and checks links on every pull request.
 
+Deployment (done, PRs #94 and this one):
+- `.github/workflows/site.yml` deploys to the Cloudflare Pages project `boruna` on a push to
+  `master` and after a successful Release. Secrets `CLOUDFLARE_API_TOKEN` (Pages Write only; also in
+  1Password `AI Agent` as "Cloudflare API - boruna Pages deploy") and `CLOUDFLARE_ACCOUNT_ID`.
+- DNS: proxied CNAME `boruna.fleetq.net` → `boruna.pages.dev`; certificate issued by Cloudflare.
+- Web Analytics: the zone-level auto-install on `fleetq.net` did not inject the beacon (checked on
+  both `fleetq.net` and the new host), so the site has its own Web Analytics site and the beacon is
+  in `site/theme/head.hbs` and the landing page. The token is public by design.
+
 Left for later PRs:
-- Deployment to Cloudflare Pages (`boruna.fleetq.net`), the API token, DNS and Web Analytics
-  (needs explicit approval).
 - Compiling `.ax` examples in the docs (F19).
 - Pages held back until fixed: the 10 FIX documents from the review, `concepts/threat-model.md`
   (says Rekor anchoring is not implemented; `evidence anchor` exists since v3.2.0),
