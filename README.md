@@ -57,7 +57,36 @@ tar -xzf "$TAR"
 ./boruna-*-${TARGET}/boruna --version
 ```
 
-Other targets: `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. See [`docs/releasing.md`](docs/releasing.md) for details.
+Windows (PowerShell):
+
+```powershell
+$base = "https://github.com/escapeboy/boruna/releases/latest/download"
+Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+$target = "x86_64-pc-windows-msvc"   # or aarch64-pc-windows-msvc on Windows on Arm
+$zip = ((Select-String -Path SHA256SUMS -Pattern $target).Line -split "\s+")[1]
+Invoke-WebRequest "$base/$zip" -OutFile $zip
+# Compare this hash with the line for $zip in SHA256SUMS:
+(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+Expand-Archive $zip -DestinationPath .
+.\boruna-*-$target\boruna.exe --version
+```
+
+### Supported platforms
+
+Every platform below is built and its full test suite is run natively on a real machine of that
+type in CI (no emulation), together with an example workflow and `evidence verify`.
+
+| Platform | Release asset | Tested natively in CI |
+|---|---|---|
+| Linux x86_64 (musl) | `x86_64-unknown-linux-musl` `.tar.gz` | yes (tests run on a glibc build; the musl release binary is cross-built) |
+| Linux arm64 (musl) | `aarch64-unknown-linux-musl` `.tar.gz` | yes (glibc build; the musl release binary is cross-built) |
+| macOS Apple Silicon | `aarch64-apple-darwin` `.tar.gz` | yes |
+| macOS Intel | `x86_64-apple-darwin` `.tar.gz` | yes |
+| Windows x64 | `x86_64-pc-windows-msvc` `.zip` | yes |
+| Windows on Arm | `aarch64-pc-windows-msvc` `.zip` | yes |
+
+Other targets (FreeBSD, 32-bit, RISC-V and so on) are not built or tested; build from source and run
+`cargo test --workspace` to see whether they work for you. See [`docs/releasing.md`](docs/releasing.md).
 
 Or build from source:
 

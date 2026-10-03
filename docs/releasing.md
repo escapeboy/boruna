@@ -22,9 +22,12 @@ Boruna ships pre-built binaries on every Git tag matching `v*` via `.github/work
    - `boruna-X.Y.Z-x86_64-unknown-linux-musl.tar.gz`
    - `boruna-X.Y.Z-aarch64-unknown-linux-musl.tar.gz`
    - `boruna-X.Y.Z-aarch64-apple-darwin.tar.gz`
+   - `boruna-X.Y.Z-x86_64-apple-darwin.tar.gz`
+   - `boruna-X.Y.Z-x86_64-pc-windows-msvc.zip`
+   - `boruna-X.Y.Z-aarch64-pc-windows-msvc.zip`
    - `SHA256SUMS` (combined checksums)
 
-> **Intel Mac (`x86_64-apple-darwin`) is not shipped as a release artifact.** Apple Silicon (`aarch64-apple-darwin`) covers ~all current macOS users. Intel Mac users build from source. Re-add the target to `.github/workflows/release.yml` if real demand emerges.
+> Windows archives are `.zip` and contain `boruna.exe`, `boruna-mcp.exe`, `boruna-pkg.exe` and `boruna-orch.exe`; every other archive is a `.tar.gz`. Every platform is also built and tested natively by the `platforms` job in `ci.yml`, so a Unix-only assumption is caught before a tag, not after.
 
 Each tarball contains:
 
@@ -81,6 +84,9 @@ This builds and publishes a Release named `vX.Y.Z-rc1`. Delete the rc release af
 | `x86_64-unknown-linux-musl` | `self-hosted` (boruna-runner, Linux X64) | Same machine as `ci.yml` — warm cargo cache, no GitHub queue wait |
 | `aarch64-unknown-linux-musl` | `self-hosted` (boruna-runner, Linux X64) | `cross` cross-compiles to aarch64 from x64 |
 | `aarch64-apple-darwin` | `macos-14` (GitHub-hosted) | macOS targets cannot run on Linux self-hosted; we don't have an Apple Silicon self-hosted runner |
+| `x86_64-apple-darwin` | `macos-15-intel` (GitHub-hosted) | Native Intel build; GitHub has announced the Intel macOS runner image will be retired, so re-check this label if the job stops finding a runner |
+| `x86_64-pc-windows-msvc` | `windows-latest` (GitHub-hosted) | Native MSVC build, packaged with `Compress-Archive` |
+| `aarch64-pc-windows-msvc` | `windows-11-arm` (GitHub-hosted) | Native Windows on Arm build |
 
 If GitHub `macos-14` runner queues become a problem, the answer is to register a self-hosted Apple Silicon runner with label `self-hosted` + `macOS` + `ARM64` and switch the matrix to it. Don't try to cross-compile macOS from Linux — Apple's signing tooling and the macOS SDK make that fragile.
 
