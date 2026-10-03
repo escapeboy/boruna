@@ -2024,7 +2024,7 @@ fn view(state: State) -> UINode {
         let messages = executor.execute(effects).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "tick");
-        assert_eq!(messages[0].payload, Value::Int(1700000000));
+        assert_eq!(messages[0].payload, Value::Int(1_700_000_000_000));
     }
 
     #[test]

@@ -224,3 +224,116 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+fn llm_workflow(root: &Path, with_gate: bool) -> std::path::PathBuf {
+    let wf = root.join("wf");
+    std::fs::create_dir_all(wf.join("steps")).unwrap();
+    std::fs::write(
+        wf.join("steps/review.ax"),
+        "fn main() -> String !{llm.call} {\n    llm_call(\"review this\", \"local/m\")\n}\n",
+    )
+    .unwrap();
+    std::fs::write(wf.join("steps/first.ax"), "fn main() -> Int {\n    1\n}\n").unwrap();
+    let def = if with_gate {
+        r#"{"schema_version":1,"name":"llm-gate","version":"1.0.0","steps":{
+            "first":{"kind":"source","source":"steps/first.ax"},
+            "gate":{"kind":"approval_gate","required_role":"reviewer","depends_on":["first"]},
+            "review":{"kind":"source","source":"steps/review.ax","capabilities":["llm.call"],"depends_on":["gate"]}},
+            "edges":[["first","gate"],["gate","review"]]}"#
+    } else {
+        r#"{"schema_version":1,"name":"llm-eval","version":"1.0.0","steps":{"review":{"kind":"source","source":"steps/review.ax","capabilities":["llm.call"]}},"edges":[]}"#
+    };
+    std::fs::write(wf.join("workflow.json"), def).unwrap();
+    wf
+}
+
+#[test]
+fn workflow_eval_live_calls_each_sides_provider() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (base_a, srv_a) = fake_provider(1, "answer a");
+    let (base_b, srv_b) = fake_provider(1, "answer b");
+    let dir_a = tmp.path().join("a");
+    let dir_b = tmp.path().join("b");
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    let prov_a = providers_file(&dir_a, &base_a);
+    let prov_b = providers_file(&dir_b, &base_b);
+    let wf = llm_workflow(tmp.path(), false);
+    let out = boruna(&[
+        "workflow",
+        "eval",
+        p(&wf),
+        "--providers-a",
+        p(&prov_a),
+        "--providers-b",
+        p(&prov_b),
+        "--live",
+        "--data-dir",
+        p(&tmp.path().join("data")),
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Each fake server got exactly its side's request.
+    assert_eq!(srv_a.join().unwrap().len(), 1);
+    assert_eq!(srv_b.join().unwrap().len(), 1);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["provider_a"]["successes"], 1);
+    assert_eq!(report["provider_b"]["successes"], 1);
+    // Both files are named providers.json; the sides still get distinct names.
+    assert_ne!(report["provider_a"]["name"], report["provider_b"]["name"]);
+}
+
+#[test]
+fn workflow_resume_live_with_providers_calls_the_provider() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wf = llm_workflow(tmp.path(), true);
+    let data = tmp.path().join("data");
+    let out = boruna(&[
+        "workflow",
+        "run",
+        p(&wf),
+        "--policy",
+        "allow-all",
+        "--data-dir",
+        p(&data),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(stdout.contains("Paused"), "{stdout}");
+    let rid = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("run_id: ").map(str::to_string))
+        .expect("run_id line");
+    let out = boruna(&["workflow", "approve", &rid, "gate", "--data-dir", p(&data)]);
+    assert!(out.status.success());
+
+    let (base, srv) = fake_provider(1, "approved review");
+    let providers = providers_file(tmp.path(), &base);
+    let out = boruna(&[
+        "workflow",
+        "resume",
+        &rid,
+        "--data-dir",
+        p(&data),
+        "--workflow-dir",
+        p(&wf),
+        "--policy",
+        "allow-all",
+        "--live",
+        "--providers",
+        p(&providers),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("'review': Completed"), "{stdout}");
+    let bodies = srv.join().unwrap();
+    let body: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(body["messages"][0]["content"], "review this");
+}

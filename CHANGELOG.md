@@ -6,6 +6,32 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `.ax` built-ins for files, the clock and random numbers: `fs_read(path)`,
+  `fs_write(path, content)`, `time_now()` (Unix ms) and `random_int(lo, hi)` (language version
+  1.3). Like the 1.2 built-ins, the calling function declares the capability and the policy
+  decides. Under `--live` the values are real (OS clock, OS randomness) and recorded in the event
+  log, so `boruna replay` returns the same values. Without `--live` the mock answers with fixed
+  values.
+- `fs_policy` in policy files: `{"allowed_roots": [...], "max_read_bytes": N}`. Under `--live`,
+  `fs_read` / `fs_write` work only inside these folders, after resolving `..` and symlinks. A
+  policy without `fs_policy` refuses every file call. A policy that does not use it keeps its
+  exact serialized form and hash.
+- `workflow eval --live`: each side calls the providers in its own file. Before this, eval
+  loaded both files but ran both sides on the mock, so it compared mock against mock.
+- `workflow resume --providers` and `workflow schedule --providers`, so resumed and scheduled
+  runs can reach the LLM providers under `--live`.
+- Negative integer literal patterns in `match` (`-1 => ...`).
+- `lang check` warning E009 for an assignment of a different type and for a non-`Bool` `while`
+  condition. Both become errors at the next major version.
+
+### Changed
+- The mock `time.now` returns `1700000000000` (milliseconds) instead of `1700000000`, to match
+  `time_now()`. The mock `fs.read` no longer wraps the path in quotes.
+- `workflow eval` accepts the `{"providers": {...}}` format. Without `--live` it warns that both
+  sides use the mock. When both files have the same name, the sides are named `<name>-a` and
+  `<name>-b`.
+
 ## [3.7.0] — 2026-10-03
 
 `.ax` steps can now call the network and an LLM. `net_fetch`, `net_request` and `llm_call` go

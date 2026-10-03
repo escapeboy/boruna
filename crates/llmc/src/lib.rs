@@ -18,7 +18,7 @@ use boruna_bytecode::Module;
 /// `docs/spec/ax-language-1.0.md`. The string is `<major>.<minor>` decimal.
 /// Within a `1.x` line, the language is additive-only — any program that
 /// compiles against `1.x` continues to compile against `1.y` for `y >= x`.
-pub const LANGUAGE_VERSION: &str = "1.2";
+pub const LANGUAGE_VERSION: &str = "1.3";
 
 /// Returns the `.ax` language version this compiler implements.
 ///
@@ -40,8 +40,8 @@ mod version_tests {
     use super::{language_version, LANGUAGE_VERSION};
 
     #[test]
-    fn language_version_is_one_two() {
-        assert_eq!(LANGUAGE_VERSION, "1.2");
-        assert_eq!(language_version(), "1.2");
+    fn language_version_is_one_three() {
+        assert_eq!(LANGUAGE_VERSION, "1.3");
+        assert_eq!(language_version(), "1.3");
     }
 }

@@ -39,7 +39,7 @@ use boruna_bytecode::Capability;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::capability_gateway::{NetPolicy, Policy, PolicyRule};
+use crate::capability_gateway::{FsPolicy, NetPolicy, Policy, PolicyRule};
 
 /// Schema version we accept. The validator rejects any other value.
 /// Bumping this is a breaking change in the policy file contract;
@@ -47,8 +47,16 @@ use crate::capability_gateway::{NetPolicy, Policy, PolicyRule};
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
 
 /// Allow-listed top-level field names on the policy file.
-const POLICY_TOP_LEVEL_FIELDS: &[&str] =
-    &["schema_version", "rules", "default_allow", "net_policy"];
+const POLICY_TOP_LEVEL_FIELDS: &[&str] = &[
+    "schema_version",
+    "rules",
+    "default_allow",
+    "net_policy",
+    "fs_policy",
+];
+
+/// Allow-listed field names on an `fs_policy` object.
+const FS_POLICY_FIELDS: &[&str] = &["allowed_roots", "max_read_bytes"];
 
 /// Allow-listed field names on a `net_policy` object.
 const NET_POLICY_FIELDS: &[&str] = &[
@@ -91,6 +99,8 @@ pub enum PolicyParseError {
     InvalidCapability { found: String, hint: Option<String> },
     /// A `net_policy` value is out of range or otherwise unacceptable.
     InvalidNetPolicy { field: &'static str, reason: String },
+    /// An `fs_policy` value is out of range or otherwise unacceptable.
+    InvalidFsPolicy { field: &'static str, reason: String },
 }
 
 impl PolicyParseError {
@@ -105,6 +115,7 @@ impl PolicyParseError {
             Self::UnknownField { .. } => "policy.unknown_field",
             Self::InvalidCapability { .. } => "policy.invalid_capability",
             Self::InvalidNetPolicy { .. } => "policy.invalid_net_policy",
+            Self::InvalidFsPolicy { .. } => "policy.invalid_fs_policy",
         }
     }
 }
@@ -142,6 +153,9 @@ impl fmt::Display for PolicyParseError {
             },
             Self::InvalidNetPolicy { field, reason } => {
                 write!(f, "{}: net_policy.{}: {}", self.error_kind(), field, reason)
+            }
+            Self::InvalidFsPolicy { field, reason } => {
+                write!(f, "{}: fs_policy.{}: {}", self.error_kind(), field, reason)
             }
         }
     }
@@ -210,6 +224,18 @@ fn walk_unknown_fields(value: &Value) -> Result<(), PolicyParseError> {
             });
         }
         match k.as_str() {
+            "fs_policy" => {
+                if let Value::Object(fp) = v {
+                    for (k2, _) in fp {
+                        if !FS_POLICY_FIELDS.contains(&k2.as_str()) {
+                            return Err(PolicyParseError::UnknownField {
+                                path: format!("fs_policy.{k2}"),
+                                found: k2.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             "net_policy" => {
                 if let Value::Object(np) = v {
                     for (k2, _) in np {
@@ -255,6 +281,43 @@ struct PolicyFileV1 {
     default_allow: bool,
     #[serde(default)]
     net_policy: Option<NetPolicyFileV1>,
+    #[serde(default)]
+    fs_policy: Option<FsPolicyFileV1>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FsPolicyFileV1 {
+    allowed_roots: Vec<String>,
+    #[serde(default = "default_max_response")]
+    max_read_bytes: usize,
+}
+
+impl FsPolicyFileV1 {
+    fn validate(self) -> Result<FsPolicy, PolicyParseError> {
+        if self.allowed_roots.is_empty() {
+            return Err(PolicyParseError::InvalidFsPolicy {
+                field: "allowed_roots",
+                reason: "must list at least one folder".to_string(),
+            });
+        }
+        if self.allowed_roots.iter().any(|r| r.trim().is_empty()) {
+            return Err(PolicyParseError::InvalidFsPolicy {
+                field: "allowed_roots",
+                reason: "entries must not be empty".to_string(),
+            });
+        }
+        if self.max_read_bytes == 0 {
+            return Err(PolicyParseError::InvalidFsPolicy {
+                field: "max_read_bytes",
+                reason: "must be > 0".to_string(),
+            });
+        }
+        Ok(FsPolicy {
+            allowed_roots: self.allowed_roots,
+            max_read_bytes: self.max_read_bytes,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -323,11 +386,17 @@ impl PolicyFileV1 {
             None => None,
         };
 
+        let fs_policy = match self.fs_policy {
+            Some(fp) => Some(fp.validate()?),
+            None => None,
+        };
+
         Ok(Policy {
             schema_version: POLICY_SCHEMA_VERSION,
             rules: canonical_rules,
             default_allow: self.default_allow,
             net_policy,
+            fs_policy,
         })
     }
 }
@@ -845,5 +914,56 @@ mod tests {
             schema_caps, canonical,
             "capability enum drift — schema and parser disagree on which capability names are accepted"
         );
+    }
+
+    #[test]
+    fn parse_with_fs_policy() {
+        let p = parse(r#"{"fs_policy": {"allowed_roots": ["/srv/data"]}}"#).unwrap();
+        let fs = p.fs_policy.unwrap();
+        assert_eq!(fs.allowed_roots, vec!["/srv/data".to_string()]);
+        assert_eq!(fs.max_read_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn fs_policy_rejects_empty_roots_and_unknown_fields() {
+        assert_eq!(
+            err_kind(r#"{"fs_policy": {"allowed_roots": []}}"#),
+            "policy.invalid_fs_policy"
+        );
+        assert_eq!(
+            err_kind(r#"{"fs_policy": {"allowed_roots": [""]}}"#),
+            "policy.invalid_fs_policy"
+        );
+        assert_eq!(
+            err_kind(r#"{"fs_policy": {"allowed_roots": ["a"], "max_read_bytes": 0}}"#),
+            "policy.invalid_fs_policy"
+        );
+        assert_eq!(
+            err_kind(r#"{"fs_policy": {"allowed_roots": ["a"], "write_only": true}}"#),
+            "policy.unknown_field"
+        );
+    }
+
+    #[test]
+    fn policy_without_fs_policy_serializes_as_before() {
+        // Policies are hashed into run ids and evidence; the new field must not change them.
+        let json = serde_json::to_string(&parse(r#"{"default_allow": true}"#).unwrap()).unwrap();
+        assert!(!json.contains("fs_policy"), "{json}");
+    }
+
+    #[test]
+    fn schema_fs_policy_fields_match_parser_allowlist() {
+        let schema = load_schema();
+        let mut schema_fields: Vec<String> = schema["$defs"]["fsPolicy"]["properties"]
+            .as_object()
+            .expect("$defs.fsPolicy.properties is an object")
+            .keys()
+            .cloned()
+            .collect();
+        schema_fields.sort();
+        let mut parser_fields: Vec<String> =
+            FS_POLICY_FIELDS.iter().map(|s| s.to_string()).collect();
+        parser_fields.sort();
+        assert_eq!(schema_fields, parser_fields);
     }
 }

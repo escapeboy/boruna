@@ -43,7 +43,9 @@ boruna workflow run my_workflow --policy policy.json --live --providers provider
   two live runs.
 - `--providers` with the older capability-keyed format (`{"llm.call": {...}}`) is still accepted
   but only validated; it does not call providers.
-- `boruna workflow resume` and `workflow eval` do not take `--providers` yet and use the mock.
+- `workflow resume` and `workflow schedule` take the same `--providers` flag; with `--live` the
+  resumed or scheduled steps call the providers. `workflow eval --live` calls each side's
+  providers (see the [model evaluation guide](model-eval.md)).
 
 This document explains why, what the contract looks like, and how to wire up handlers for common providers (OpenAI, Anthropic, vLLM, Ollama).
 

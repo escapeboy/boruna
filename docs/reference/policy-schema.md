@@ -34,6 +34,13 @@ This page documents the object form. The machine-readable schema lives at [`poli
     "max_response_bytes":   10485760,                                 // default 10 MB
     "timeout_ms":           30000,                                    // default 30 s
     "allow_redirects":      true                                      // default true
+  },
+
+  // Optional. Folders fs_read / fs_write may use under --live. Without it, every file call
+  // is refused. A path must resolve (.. and symlinks included) inside one of the roots.
+  "fs_policy": {
+    "allowed_roots":  ["./data", "/srv/reports"],  // required, non-empty; relative to the working dir
+    "max_read_bytes": 10485760                     // default 10 MB
   }
 }
 ```
@@ -45,12 +52,12 @@ These are the strings you use as keys in `rules`. They mirror `boruna_bytecode::
 | Capability | Key | Notes |
 |---|---|---|
 | Network fetch | `net.fetch` | HTTP GET/POST/etc. — also gated by `net_policy` |
-| Filesystem read | `fs.read` | |
-| Filesystem write | `fs.write` | |
+| Filesystem read | `fs.read` | `fs_read(path)`; under `--live` limited to `fs_policy.allowed_roots` |
+| Filesystem write | `fs.write` | `fs_write(path, content)`; same folders as `fs.read` |
 | Database query | `db.query` | |
 | UI render | `ui.render` | Framework `view()` output |
-| Current time | `time.now` | Non-deterministic; deny in pure pipelines |
-| Random number | `random` | Non-deterministic; deny in pure pipelines |
+| Current time | `time.now` | `time_now()`; real only under `--live`, recorded for replay |
+| Random number | `random` | `random_int(lo, hi)`; real only under `--live`, recorded for replay |
 | LLM call | `llm.call` | External model invocation — apply `budget` to cap cost |
 | Spawn actor | `actor.spawn` | |
 | Send to actor | `actor.send` | |
@@ -126,9 +133,10 @@ The strict validator emits these stable strings (project convention #2 — locke
 | `policy.io_error` | File missing or unreadable |
 | `policy.parse_error` | JSON syntax error or value type mismatch |
 | `policy.unknown_schema_version` | `schema_version` is set to an unsupported value |
-| `policy.unknown_field` | Unknown field at any level (top-level, `net_policy`, or inside a rule) |
+| `policy.unknown_field` | Unknown field at any level (top-level, `net_policy`, `fs_policy`, or inside a rule) |
 | `policy.invalid_capability` | A rule key is not a recognized canonical capability name |
 | `policy.invalid_net_policy` | `net_policy` value out of range or unknown method |
+| `policy.invalid_fs_policy` | `fs_policy` has no roots, an empty root, or `max_read_bytes` of 0 |
 
 The `boruna_run` MCP tool **also** emits the legacy `error_kind: "invalid_policy"` for non-object input (string typos, arrays, numbers). The new `policy.*` kinds apply to object-form payloads only — they are additive over `invalid_policy`, not a replacement.
 

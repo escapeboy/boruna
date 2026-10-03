@@ -72,7 +72,8 @@ enum Command {
         /// Record execution events to this file.
         #[arg(long)]
         record: Option<PathBuf>,
-        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        /// Real side effects: HTTP and LLM providers (`http` feature), files inside the policy's
+        /// `fs_policy.allowed_roots`, the system clock and OS randomness.
         #[arg(long)]
         live: bool,
         /// Record net.fetch transactions to a tape file (requires --live).
@@ -576,7 +577,8 @@ enum WorkflowCommand {
         /// `"default"` when omitted.
         #[arg(long, value_name = "ID")]
         bundle_kek_id: Option<String>,
-        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        /// Real side effects: HTTP and LLM providers (`http` feature), files inside the policy's
+        /// `fs_policy.allowed_roots`, the system clock and OS randomness.
         #[arg(long)]
         live: bool,
         /// Persistent data directory for `runs.db` and per-run output.
@@ -758,7 +760,8 @@ enum WorkflowCommand {
         /// original run.
         #[arg(short, long)]
         policy: Option<String>,
-        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        /// Real side effects: HTTP and LLM providers (`http` feature), files inside the policy's
+        /// `fs_policy.allowed_roots`, the system clock and OS randomness.
         #[arg(long)]
         live: bool,
         /// Maximum steps to run concurrently within a topological
@@ -772,6 +775,10 @@ enum WorkflowCommand {
         /// against an operator-supplied expected value).
         #[arg(long, value_name = "HEX")]
         expect_workflow_hash: Option<String>,
+        /// LLM provider config (`providers.json`). With `--live`, `llm.call` in the resumed
+        /// steps goes to these providers; without `--live` it is only validated.
+        #[arg(long)]
+        providers: Option<PathBuf>,
     },
     /// Run a workflow on a cron schedule in a long-running daemon
     /// process. Validates the cron expression on startup (fail fast),
@@ -801,9 +808,14 @@ enum WorkflowCommand {
         /// the next tick, the tick is skipped (exit 0 for that tick).
         #[arg(long, default_value = "1")]
         max_concurrency: usize,
-        /// Use real HTTP handler for net.fetch (requires `http` feature).
+        /// Real side effects: HTTP and LLM providers (`http` feature), files inside the policy's
+        /// `fs_policy.allowed_roots`, the system clock and OS randomness.
         #[arg(long)]
         live: bool,
+        /// LLM provider config (`providers.json`). With `--live`, `llm.call` goes to these
+        /// providers on every scheduled run.
+        #[arg(long)]
+        providers: Option<PathBuf>,
     },
     /// Run the same workflow against two LLM provider configs and compare outputs.
     Eval {
@@ -818,6 +830,10 @@ enum WorkflowCommand {
         /// Number of runs per provider (default: 1).
         #[arg(long, default_value = "1")]
         runs: u32,
+        /// Call the real providers (requires the `http` feature). Without it both sides use
+        /// the mock handler and the comparison shows nothing about the models.
+        #[arg(long)]
+        live: bool,
         /// Data directory for evidence bundles.
         #[arg(long)]
         data_dir: Option<std::path::PathBuf>,
@@ -2605,6 +2621,7 @@ fn make_gateway(
                 Some(p) => Box::new(p.build_router(Box::new(recorder))?),
                 None => Box::new(recorder),
             };
+            let handler = live_system(&policy, handler);
             return Ok(CapabilityGateway::with_handler(policy, handler));
         }
         #[cfg(not(feature = "http"))]
@@ -2626,16 +2643,37 @@ fn make_gateway(
                 Some(p) => Box::new(p.build_router(net)?),
                 None => net,
             };
+            let handler = live_system(&policy, handler);
             return Ok(CapabilityGateway::with_handler(policy, handler));
         }
         #[cfg(not(feature = "http"))]
         {
-            eprintln!("warning: --live requires the `http` feature; falling back to mock handler");
+            eprintln!(
+                "warning: --live requires the `http` feature for net.fetch and llm.call; \
+                 those use the mock handler"
+            );
+            let handler = live_system(
+                &policy,
+                Box::new(boruna_vm::capability_gateway::MockHandler),
+            );
+            return Ok(CapabilityGateway::with_handler(policy, handler));
         }
     }
     let _ = llm; // only used with --live
 
     Ok(CapabilityGateway::new(policy))
+}
+
+/// Under `--live`, files, clock and random numbers are real: wrap the handler so
+/// `fs.*`, `time.now` and `random` reach the system, limited by the policy's `fs_policy`.
+fn live_system(
+    policy: &Policy,
+    inner: Box<dyn boruna_vm::capability_gateway::CapabilityHandler>,
+) -> Box<dyn boruna_vm::capability_gateway::CapabilityHandler> {
+    Box::new(boruna_vm::system_handler::SystemHandler::new(
+        policy.fs_policy.clone(),
+        inner,
+    ))
 }
 
 /// Compile and execute the file once. Returns Err on compile or
@@ -3149,6 +3187,7 @@ fn run_workflow(
             live,
             concurrency,
             expect_workflow_hash,
+            providers,
         } => {
             if concurrency == 0 {
                 return Err("--concurrency must be >= 1 (got 0); use 1 for sequential".into());
@@ -3196,12 +3235,17 @@ fn run_workflow(
                     }
                 };
 
+                let llm_providers = match providers {
+                    Some(p) => provider_registry::load(&p, live)?.map(std::sync::Arc::new),
+                    None => None,
+                };
                 let options = ResumeOptions {
                     policy: policy_obj,
                     record: false,
                     live,
                     workflow_dir_override: workflow_dir.map(|p| p.display().to_string()),
                     concurrency,
+                    llm_providers,
                 };
                 let result = WorkflowRunner::resume(&run_id, &resolved, &options)
                     .map_err(|e| format!("{e}"))?;
@@ -3220,7 +3264,7 @@ fn run_workflow(
             }
             #[cfg(not(feature = "persist-sqlite"))]
             {
-                let _ = (run_id, data_dir, workflow_dir, policy, live);
+                let _ = (run_id, data_dir, workflow_dir, policy, live, providers);
                 return Err("`workflow resume` requires the `persist-sqlite` feature \
                             (on by default in boruna-orchestrator)"
                     .into());
@@ -3552,14 +3596,20 @@ fn run_workflow(
             data_dir,
             max_concurrency: _max_concurrency,
             live,
+            providers,
         } => {
-            run_workflow_schedule(dir, cron, policy, data_dir, live, env_arg)?;
+            let llm_providers = match providers {
+                Some(p) => provider_registry::load(&p, live)?.map(std::sync::Arc::new),
+                None => None,
+            };
+            run_workflow_schedule(dir, cron, policy, data_dir, live, llm_providers, env_arg)?;
         }
         WorkflowCommand::Eval {
             workflow_dir,
             providers_a,
             providers_b,
             runs,
+            live,
             data_dir,
             json,
         } => {
@@ -3568,6 +3618,7 @@ fn run_workflow(
                 &providers_a,
                 &providers_b,
                 runs,
+                live,
                 data_dir.as_deref(),
                 json,
             )?;
@@ -3794,6 +3845,7 @@ fn run_workflow_schedule(
     policy: String,
     data_dir: Option<PathBuf>,
     live: bool,
+    llm_providers: Option<std::sync::Arc<boruna_vm::llm_providers::LlmProviders>>,
     env_arg: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use boruna_orchestrator::workflow::{RunOptions, WorkflowDef, WorkflowRunner};
@@ -3870,7 +3922,7 @@ fn run_workflow_schedule(
             live,
             concurrency: 1,
             submit_only: false,
-            llm_providers: None,
+            llm_providers: llm_providers.clone(),
         };
 
         #[cfg(feature = "persist-sqlite")]

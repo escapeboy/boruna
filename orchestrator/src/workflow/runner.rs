@@ -96,6 +96,8 @@ pub struct ResumeOptions {
     /// Maximum steps to run concurrently per wave. Default `1` =
     /// sequential. See [`RunOptions::concurrency`].
     pub concurrency: usize,
+    /// LLM providers for `llm.call` under `live`, as in [`RunOptions::llm_providers`].
+    pub llm_providers: Option<std::sync::Arc<boruna_vm::llm_providers::LlmProviders>>,
 }
 
 #[cfg(feature = "persist-sqlite")]
@@ -107,6 +109,7 @@ impl Default for ResumeOptions {
             live: false,
             workflow_dir_override: None,
             concurrency: 1,
+            llm_providers: None,
         }
     }
 }
@@ -2094,7 +2097,7 @@ impl WorkflowRunner {
             // Resume always executes in-process; submit-only is
             // a fresh-run-only mode (sprint 0.5-S2e).
             submit_only: false,
-            llm_providers: None,
+            llm_providers: options.llm_providers.clone(),
         };
 
         // Reset run status to Running for the resume window.
@@ -3322,6 +3325,16 @@ impl WorkflowRunner {
             }
         } else {
             Box::new(boruna_vm::capability_gateway::MockHandler)
+        };
+        // Under `--live`, files, clock and random numbers are real too, limited by the
+        // policy's `fs_policy`.
+        let inner_handler: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> = if live {
+            Box::new(boruna_vm::system_handler::SystemHandler::new(
+                step_policy.fs_policy.clone(),
+                inner_handler,
+            ))
+        } else {
+            inner_handler
         };
         let handler = Box::new(boruna_vm::capability_gateway::StepInputHandler::new(
             resolved_inputs,

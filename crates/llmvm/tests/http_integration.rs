@@ -81,7 +81,7 @@ fn test_http_handler_delegates_non_net_fetch() {
     // TimeNow should return mock value via fallback
     let result = handler.handle(&Capability::TimeNow, &[]);
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), Value::Int(1700000000));
+    assert_eq!(result.unwrap(), Value::Int(1_700_000_000_000));
 }
 
 #[test]

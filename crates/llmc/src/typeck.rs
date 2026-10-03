@@ -44,10 +44,20 @@ struct TypeChecker {
 /// - `net_request(url, method, body) -> String`: any method; empty `body` sends none.
 /// - `llm_call(prompt, model) -> String`: `model` is `"provider/model"` (e.g.
 ///   `"openai/gpt-4o-mini"`), routed by the host's LLM handler; returns the reply text.
+/// - `fs_read(path) -> String`: a UTF-8 file inside the policy's `fs_policy.allowed_roots`.
+/// - `fs_write(path, content) -> Bool`: writes the file, `true` once written.
+/// - `time_now() -> Int`: Unix time in milliseconds.
+/// - `random_int(lo, hi) -> Int`: uniform in `[lo, hi]`, both ends included.
+///
+/// Clock and random results are recorded in the event log, so a replay returns them again.
 pub const CAPABILITY_BUILTINS: &[(&str, Capability, usize)] = &[
     ("net_fetch", Capability::NetFetch, 1),
     ("net_request", Capability::NetFetch, 3),
     ("llm_call", Capability::LlmCall, 2),
+    ("fs_read", Capability::FsRead, 1),
+    ("fs_write", Capability::FsWrite, 2),
+    ("time_now", Capability::TimeNow, 0),
+    ("random_int", Capability::Random, 2),
 ];
 
 /// A function that calls a capability built-in must declare that capability
@@ -236,7 +246,7 @@ impl TypeChecker {
         // the JSON-encoded upstream output as a String. Steps that
         // need typed access parse the JSON.
         functions.insert("step_input".to_string(), 1);
-        // Capability built-ins (language 1.2). Each compiles to `Op::CapCall` and goes through
+        // Capability built-ins (language 1.2; fs, clock and random in 1.3). Each compiles to `Op::CapCall` and goes through
         // the capability gateway, so the policy decides and the call is recorded. The calling
         // function must declare the capability (see `check_capability_builtins`).
         for (name, _cap, arity) in CAPABILITY_BUILTINS {

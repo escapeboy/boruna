@@ -66,6 +66,18 @@ impl Default for NetPolicy {
     }
 }
 
+/// File-system policy for the `fs.read` / `fs.write` capabilities under `--live`.
+///
+/// A path is allowed only when, after resolving `..` and symlinks, it lies inside one of
+/// `allowed_roots`. Relative roots resolve against the process working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsPolicy {
+    pub allowed_roots: Vec<String>,
+    /// Largest file `fs.read` returns, in bytes (default 10 MiB).
+    #[serde(default = "default_max_response")]
+    pub max_read_bytes: usize,
+}
+
 /// Policy configuration for the capability gateway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -77,6 +89,10 @@ pub struct Policy {
     /// Network-specific policy controls (for NetFetch capability).
     #[serde(default)]
     pub net_policy: Option<NetPolicy>,
+    /// File-system controls (for FsRead / FsWrite). Omitted from the serialized form when
+    /// absent, so policies without it keep their exact bytes and hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_policy: Option<FsPolicy>,
 }
 
 fn default_schema_version() -> u32 {
@@ -95,6 +111,7 @@ impl Default for Policy {
             rules: BTreeMap::new(),
             default_allow: false,
             net_policy: None,
+            fs_policy: None,
         }
     }
 }
@@ -107,6 +124,7 @@ impl Policy {
             rules: BTreeMap::new(),
             default_allow: true,
             net_policy: None,
+            fs_policy: None,
         }
     }
 
@@ -159,8 +177,13 @@ pub struct MockHandler;
 impl CapabilityHandler for MockHandler {
     fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
         match cap {
-            Capability::TimeNow => Ok(Value::Int(1700000000)),
-            Capability::Random => Ok(Value::Float(0.42)),
+            // Unix time in milliseconds, fixed.
+            Capability::TimeNow => Ok(Value::Int(1_700_000_000_000)),
+            // `random_int(lo, hi)` gets `lo`; the no-arg form (framework effects) a Float.
+            Capability::Random => match args {
+                [Value::Int(lo), Value::Int(_)] => Ok(Value::Int(*lo)),
+                _ => Ok(Value::Float(0.42)),
+            },
             Capability::NetFetch => {
                 let url = args.first().map(|v| format!("{v}")).unwrap_or_default();
                 Ok(Value::String(format!(
@@ -168,7 +191,11 @@ impl CapabilityHandler for MockHandler {
                 )))
             }
             Capability::FsRead => {
-                let path = args.first().map(|v| format!("{v}")).unwrap_or_default();
+                let path = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(other) => format!("{other}"),
+                    None => String::new(),
+                };
                 Ok(Value::String(format!("mock file content for {path}")))
             }
             Capability::FsWrite => Ok(Value::Bool(true)),
@@ -767,8 +794,8 @@ mod llm_router_tests {
         let result = router
             .handle(&Capability::TimeNow, &[])
             .expect("non-LLM call must succeed via fallback");
-        // MockHandler returns Int(1700000000) for TimeNow.
-        assert_eq!(result, Value::Int(1700000000));
+        // MockHandler returns Int(1_700_000_000_000) (ms) for TimeNow.
+        assert_eq!(result, Value::Int(1_700_000_000_000));
         // Provider handlers were NOT consulted.
         assert_eq!(openai_calls.lock().unwrap().len(), 0);
         assert_eq!(anthropic_calls.lock().unwrap().len(), 0);
