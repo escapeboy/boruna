@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-10-03
+
+Workflow evidence now records what each step ran on and every capability it called. The
+project has a website built from these docs (https://boruna.fleetq.net), the docs were checked
+against the code, and performance regressions are now caught by instruction counts. Existing
+workflows run unchanged; bundles gain `StepStarted` and `CapabilityInvoked` audit entries and
+older bundles still verify. Only the latest major line (3.x) is supported from now on.
+
 ### Added
 - Workflow evidence bundles now record what each step ran on and what it called: a
   `StepStarted` audit event with the hash of the step's resolved inputs, and one
