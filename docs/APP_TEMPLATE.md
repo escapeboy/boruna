@@ -64,6 +64,9 @@ fn main() -> Int {
 | `policies()` | `() -> PolicySet`     | Declare allowed capabilities |
 | `main()`     | `() -> Int`           | Standalone test entry point  |
 
+If you leave out `policies()`, the runtime uses `PolicySet::allow_all()`: every
+built-in effect capability is allowed and there is no per-cycle effect limit.
+
 ## Create From CLI
 
 ```bash

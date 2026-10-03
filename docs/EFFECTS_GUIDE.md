@@ -3,7 +3,8 @@
 ## Overview
 
 Effects are declarative descriptions of side effects. `update()` never performs IO directly.
-Instead, it returns a list of effects. The framework runtime executes them via the capability gateway.
+Instead, it returns a list of effects. They are executed via the capability gateway only when the
+app is driven through an `EffectExecutor` (see Effect Lifecycle).
 
 ## Effect Structure
 
@@ -25,7 +26,9 @@ type Effect { kind: String, payload: String, callback_tag: String }
 | `fs_write`     | `fs.write`  | Write file               |
 | `timer`        | `time.now`  | Get current time         |
 | `random`       | `random`    | Get random value         |
-| `spawn_actor`  | `spawn`     | Spawn child actor        |
+| `spawn_actor`  | `actor.spawn` | Spawn child actor (see [ACTORS_GUIDE.md](./ACTORS_GUIDE.md)) |
+| `send_to_actor` | `actor.send` | Send message to actor (not executed by any actor runtime) |
+| `llm_call`     | `llm.call`  | LLM call                 |
 | `emit_ui`      | `ui.render` | Emit UI tree to host     |
 
 ## Returning Effects From update()
@@ -53,9 +56,13 @@ fn update(state: State, msg: Msg) -> UpdateResult {
 
 1. `update()` returns `UpdateResult { state, effects }`.
 2. Framework validates effects against the policy.
-3. Framework (or host) executes each effect via capability gateway.
-4. Effect results are delivered as new messages with `callback_tag` as the tag.
-5. `update()` handles the callback message in the next cycle.
+3. Plain `AppRuntime::send` stops here and returns the effects to the caller.
+   `boruna framework test` likewise lists the effects without executing them.
+4. With `AppRuntime::send_with_executor` (or `TestHarness::send_with_effects`),
+   an `EffectExecutor` runs each effect: `HostEffectExecutor` via the capability
+   gateway, `MockEffectExecutor` with stub results.
+5. Effect results are returned as new messages with `callback_tag` as the tag.
+6. The caller feeds them back; `update()` handles them in the next cycle.
 
 ## Multiple Effects Per Cycle
 

@@ -9,13 +9,13 @@ The VM is the kernel. The framework is userland. The runtime does not depend on 
 
 ## 1. Application Protocol
 
-Every app must implement four functions:
+Every app must implement three functions, plus an optional fourth:
 
 ```
 fn init() -> State
 fn update(state: State, msg: Message) -> UpdateResult
 fn view(state: State) -> UITree
-fn policies() -> PolicySet
+fn policies() -> PolicySet   // optional
 ```
 
 ### Rules
@@ -24,16 +24,21 @@ fn policies() -> PolicySet
 - `update()` returns `UpdateResult { state: State, effects: List<Effect> }`.
 - `view()` must be pure — returns a declarative UITree.
 - `init()` may use capabilities for initial setup.
-- `policies()` declares required capabilities and constraints.
+- `policies()` declares required capabilities and constraints. It is optional:
+  when it is missing, the runtime uses `PolicySet::allow_all()` and
+  `boruna framework validate` reports `policies: none (using defaults)`.
 
 ### Compile-Time Validation
 
-The framework compiler validates:
-- All four functions exist with correct signatures.
-- `update()` has no capability annotations.
-- `view()` has no capability annotations.
-- State type is defined and serializable.
-- Message type is an enum.
+The framework validator (`AppValidator`) checks:
+- `init()`, `update()` and `view()` exist; `policies()` is optional.
+- Parameter counts: `init()` 0, `update()` 2, `view()` 1, `policies()` 0.
+- `update()`, `view()` and `policies()` have no capability annotations.
+
+It also detects the State and Message types by name only (a type named `State`
+or ending in `State`; `Msg`, `Message`, or ending in `Msg`) and reports them.
+It does not check that State is serializable or that the Message type is an
+enum — a record `Msg` passes.
 
 ## 2. Effect System
 
@@ -54,20 +59,24 @@ Built-in effect kinds:
 - `fs_write` — maps to `fs.write` capability
 - `timer` — maps to `time.now` capability
 - `random` — maps to `random` capability
-- `spawn_actor` — creates child actor
-- `emit_ui` — emits UI tree to host
+- `spawn_actor` — maps to `actor.spawn` capability (creates child actor)
+- `send_to_actor` — maps to `actor.send` capability
+- `llm_call` — maps to `llm.call` capability
+- `emit_ui` — emits UI tree to host (`ui.render`)
 
-The framework runtime executes effects between update cycles.
-Effect results are delivered as messages to the next `update()` call.
+`AppRuntime::send` validates effects against the policy and returns them; it
+does not execute them. Execution happens only through an `EffectExecutor`
+(`AppRuntime::send_with_executor`), which turns each effect result into a
+message tagged with `callback_tag` for the next `update()` call.
 
 ## 3. State Management
 
 - State must be a record type.
 - State is serialized to JSON between cycles for snapshots.
-- Framework provides:
-  - `snapshot(state)` — serialize state to JSON string
+- The Rust `StateMachine` type provides (these are Rust methods, not `.ax` built-ins):
+  - `snapshot()` — serialize current state to JSON string
   - `restore(json)` — deserialize state from JSON string
-  - `diff(old, new)` — produce list of changed fields
+  - `diff_values(old, new)` / `diff_from_cycle(cycle)` — produce list of changed fields
 
 ## 4. UI Model
 
@@ -111,11 +120,14 @@ Policy violations:
 
 ## 7. Testing Harness
 
-Built-in testing functions:
-- `simulate(init, messages)` — run message sequence, return final state
-- `assert_state(state, field, expected)` — check state field
-- `assert_effects(effects, expected_kinds)` — check effect kinds
-- `replay_verify(log1, log2)` — compare execution logs
+Testing functions are methods on the Rust `TestHarness` type, not `.ax` built-ins
+(see [FRAMEWORK_API.md](./FRAMEWORK_API.md)):
+- `simulate(messages)` — run message sequence, return final state
+- `assert_state(expected)` / `assert_state_field(index, expected)` — check state
+- `assert_effects(expected_kinds)` — check effect kinds of the last cycle
+- `replay_verify(source, messages)` — re-run the messages and compare states
+
+From the CLI, use `boruna framework test` / `simulate` / `replay`.
 
 Testing does not require a host UI.
 
