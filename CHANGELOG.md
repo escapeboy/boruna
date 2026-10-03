@@ -6,6 +6,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-10-03
+
+`.ax` steps can now read and write files, read the clock and draw random numbers, under
+`--live` and limited to the folders the policy lists. `workflow eval --live` finally compares
+real providers, and `resume` and `schedule` take `--providers`. Language version 1.3.
+
 ### Added
 - `.ax` built-ins for files, the clock and random numbers: `fs_read(path)`,
   `fs_write(path, content)`, `time_now()` (Unix ms) and `random_int(lo, hi)` (language version
