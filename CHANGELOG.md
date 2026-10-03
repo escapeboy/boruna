@@ -12,6 +12,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   from the binary. CI builds it and fails on a missing listed page or a broken internal link.
 
 ### Fixed
+- `boruna-orch`: the replay and diag gates ran `cargo run -p llmvm-cli`, a package that does not
+  exist (the crate is `boruna-cli`), so neither gate ever ran the CLI. Both now record the exit
+  code and the end of stderr, so a failed run is visible in the gate report.
 - Broken links in the docs: compliance template paths in `docs/reference/compliance/README.md`,
   CHANGELOG anchors in `docs/lts.md`, and CHANGELOG links to guides removed in v3.0.0 (now pointing
   at v2.0.0 on GitHub).
