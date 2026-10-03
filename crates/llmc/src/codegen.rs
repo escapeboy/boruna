@@ -4,7 +4,7 @@ use boruna_bytecode::capability::Capability;
 use boruna_bytecode::module::{
     Function, MatchArm as BcMatchArm, Module, TypeDef as BcTypeDef, TypeKind as BcTypeKind,
 };
-use boruna_bytecode::opcode::{ContractKind, Op};
+use boruna_bytecode::opcode::{ContractKind, Op, RESULT_TYPE_ID, SOME_TYPE_ID};
 use boruna_bytecode::value::Value;
 
 use crate::ast::*;
@@ -676,12 +676,19 @@ impl Emitter {
                 }
             }
             Expr::Match { value, arms } => {
-                let has_string_patterns = arms
+                // String and integer literal patterns compile to an if-else chain of
+                // `Eq` comparisons. `Op::Match` cannot handle them: it dispatches on a
+                // tag, and every Int value has the wildcard tag, so an integer pattern
+                // there never matched (only `_` did).
+                let has_literal_patterns = arms
                     .iter()
-                    .any(|a| matches!(&a.pattern, Pattern::StringLit(_)));
+                    .any(|a| matches!(&a.pattern, Pattern::StringLit(_) | Pattern::IntLit(_)));
 
-                if has_string_patterns {
-                    // String match: compile as if-else chain with Eq comparisons.
+                if has_literal_patterns {
+                    // Anything that is not a literal is treated as a catch-all below.
+                    let has_catch_all = arms
+                        .iter()
+                        .any(|a| !matches!(&a.pattern, Pattern::StringLit(_) | Pattern::IntLit(_)));
                     // Store scrutinee in a temp local.
                     self.emit_expr(value, fe)?;
                     let scrutinee_local = fe.next_local;
@@ -704,7 +711,7 @@ impl Emitter {
 
                                 self.emit_expr(&arm.body, fe)?;
 
-                                if !is_last {
+                                if !is_last || !has_catch_all {
                                     let end_jmp = fe.code.len();
                                     fe.code.push(Op::Jmp(0)); // placeholder
                                     end_jmps.push(end_jmp);
@@ -723,7 +730,7 @@ impl Emitter {
 
                                 self.emit_expr(&arm.body, fe)?;
 
-                                if !is_last {
+                                if !is_last || !has_catch_all {
                                     let end_jmp = fe.code.len();
                                     fe.code.push(Op::Jmp(0));
                                     end_jmps.push(end_jmp);
@@ -752,6 +759,15 @@ impl Emitter {
                         }
                     }
 
+                    if !has_catch_all {
+                        // No arm matched: fail the same way `Op::Match` does, instead of
+                        // falling through with no value on the stack.
+                        fe.code.push(Op::LoadLocal(scrutinee_local));
+                        let empty_table = fe.match_tables.len() as u32;
+                        fe.match_tables.push(Vec::new());
+                        fe.code.push(Op::Match(empty_table));
+                    }
+
                     let end = fe.code.len() as u32;
                     for jmp_idx in end_jmps {
                         fe.code[jmp_idx] = Op::Jmp(end);
@@ -760,7 +776,10 @@ impl Emitter {
                     // Standard match (non-string): use Op::Match table
                     self.emit_expr(value, fe)?;
 
+                    // Reserve the slot now: the arm bodies below may contain their own
+                    // `match`, which must not take this index before the table is filled.
                     let table_idx = fe.match_tables.len() as u32;
+                    fe.match_tables.push(Vec::new());
                     let mut bc_arms = Vec::new();
                     let mut arm_starts = Vec::new();
                     let mut end_jmps = Vec::new();
@@ -803,7 +822,7 @@ impl Emitter {
                             target: arm_starts[i],
                         });
                     }
-                    fe.match_tables.push(bc_arms);
+                    fe.match_tables[table_idx as usize] = bc_arms;
                 }
             }
             Expr::Record {
@@ -881,15 +900,15 @@ impl Emitter {
                                        // Use a dedicated approach: push the value, then make it Some
                                        // Since our Value type has Some variant, we emit a special pattern:
                                        // Actually, let's just emit it as-is and use MakeEnum with a special type
-                fe.code.push(Op::MakeEnum(0xFFFE, 1)); // variant 1 = Some
+                fe.code.push(Op::MakeEnum(SOME_TYPE_ID, 1)); // variant 1 = Some
             }
             Expr::OkExpr(inner) => {
                 self.emit_expr(inner, fe)?;
-                fe.code.push(Op::MakeEnum(0xFFFD, 0)); // variant 0 = Ok
+                fe.code.push(Op::MakeEnum(RESULT_TYPE_ID, 0)); // variant 0 = Ok
             }
             Expr::ErrExpr(inner) => {
                 self.emit_expr(inner, fe)?;
-                fe.code.push(Op::MakeEnum(0xFFFD, 1)); // variant 1 = Err
+                fe.code.push(Op::MakeEnum(RESULT_TYPE_ID, 1)); // variant 1 = Err
             }
             Expr::Spawn(func_expr) => {
                 if let Expr::Ident(name) = func_expr.as_ref() {

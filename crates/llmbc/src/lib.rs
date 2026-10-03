@@ -10,7 +10,7 @@ pub use capability::{
     CapabilitySetReport, CAPABILITY_REPORT_PROTOCOL_VERSION,
 };
 pub use module::{BytecodeError, Function, Module};
-pub use opcode::{ContractKind, Op};
+pub use opcode::{ContractKind, Op, RESULT_TYPE_ID, SOME_TYPE_ID};
 pub use value::Value;
 
 /// Frozen bytecode specification version.

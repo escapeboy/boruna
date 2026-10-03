@@ -25,6 +25,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `std-guard` and `std-json` declare their loop counters with `let mut` (found by `E010`).
 
 ### Fixed
+- `match` on a `Some(x)`, `Ok(x)` or `Err(x)` value written in source never took the
+  `Some`/`Ok`/`Err` arm ("no match found for value"); only values returned by builtins matched.
+  The literals now build the same values builtins return, so they also compare equal to them.
+- Integer literal patterns (`match n { 3 => ... }`) never matched; only `_` did. They now
+  compile to equality checks, like string patterns.
+- A `match` inside an arm of another `match` could run the outer match against the inner arms
+  and return a wrong result or fail.
+- A string or integer `match` with no matching arm and no `_` arm returned `()` or failed
+  later with "stack underflow"; it now fails with "no match found for value", like other matches.
+- Because of these fixes, the bytecode of programs that use integer patterns or nested `match`
+  changes, and so do their module hashes. A step that returned a `Some`/`Ok`/`Err` literal now
+  records it as `Some(..)`/`Ok(..)`/`Err(..)` instead of an internal enum value.
 - `docs/limitations.md` said `.ax` has no mutable variables and no loops; it has both.
 
 ## [3.4.0] — 2026-10-03

@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+/// Reserved `MakeEnum` type_id the compiler uses for a `Some(x)` literal (variant 1).
+pub const SOME_TYPE_ID: u32 = 0xFFFE;
+/// Reserved `MakeEnum` type_id the compiler uses for `Ok(x)` (variant 0) and `Err(x)` (variant 1).
+pub const RESULT_TYPE_ID: u32 = 0xFFFD;
+
 /// Which contract clause an [`Op::Assert`] guards. Recorded verbatim
 /// (`requires`/`ensures`) into the evidence trail's `ContractCheck`
 /// events, so an auditor can tell preconditions from postconditions.
@@ -67,6 +72,8 @@ pub enum Op {
     MakeRecord(u32, u8),
 
     /// Pop value, wrap in enum variant (type_id, variant_index).
+    /// `(SOME_TYPE_ID, 1)` builds `Value::Some`, `(RESULT_TYPE_ID, 0|1)` builds
+    /// `Value::Ok` / `Value::Err`; every other type_id builds `Value::Enum`.
     MakeEnum(u32, u8),
 
     /// Access field at index from record on top of stack.
