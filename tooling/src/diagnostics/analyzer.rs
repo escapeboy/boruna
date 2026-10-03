@@ -49,6 +49,7 @@ impl<'a> Analyzer<'a> {
         self.check_record_fields(&mut diags);
         self.check_capability_purity(&mut diags);
         self.check_type_consistency(&mut diags);
+        self.check_mutability(&mut diags);
         diags
     }
 
@@ -483,6 +484,86 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    /// Warn when a binding declared without `mut`, a parameter or a `for` variable is
+    /// reassigned. The compiler accepts this today (the `mut` flag is parsed but not
+    /// enforced), so it is a warning; language version 2.0 turns it into an error.
+    /// One diagnostic per variable per function.
+    fn check_mutability(&self, diags: &mut Vec<Diagnostic>) {
+        for item in &self.program.items {
+            if let Item::Function(f) = item {
+                let mut scope: HashMap<String, Binding> = HashMap::new();
+                for p in &f.params {
+                    scope.insert(p.name.clone(), Binding::Param);
+                }
+                let mut hits = Vec::new();
+                walk_block_for_mut(&f.body, &mut scope, &mut hits);
+                let mut reported = HashSet::new();
+                for (name, kind) in hits {
+                    if reported.insert(name.clone()) {
+                        diags.push(self.assign_immutable_diag(f, &name, kind));
+                    }
+                }
+            }
+        }
+    }
+
+    fn assign_immutable_diag(&self, f: &FnDef, name: &str, kind: Binding) -> Diagnostic {
+        let (start, end) = fn_line_range(self.source, &f.name);
+        let lines: Vec<&str> = self.source.lines().collect();
+        match kind {
+            Binding::Let => {
+                let mut diag = Diagnostic::warning(
+                    E010_ASSIGN_IMMUTABLE,
+                    format!(
+                        "'{name}' is reassigned but was declared without `mut`; declare it \
+                         with `let mut {name}` (accepted today, an error in language version 2.0)"
+                    ),
+                );
+                let candidates: Vec<usize> = (start..end)
+                    .filter(|&i| is_immutable_let_of(lines[i], name))
+                    .collect();
+                if let [i] = candidates[..] {
+                    diag = diag.at(self.file, i + 1, None);
+                    diag.suggested_patches.push(SuggestedPatch {
+                        id: format!("{E010_ASSIGN_IMMUTABLE}-add-mut-{name}"),
+                        description: format!("declare '{name}' with `let mut`"),
+                        confidence: Confidence::High,
+                        rationale: "the binding is reassigned later in the same function".into(),
+                        edits: vec![TextEdit {
+                            file: self.file.to_string(),
+                            start_line: i + 1,
+                            old_text: lines[i].to_string(),
+                            new_text: lines[i].replacen("let ", "let mut ", 1),
+                        }],
+                    });
+                } else if start < end {
+                    // Shadowed or not found: point at the function, offer no automatic edit.
+                    diag = diag.at(self.file, start + 1, None);
+                }
+                diag
+            }
+            Binding::Param | Binding::ForVar => {
+                let what = if kind == Binding::Param {
+                    "parameter"
+                } else {
+                    "loop variable"
+                };
+                let mut diag = Diagnostic::warning(
+                    E010_ASSIGN_IMMUTABLE,
+                    format!(
+                        "{what} '{name}' is reassigned; copy it into a new binding first, e.g. \
+                         `let mut {name}_acc = {name}` (accepted today, an error in language version 2.0)"
+                    ),
+                );
+                if start < end {
+                    diag = diag.at(self.file, start + 1, None);
+                }
+                diag
+            }
+            Binding::Mut => unreachable!("mutable bindings are never reported"),
+        }
+    }
+
     fn check_types_in_block(
         &self,
         block: &Block,
@@ -696,6 +777,182 @@ fn named_type(ty: &TypeExpr) -> Option<String> {
         TypeExpr::Named(n) => Some(n.clone()),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Binding {
+    Let,
+    Mut,
+    Param,
+    ForVar,
+}
+
+fn walk_block_for_mut(
+    block: &Block,
+    scope: &mut HashMap<String, Binding>,
+    hits: &mut Vec<(String, Binding)>,
+) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let {
+                name,
+                mutable,
+                value,
+                ..
+            } => {
+                walk_expr_for_mut(value, scope, hits);
+                let kind = if *mutable { Binding::Mut } else { Binding::Let };
+                scope.insert(name.clone(), kind);
+            }
+            Stmt::Assign { target, value } => {
+                walk_expr_for_mut(value, scope, hits);
+                if let Some(&kind) = scope.get(target) {
+                    if kind != Binding::Mut {
+                        hits.push((target.clone(), kind));
+                    }
+                }
+            }
+            Stmt::Expr(e) | Stmt::Return(Some(e)) => walk_expr_for_mut(e, scope, hits),
+            Stmt::Return(None) => {}
+            Stmt::While { condition, body } => {
+                walk_expr_for_mut(condition, scope, hits);
+                walk_block_for_mut(body, &mut scope.clone(), hits);
+            }
+            Stmt::For { var, iter, body } => {
+                walk_expr_for_mut(iter, scope, hits);
+                let mut inner = scope.clone();
+                inner.insert(var.clone(), Binding::ForVar);
+                walk_block_for_mut(body, &mut inner, hits);
+            }
+        }
+    }
+}
+
+fn walk_expr_for_mut(
+    expr: &Expr,
+    scope: &HashMap<String, Binding>,
+    hits: &mut Vec<(String, Binding)>,
+) {
+    match expr {
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_mut(condition, scope, hits);
+            walk_block_for_mut(then_block, &mut scope.clone(), hits);
+            if let Some(b) = else_block {
+                walk_block_for_mut(b, &mut scope.clone(), hits);
+            }
+        }
+        Expr::Match { value, arms } => {
+            walk_expr_for_mut(value, scope, hits);
+            for arm in arms {
+                // A name bound by the pattern shadows the outer binding; leave it out
+                // rather than guess how an assignment to it behaves.
+                let mut inner = scope.clone();
+                for n in pattern_names(&arm.pattern) {
+                    inner.remove(&n);
+                }
+                walk_expr_for_mut(&arm.body, &inner, hits);
+            }
+        }
+        Expr::Block(b) => walk_block_for_mut(b, &mut scope.clone(), hits),
+        Expr::Binary { left, right, .. } => {
+            walk_expr_for_mut(left, scope, hits);
+            walk_expr_for_mut(right, scope, hits);
+        }
+        Expr::Unary { expr, .. }
+        | Expr::SomeExpr(expr)
+        | Expr::OkExpr(expr)
+        | Expr::ErrExpr(expr)
+        | Expr::Spawn(expr)
+        | Expr::Emit(expr) => walk_expr_for_mut(expr, scope, hits),
+        Expr::Call { func, args } => {
+            walk_expr_for_mut(func, scope, hits);
+            for a in args {
+                walk_expr_for_mut(a, scope, hits);
+            }
+        }
+        Expr::FieldAccess { object, .. } => walk_expr_for_mut(object, scope, hits),
+        Expr::Record { fields, spread, .. } => {
+            for (_, e) in fields {
+                walk_expr_for_mut(e, scope, hits);
+            }
+            if let Some(s) = spread {
+                walk_expr_for_mut(s, scope, hits);
+            }
+        }
+        Expr::EnumVariant { payload, .. } => {
+            if let Some(p) = payload {
+                walk_expr_for_mut(p, scope, hits);
+            }
+        }
+        Expr::List(items) => {
+            for e in items {
+                walk_expr_for_mut(e, scope, hits);
+            }
+        }
+        Expr::Send { target, message } => {
+            walk_expr_for_mut(target, scope, hits);
+            walk_expr_for_mut(message, scope, hits);
+        }
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::StringLit(_)
+        | Expr::BoolLit(_)
+        | Expr::NoneLit
+        | Expr::Ident(_)
+        | Expr::Receive => {}
+    }
+}
+
+fn pattern_names(p: &Pattern) -> Vec<String> {
+    match p {
+        Pattern::Ident(n) => vec![n.clone()],
+        Pattern::SomePat(inner) | Pattern::OkPat(inner) | Pattern::ErrPat(inner) => {
+            pattern_names(inner)
+        }
+        Pattern::EnumVariant(_, Some(inner)) => pattern_names(inner),
+        _ => Vec::new(),
+    }
+}
+
+/// 0-indexed `[start, end)` line range of the function `name`: from its `fn` line to the next
+/// top-level item. `(0, 0)` when not found.
+fn fn_line_range(source: &str, name: &str) -> (usize, usize) {
+    let lines: Vec<&str> = source.lines().collect();
+    let is_fn_line = |l: &str| {
+        let t = l.trim_start();
+        let t = t.strip_prefix("export ").unwrap_or(t);
+        t.strip_prefix("fn ")
+            .map(|rest| {
+                rest.strip_prefix(name)
+                    .is_some_and(|r| r.trim_start().starts_with('('))
+            })
+            .unwrap_or(false)
+    };
+    let Some(start) = lines.iter().position(|l| is_fn_line(l)) else {
+        return (0, 0);
+    };
+    let is_top_level_item = |l: &str| {
+        ["fn ", "export ", "type ", "enum ", "import ", "module "]
+            .iter()
+            .any(|k| l.starts_with(k))
+    };
+    let end = (start + 1..lines.len())
+        .find(|&i| is_top_level_item(lines[i]))
+        .unwrap_or(lines.len());
+    (start, end)
+}
+
+/// `let NAME` (without `mut`) at the start of the line, NAME followed by `:`, `=` or a space.
+fn is_immutable_let_of(line: &str, name: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("let ")
+        .and_then(|r| r.strip_prefix(name))
+        .and_then(|r| r.chars().next())
+        .is_some_and(|c| c == ':' || c == '=' || c == ' ')
 }
 
 /// Line (1-indexed) of the `let` binding for `name`, best-effort.

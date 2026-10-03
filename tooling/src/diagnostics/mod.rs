@@ -15,6 +15,7 @@ pub const E006_UNKNOWN_FIELD: &str = "E006";
 pub const E007_CAPABILITY_VIOLATION: &str = "E007";
 pub const E008_CODEGEN: &str = "E008";
 pub const E009_TYPE_ERROR: &str = "E009";
+pub const E010_ASSIGN_IMMUTABLE: &str = "E010";
 
 /// A structured, machine-readable diagnostic.
 #[derive(Debug, Clone, Serialize, Deserialize)]

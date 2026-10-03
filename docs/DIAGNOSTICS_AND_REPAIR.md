@@ -21,6 +21,7 @@ Every diagnostic is emitted in two formats:
 | E007 | Analysis | Capability violation (update/view must be pure) |
 | E008 | Codegen | Code generation error |
 | E009 | Type | General type error |
+| E010 | Analysis | Binding declared without `mut` (or a parameter / loop variable) is reassigned. Warning today, error in language version 2.0; `lang repair` adds `mut` |
 
 ## Suggested Patches
 

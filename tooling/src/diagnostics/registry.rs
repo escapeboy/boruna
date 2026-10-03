@@ -77,6 +77,14 @@ pub const REGISTRY: &[DiagnosticCodeInfo] = &[
         summary: "An expression's type does not match the type required by its context.",
         category: "type",
     },
+    DiagnosticCodeInfo {
+        code: super::E010_ASSIGN_IMMUTABLE,
+        name: "assign-to-immutable",
+        summary:
+            "A binding declared without `mut` (or a parameter or loop variable) is reassigned. \
+                  A warning today; an error in language version 2.0.",
+        category: "type",
+    },
 ];
 
 /// Returns the full diagnostic-code registry.

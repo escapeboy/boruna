@@ -36,19 +36,19 @@ fn lang_codes_human_lists_all_codes() {
     assert!(out.status.success());
     let s = stdout(&out);
     for code in [
-        "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008", "E009",
+        "E001", "E002", "E003", "E004", "E005", "E006", "E007", "E008", "E009", "E010",
     ] {
         assert!(s.contains(code), "missing {code} in:\n{s}");
     }
 }
 
 #[test]
-fn lang_codes_json_has_nine_entries() {
+fn lang_codes_json_has_ten_entries() {
     let out = run(&["lang", "codes", "--json"]);
     assert!(out.status.success());
     let v: Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
     let codes = v["codes"].as_array().expect("codes array");
-    assert_eq!(codes.len(), 9);
+    assert_eq!(codes.len(), 10);
     for c in codes {
         assert!(c["code"].is_string());
         assert!(c["name"].is_string());

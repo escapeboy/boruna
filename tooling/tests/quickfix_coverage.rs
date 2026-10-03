@@ -73,6 +73,11 @@ const FIXABLE: &[(&str, &str)] = &[
          fn update(state: State, msg: Msg) -> State !{fs.read} { state }\n\
          fn view(state: State) -> String { \"ok\" }\n",
     ),
+    // E010 assign-to-immutable → add `mut` to the `let` that is reassigned.
+    (
+        "E010",
+        "fn main() -> Int {\n    let x: Int = 1\n    x = 2\n    x\n}\n",
+    ),
 ];
 
 /// Codes intentionally NOT auto-fixed by the repair loop. Each entry documents

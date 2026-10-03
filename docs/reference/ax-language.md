@@ -32,13 +32,51 @@ fn main() -> Int {
 
 ## Variables
 
-Variables are immutable. Use `let` with an explicit type annotation:
+Use `let` with an explicit type annotation:
 
 ```ax
 let name: String = "Boruna"
 let count: Int = 0
 let flag: Bool = true
 ```
+
+A binding that you want to change later is declared with `let mut` and rebound with `=`:
+
+```ax
+let mut total: Int = 0
+total = total + 5
+```
+
+Rebinding changes what the name refers to; values themselves (records, lists, maps) are never
+modified in place. Reassigning a binding declared without `mut` still compiles, but
+`boruna lang check` reports warning `E010` and `boruna lang repair` adds the missing `mut`. It will
+be a compile error in language version 2.0.
+
+## Loops
+
+```ax
+fn sum(items: List<Int>) -> Int {
+    let mut total: Int = 0
+    for x in items {
+        total = total + x
+    }
+    total
+}
+
+fn factorial(n: Int) -> Int {
+    let mut result: Int = 1
+    let mut i: Int = n
+    while i > 0 {
+        result = result * i
+        i = i - 1
+    }
+    result
+}
+```
+
+`for` iterates a `List` in order; the loop variable and any `let` inside the body are scoped to
+the body. A loop that never ends is stopped by the step limit (`--step-limit`) with a runtime
+error. Recursion still works and is often the clearer choice.
 
 No semicolons. Each statement is on its own line.
 
@@ -228,8 +266,14 @@ Where `State`, `Msg`, `Effect`, `UpdateResult`, `UINode`, and `PolicySet` are th
 ```ax
 // Comments use double-slash
 
-// Variables (immutable, type required)
+// Variables (type required; add `mut` to rebind later)
 let x: Int = 42
+let mut n: Int = 0
+n = n + 1
+
+// Loops
+for item in [1, 2, 3] { n = n + item }
+while n > 0 { n = n - 1 }
 
 // Function
 fn square(n: Int) -> Int {

@@ -11,6 +11,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   binaries. They pick the build for the OS and CPU, verify it against `SHA256SUMS` and install
   nothing on a mismatch. Tested in CI on all five native platforms, including a tampered archive
   and Windows PowerShell 5.1.
+- Diagnostic `E010` (warning): a binding declared without `mut`, a parameter or a `for` loop
+  variable is reassigned. The compiler has accepted this since `let mut` was introduced, because
+  the `mut` flag was parsed but never checked. `boruna lang check` and the MCP `boruna_check`
+  tool now report it, and `boruna lang repair` adds the missing `mut`. It stays a warning in
+  language 1.x and becomes an error in language version 2.0.
+
+### Changed
+- Language version is now `1.1`. The specification (`docs/spec/ax-language-1.0.md`) now covers
+  `let mut`, assignment, `while` and `for` (§4.5), which the compiler has accepted since v2.0
+  while the spec still listed them as reserved words. No program that compiled before stops
+  compiling.
+- `std-guard` and `std-json` declare their loop counters with `let mut` (found by `E010`).
+
+### Fixed
+- `docs/limitations.md` said `.ax` has no mutable variables and no loops; it has both.
 
 ## [3.4.0] — 2026-10-03
 

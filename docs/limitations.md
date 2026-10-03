@@ -4,9 +4,11 @@ Boruna has real constraints. This document describes them clearly, so you can ma
 
 ## Language limitations
 
-**No mutable variables.** `.ax` variables are immutable. State transitions use record spread (`State { ..old, field: new_value }`). This is intentional for determinism, but requires a different style than imperative code.
+**Values are immutable; only `let mut` bindings can be rebound.** Records, lists and maps are never changed in place; state transitions use record spread (`State { ..old, field: new_value }`). A `let mut` binding can point to a new value (`total = total + 1`), which is enough for counters and accumulators but not for shared mutable state.
 
-**No loops.** `.ax` does not have `for` or `while` loops. Use recursion or standard library functions. The step-limit mechanism prevents infinite loops from hanging execution, but deep recursion can hit the limit.
+**Loops are basic.** There are `while` and `for x in list` loops, but no `break`, `continue` or `loop`, and `for` only iterates lists. The step limit stops a loop that never ends, and deep recursion can also hit it.
+
+**Some type checks are not enforced yet.** Assigning a value of a different type to a `let mut` binding, using a non-`Bool` `while` condition, and reassigning a binding declared without `mut` all compile today (the last one is warning `E010`). See the [language spec §4.5](spec/ax-language-1.0.md).
 
 **No generics.** Types in `.ax` are concrete at definition time. There is no generic type system. This keeps the language simple but limits abstraction.
 

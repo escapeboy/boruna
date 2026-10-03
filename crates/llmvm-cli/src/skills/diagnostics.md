@@ -57,6 +57,7 @@ boruna lang codes --json
 | `E007` | capability violation — undeclared effect |
 | `E008` | codegen error |
 | `E009` | type error |
+| `E010` | binding declared without `mut` is reassigned (warning; `lang repair` adds `mut`) |
 
 ## Repair strategies
 
