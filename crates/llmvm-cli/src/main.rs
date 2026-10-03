@@ -1323,10 +1323,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             watch,
             providers,
         } => {
-            if let Some(p) = providers {
-                let reg = provider_registry::ProviderRegistry::from_file(&p)?;
-                eprintln!("providers: {}", reg.describe());
-            }
+            let llm = match providers {
+                Some(p) => provider_registry::load(&p, live)?,
+                None => None,
+            };
             if watch {
                 run_watch_loop(
                     &file,
@@ -1336,6 +1336,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     live,
                     record_net_to.as_deref(),
                     replay_net_from.as_deref(),
+                    llm.as_ref(),
                 )?;
             } else if let Err(e) = run_once(
                 &file,
@@ -1345,6 +1346,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 live,
                 record_net_to.as_deref(),
                 replay_net_from.as_deref(),
+                llm.as_ref(),
             ) {
                 eprintln!("{e}");
                 process::exit(1);
@@ -2521,6 +2523,7 @@ fn make_gateway(
     live: bool,
     record_net_to: Option<&std::path::Path>,
     replay_net_from: Option<&std::path::Path>,
+    llm: Option<&boruna_vm::llm_providers::LlmProviders>,
 ) -> Result<CapabilityGateway, Box<dyn std::error::Error>> {
     let policy = match policy_str {
         "allow-all" => Policy::allow_all(),
@@ -2598,7 +2601,11 @@ fn make_gateway(
                 inner,
                 tape_path.to_path_buf(),
             );
-            return Ok(CapabilityGateway::with_handler(policy, Box::new(recorder)));
+            let handler: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> = match llm {
+                Some(p) => Box::new(p.build_router(Box::new(recorder))?),
+                None => Box::new(recorder),
+            };
+            return Ok(CapabilityGateway::with_handler(policy, handler));
         }
         #[cfg(not(feature = "http"))]
         {
@@ -2613,16 +2620,20 @@ fn make_gateway(
         #[cfg(feature = "http")]
         {
             let net_policy = policy.net_policy.clone().unwrap_or_default();
-            return Ok(CapabilityGateway::with_handler(
-                policy,
-                Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy)),
-            ));
+            let net = Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy));
+            // `llm.call` to the configured providers, everything else to the HTTP handler.
+            let handler: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> = match llm {
+                Some(p) => Box::new(p.build_router(net)?),
+                None => net,
+            };
+            return Ok(CapabilityGateway::with_handler(policy, handler));
         }
         #[cfg(not(feature = "http"))]
         {
             eprintln!("warning: --live requires the `http` feature; falling back to mock handler");
         }
     }
+    let _ = llm; // only used with --live
 
     Ok(CapabilityGateway::new(policy))
 }
@@ -2630,6 +2641,7 @@ fn make_gateway(
 /// Compile and execute the file once. Returns Err on compile or
 /// runtime failure; the caller decides whether to exit (single-run
 /// mode) or print and continue (watch mode).
+#[allow(clippy::too_many_arguments)]
 fn run_once(
     file: &PathBuf,
     policy: &str,
@@ -2638,9 +2650,10 @@ fn run_once(
     live: bool,
     record_net_to: Option<&std::path::Path>,
     replay_net_from: Option<&std::path::Path>,
+    llm: Option<&boruna_vm::llm_providers::LlmProviders>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let module = load_module(file)?;
-    let gateway = make_gateway(policy, live, record_net_to, replay_net_from)?;
+    let gateway = make_gateway(policy, live, record_net_to, replay_net_from, llm)?;
     let mut vm = Vm::new(module, gateway);
     vm.set_max_steps(max_steps);
 
@@ -2680,6 +2693,7 @@ fn run_once(
 /// exactly one rerun. Errors in a single run print to stderr but do
 /// NOT exit the loop — the user fixes the file and the next save
 /// re-executes. Ctrl-C exits cleanly via the default SIGINT handler.
+#[allow(clippy::too_many_arguments)]
 fn run_watch_loop(
     file: &PathBuf,
     policy: &str,
@@ -2688,6 +2702,7 @@ fn run_watch_loop(
     live: bool,
     record_net_to: Option<&std::path::Path>,
     replay_net_from: Option<&std::path::Path>,
+    llm: Option<&boruna_vm::llm_providers::LlmProviders>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::mpsc::{channel, RecvTimeoutError};
     use std::time::{Duration, Instant};
@@ -2708,6 +2723,7 @@ fn run_watch_loop(
         live,
         record_net_to,
         replay_net_from,
+        llm,
     ) {
         eprintln!("{e}");
     }
@@ -2771,6 +2787,7 @@ fn run_watch_loop(
             live,
             record_net_to,
             replay_net_from,
+            llm,
         ) {
             eprintln!("{e}");
         }
@@ -2866,10 +2883,10 @@ fn run_workflow(
             bundle_storage,
             providers,
         } => {
-            if let Some(p) = providers {
-                let reg = provider_registry::ProviderRegistry::from_file(&p)?;
-                eprintln!("providers: {}", reg.describe());
-            }
+            let llm_providers = match providers {
+                Some(p) => provider_registry::load(&p, live)?.map(std::sync::Arc::new),
+                None => None,
+            };
             // Sprint W6-B: --encrypt-bundle implies --record. Reject
             // up front (project-conventions §1) when the operator
             // asked for encryption without recording.
@@ -2914,6 +2931,7 @@ fn run_workflow(
                 live,
                 concurrency,
                 submit_only,
+                llm_providers: llm_providers.clone(),
             };
 
             let result = if ephemeral {
@@ -3852,6 +3870,7 @@ fn run_workflow_schedule(
             live,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
 
         #[cfg(feature = "persist-sqlite")]

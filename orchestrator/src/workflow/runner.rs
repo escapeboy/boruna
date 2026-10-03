@@ -24,6 +24,9 @@ use crate::persistence::{
 pub struct RunOptions {
     /// Policy to apply (None = deny-all).
     pub policy: Option<Policy>,
+    /// LLM providers for `llm.call` (`llm_call(prompt, "provider/model")`). Used only with
+    /// `live`; without it, or when `None`, a deterministic mock answers.
+    pub llm_providers: Option<std::sync::Arc<boruna_vm::llm_providers::LlmProviders>>,
     /// Whether to record evidence.
     pub record: bool,
     /// Base directory for the workflow definition files.
@@ -66,6 +69,7 @@ impl Default for RunOptions {
     fn default() -> Self {
         Self {
             policy: None,
+            llm_providers: None,
             record: false,
             workflow_dir: String::new(),
             live: false,
@@ -2090,6 +2094,7 @@ impl WorkflowRunner {
             // Resume always executes in-process; submit-only is
             // a fresh-run-only mode (sprint 0.5-S2e).
             submit_only: false,
+            llm_providers: None,
         };
 
         // Reset run status to Running for the resume window.
@@ -2524,6 +2529,7 @@ impl WorkflowRunner {
                 let workflow_dir = options.workflow_dir.clone();
                 let policy = options.policy.clone();
                 let live = options.live;
+                let llm_providers = options.llm_providers.clone();
                 let handles: Vec<(String, StepDef, String, std::thread::JoinHandle<_>)> =
                     dispatches
                         .into_iter()
@@ -2531,6 +2537,7 @@ impl WorkflowRunner {
                             let workflow_dir = workflow_dir.clone();
                             let policy = policy.clone();
                             let id_for_thread = step_id.clone();
+                            let llm_for_thread = llm_providers.clone();
                             let def_for_thread = step_def.clone();
                             let start = Instant::now();
                             let h = std::thread::spawn(move || {
@@ -2549,6 +2556,7 @@ impl WorkflowRunner {
                                     &workflow_dir,
                                     &policy,
                                     live,
+                                    llm_for_thread.as_deref(),
                                     resolved_inputs,
                                     &mut calls,
                                 );
@@ -2961,6 +2969,7 @@ impl WorkflowRunner {
                         &options.policy,
                         data_store,
                         options.live,
+                        options.llm_providers.as_deref(),
                         &mut input_hash,
                         &mut capability_calls,
                     );
@@ -3120,6 +3129,7 @@ impl WorkflowRunner {
         policy: &Option<Policy>,
         data_store: &mut DataStore,
         live: bool,
+        llm_providers: Option<&boruna_vm::llm_providers::LlmProviders>,
         input_hash: &mut Option<String>,
         calls: &mut Vec<CapabilityCall>,
     ) -> Result<StepResult, (WorkflowRunError, u32)> {
@@ -3149,6 +3159,7 @@ impl WorkflowRunner {
             workflow_dir,
             policy,
             live,
+            llm_providers,
             resolved_inputs,
             calls,
         )?;
@@ -3200,6 +3211,7 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         live: bool,
+        llm_providers: Option<&boruna_vm::llm_providers::LlmProviders>,
         resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
         calls: &mut Vec<CapabilityCall>,
     ) -> Result<(boruna_bytecode::Value, u32), (WorkflowRunError, u32)> {
@@ -3216,6 +3228,7 @@ impl WorkflowRunner {
                 workflow_dir,
                 policy,
                 live,
+                llm_providers,
                 resolved_inputs.clone(),
                 calls,
             )
@@ -3244,6 +3257,7 @@ impl WorkflowRunner {
         workflow_dir: &str,
         policy: &Option<Policy>,
         live: bool,
+        llm_providers: Option<&boruna_vm::llm_providers::LlmProviders>,
         resolved_inputs: BTreeMap<String, boruna_bytecode::Value>,
         calls: &mut Vec<CapabilityCall>,
     ) -> Result<boruna_bytecode::Value, (WorkflowRunError, &'static str)> {
@@ -3281,10 +3295,26 @@ impl WorkflowRunner {
             #[cfg(feature = "http")]
             {
                 let net_policy = step_policy.net_policy.clone().unwrap_or_default();
-                Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy))
+                let net: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> =
+                    Box::new(boruna_vm::http_handler::HttpHandler::new(net_policy));
+                // With LLM providers configured, `llm.call` goes to them and every other
+                // capability to the HTTP handler.
+                match llm_providers {
+                    Some(providers) => Box::new(providers.build_router(net).map_err(|e| {
+                        (
+                            WorkflowRunError::StepFailed(
+                                step_id.to_string(),
+                                format!("LLM providers: {e}"),
+                            ),
+                            error_class::IO_ERROR,
+                        )
+                    })?),
+                    None => net,
+                }
             }
             #[cfg(not(feature = "http"))]
             {
+                let _ = llm_providers;
                 eprintln!(
                     "warning: --live requires the `http` feature; falling back to mock handler"
                 );
@@ -5354,6 +5384,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         // Submit-only returns an in-flight result.
@@ -5383,6 +5414,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5563,6 +5595,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5605,6 +5638,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5631,6 +5665,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5664,6 +5699,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5709,6 +5745,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: true,
+                llm_providers: None,
             },
             data_dir.path(),
         )
@@ -5754,6 +5791,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: true,
+                llm_providers: None,
             },
             data_dir.path(),
         )
@@ -5808,6 +5846,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: true,
+                llm_providers: None,
             },
             data_dir.path(),
         )
@@ -5856,6 +5895,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -5927,6 +5967,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(def, &options, data_dir.path()).unwrap();
         // Reopen the store rather than let the tempdir drop. We
@@ -6158,6 +6199,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6185,6 +6227,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6241,6 +6284,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let err = WorkflowRunner::run_persistent(&def, &options, data_dir.path())
             .expect_err("expected oversize rejection");
@@ -6262,6 +6306,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false, // does NOT embed workflow_def
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6288,6 +6333,7 @@ mod tests {
             live: false,
             concurrency: 4, // triggers the warning
             submit_only: true,
+            llm_providers: None,
         };
         let result =
             WorkflowRunner::run_persistent(&def, &options, data_dir.path()).expect("submit ok");
@@ -6308,6 +6354,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6357,6 +6404,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6394,6 +6442,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
         let store =
@@ -6443,6 +6492,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: true,
+            llm_providers: None,
         };
         let err = WorkflowRunner::run_persistent(&mutated, &options, data_dir.path()).unwrap_err();
         let msg = format!("{err}");
@@ -6465,6 +6515,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -6489,6 +6540,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -6539,6 +6591,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
 
         // With allow_all, should succeed
@@ -6620,6 +6673,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
 
         let result = WorkflowRunner::run(&def, &options).unwrap();
@@ -6650,6 +6704,7 @@ mod tests {
             live: false,
             concurrency: 1,
             submit_only: false,
+            llm_providers: None,
         };
         assert!(WorkflowRunner::run(&def, &options).is_err());
     }
@@ -7146,6 +7201,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -7197,6 +7253,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
 
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -7225,6 +7282,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             let r2 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
@@ -7275,6 +7333,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -7306,6 +7365,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
 
             // Insert a run row with a deliberately-altered workflow_hash
@@ -7692,6 +7752,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -7787,6 +7848,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let err = WorkflowRunner::run_persistent(&def, &options, Path::new("/"))
                 .expect_err("must reject /");
@@ -7865,6 +7927,7 @@ mod tests {
                 live: false,
                 concurrency: c,
                 submit_only: false,
+                llm_providers: None,
             };
             let dir1 = tempfile::tempdir().unwrap();
             let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
@@ -7898,6 +7961,7 @@ mod tests {
                 live: false,
                 concurrency: 4,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -7957,6 +8021,7 @@ mod tests {
                 live: false,
                 concurrency: 4,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -7980,6 +8045,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r1 = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r1.status, WorkflowStatus::Completed);
@@ -8115,6 +8181,7 @@ mod tests {
                     live: false,
                     concurrency: 4,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -8194,6 +8261,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -8297,6 +8365,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -9017,6 +9086,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -9059,6 +9129,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -9105,6 +9176,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -9154,6 +9226,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -9245,6 +9318,7 @@ mod tests {
                     live: false,
                     concurrency,
                     submit_only: false,
+                    llm_providers: None,
                 };
                 let result = WorkflowRunner::run(&def, &options).unwrap();
                 let up = &result.step_results["upstream"];
@@ -9285,6 +9359,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             let down = &result.step_results["downstream"];
@@ -9312,6 +9387,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Completed);
@@ -9416,6 +9492,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(result.status, WorkflowStatus::Failed);
@@ -9513,6 +9590,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let result = WorkflowRunner::run(&def, &options).unwrap();
             assert_eq!(
@@ -9537,6 +9615,7 @@ mod tests {
                 live: false,
                 concurrency: c,
                 submit_only: false,
+                llm_providers: None,
             };
             let dir1 = tempfile::tempdir().unwrap();
             let r1 = WorkflowRunner::run_persistent(&def, &make_options(1), dir1.path()).unwrap();
@@ -9641,6 +9720,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(def, &options, data_dir).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -10075,6 +10155,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let err = WorkflowRunner::run(&def, &options).expect_err("ephemeral path must error");
             assert!(matches!(err, WorkflowRunError::Validation(_)));
@@ -10244,6 +10325,7 @@ mod tests {
                 live: false,
                 concurrency: 2,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -10291,6 +10373,7 @@ mod tests {
                 live: false,
                 concurrency: 2,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -10343,6 +10426,7 @@ mod tests {
                 live: false,
                 concurrency: 2,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -10413,6 +10497,7 @@ mod tests {
                     live: false,
                     concurrency: 2,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -10557,6 +10642,7 @@ mod tests {
                 live: false,
                 concurrency: 2,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -10598,6 +10684,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             assert_eq!(r.status, WorkflowStatus::Paused);
@@ -10647,6 +10734,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
 
@@ -10690,6 +10778,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             let store = open_store(data_dir.path()).unwrap();
@@ -10806,6 +10895,7 @@ mod tests {
                     live: false,
                     concurrency: 2,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -10899,6 +10989,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -10958,6 +11049,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
             record_approval_decision(
@@ -11039,6 +11131,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11110,6 +11203,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11181,6 +11275,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11234,6 +11329,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11284,6 +11380,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11404,6 +11501,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11493,6 +11591,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11564,6 +11663,7 @@ mod tests {
                     live: false,
                     concurrency: 1,
                     submit_only: false,
+                    llm_providers: None,
                 },
                 data_dir.path(),
             )
@@ -11627,6 +11727,7 @@ mod tests {
                 live: false,
                 concurrency: 1,
                 submit_only: false,
+                llm_providers: None,
             };
             WorkflowRunner::run_persistent(&def, &opts, data_dir.path()).unwrap();
 

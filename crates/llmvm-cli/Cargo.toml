@@ -10,7 +10,8 @@ path = "src/main.rs"
 
 [features]
 default = ["persist-sqlite"]
-http = ["boruna-vm/http"]
+# Also the orchestrator's: without it `workflow run --live` silently used the mock.
+http = ["boruna-vm/http", "boruna-orchestrator/http"]
 telemetry = ["boruna-vm/telemetry", "dep:tokio"]
 # Forwards to boruna-orchestrator's persist-sqlite feature so the CLI's
 # `workflow run` / `workflow resume` paths can use the SQLite checkpoint

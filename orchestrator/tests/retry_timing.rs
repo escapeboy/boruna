@@ -63,6 +63,7 @@ fn retry_actually_sleeps_between_attempts() {
         live: false,
         concurrency: 1,
         submit_only: false,
+        llm_providers: None,
     };
 
     let start = Instant::now();

@@ -134,8 +134,9 @@ fn main() -> Int {
     marker such as `{"mock": true, ...}`), so runs and tests need no network or API keys;
   - `--live` with a binary built with `--features http` makes real HTTP requests for `net.*`,
     subject to the policy's network allowlist;
-  - real LLM replies come from an LLM handler you register when embedding Boruna (see the
-    [LLM integration guide](../guides/llm-integration.md)); the CLI does not call LLM APIs itself.
+  - `--live --providers providers.json` sends `llm_call` to OpenAI, an OpenAI-compatible endpoint,
+    Anthropic, Ollama or AWS Bedrock (see the
+    [LLM integration guide](../guides/llm-integration.md#built-in-providers)).
 - A policy that denies the capability stops the run with "capability denied".
 - If your program (or a library it imports) defines a function with the same name, that function
   is used instead of the built-in. `std-llm` does this: its `llm_call(req, tag)` builds a

@@ -27,6 +27,39 @@
 
 use std::collections::BTreeMap;
 
+use boruna_vm::llm_providers::LlmProviders;
+
+/// Load `--providers`. The `{"providers": {...}}` format configures the built-in LLM providers
+/// that answer `llm.call` under `--live`. The older capability-keyed format is only validated
+/// and described, as before. With `live`, the router is built once here so a missing API key
+/// is reported before anything runs.
+pub fn load(path: &std::path::Path, live: bool) -> Result<Option<LlmProviders>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let has_providers_map = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| format!("invalid providers.json: {e}"))?
+        .get("providers")
+        .is_some();
+    if !has_providers_map {
+        let reg = ProviderRegistry::from_json(&content)?;
+        eprintln!(
+            "providers: {} (old format: validated only; use {{\"providers\": {{...}}}} to call real LLMs)",
+            reg.describe()
+        );
+        return Ok(None);
+    }
+    let providers = LlmProviders::from_json(&content)?;
+    eprintln!("LLM providers: {}", providers.describe());
+    if live {
+        providers.build_router(Box::new(boruna_vm::capability_gateway::MockHandler))?;
+    } else {
+        eprintln!(
+            "note: LLM providers are used only with --live; without it a mock answers llm.call"
+        );
+    }
+    Ok(Some(providers))
+}
+
 use serde::Deserialize;
 
 /// Known provider identifiers.

@@ -3,6 +3,7 @@ pub mod capability_gateway;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http_handler;
+pub mod llm_providers;
 #[cfg(feature = "http")]
 pub mod net_record_replay;
 pub mod policy_validate;

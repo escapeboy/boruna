@@ -2,6 +2,8 @@
 
 This directory contains reference `CapabilityHandler` implementations for the most common LLM providers. They demonstrate the **Bring Your Own Handler (BYOH)** integration pattern Boruna uses for `Capability::LlmCall` — see [`docs/guides/llm-integration.md`](../../docs/guides/llm-integration.md) for the design rationale.
 
+**The CLI now ships these five providers built in** (`boruna run|workflow run --live --providers providers.json`; see [`providers.json.example`](./providers.json.example) and the [LLM integration guide](../../docs/guides/llm-integration.md#built-in-providers)). The files here remain as reference code for embedders who write their own handler.
+
 **These are reference snippets, not compiled examples.** Each handler is ~80–120 LOC of self-contained code; copy the `handler.rs` into your integrator crate and adapt for your provider, secret management, observability, and routing concerns.
 
 ## Why BYOH (and not a shipped adapter crate)?
