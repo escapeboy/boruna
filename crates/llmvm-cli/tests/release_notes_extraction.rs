@@ -42,6 +42,12 @@ fn changelog_path() -> PathBuf {
 }
 
 fn awk_available() -> bool {
+    // The extraction runs only in the Linux publish job. Windows runners ship Git's awk, which
+    // passes the probe below but cannot read this path form, so the test would fail there for a
+    // reason that has nothing to do with the release notes.
+    if cfg!(windows) {
+        return false;
+    }
     Command::new("awk")
         .arg("--version")
         .stdout(Stdio::null())
