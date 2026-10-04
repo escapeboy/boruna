@@ -136,3 +136,17 @@ fn a_repeated_call_or_a_same_line_loop_assignment_points_at_the_right_line() {
         .collect();
     assert_eq!(lines, [("E009".to_string(), 6), ("E010".to_string(), 7)]);
 }
+
+#[test]
+fn a_shadowing_let_or_a_second_while_points_at_its_own_line() {
+    use boruna_tooling::diagnostics::E009_TYPE_ERROR;
+    let src = "fn main() -> Int {\n    let x: Int = 1\n    let y: Int = x\n    let x: Int = \"s\"\n    while true {\n        y\n    }\n    while 5 {\n    }\n    0\n}\n";
+    let lines: Vec<usize> = DiagnosticCollector::new("t.ax", src)
+        .collect()
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.id == E009_TYPE_ERROR)
+        .map(|d| d.location.unwrap().line)
+        .collect();
+    assert_eq!(lines, [4, 8]);
+}

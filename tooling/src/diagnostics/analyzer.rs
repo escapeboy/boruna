@@ -469,17 +469,21 @@ impl<'a> Analyzer<'a> {
                 _ => {
                     let func = issue.func();
                     let line = match &issue {
-                        Issue::LetAnnotation { name, .. } => {
-                            self.line_in_fn(func, |l| let_of(l).is_some_and(|n| n == name))
-                        }
+                        Issue::LetAnnotation {
+                            name, occurrence, ..
+                        } => self.nth_in_fn(func, *occurrence, |l| {
+                            usize::from(let_of(l).is_some_and(|n| n == name))
+                        }),
                         Issue::CallArgument {
                             callee, occurrence, ..
                         } => self.nth_in_fn(func, *occurrence, |l| calls(l, callee)),
                         Issue::Assign {
                             name, occurrence, ..
                         } => self.nth_in_fn(func, *occurrence, |l| assigns(l, name)),
-                        Issue::WhileCondition { .. } => {
-                            self.line_in_fn(func, |l| l.trim_start().starts_with("while "))
+                        Issue::WhileCondition { occurrence, .. } => {
+                            self.nth_in_fn(func, *occurrence, |l| {
+                                usize::from(l.trim_start().starts_with("while "))
+                            })
                         }
                         Issue::AssignImmutable { .. } => None,
                     };
@@ -535,9 +539,9 @@ impl<'a> Analyzer<'a> {
         diag
     }
 
-    /// 1-indexed line of the first line in the body of function `func` that matches `pred`.
-    /// Searching only inside the function keeps a finding from pointing at another function or
-    /// at the declaration of the called function.
+    /// 1-indexed line in the body of function `func` that holds the `n`-th match, where `count`
+    /// says how many matches a line holds. Searching only inside the function keeps a finding
+    /// from pointing at another function or at the declaration of the called function.
     fn nth_in_fn(&self, func: &str, n: usize, count: impl Fn(&str) -> usize) -> Option<usize> {
         let (start, end) = fn_line_range(self.source, func);
         let mut seen = 0;
@@ -548,18 +552,6 @@ impl<'a> Analyzer<'a> {
             }
         }
         None
-    }
-
-    /// 1-indexed line of the first line in the body of function `func` that matches `pred`.
-    fn line_in_fn(&self, func: &str, pred: impl Fn(&str) -> bool) -> Option<usize> {
-        let (start, end) = fn_line_range(self.source, func);
-        self.source
-            .lines()
-            .enumerate()
-            .take(end)
-            .skip(start + 1)
-            .find(|(_, l)| pred(l))
-            .map(|(i, _)| i + 1)
     }
 }
 

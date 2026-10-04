@@ -148,3 +148,21 @@ fn a_local_that_is_not_a_function_does_not_hide_a_top_level_function() {
     let src = "fn v(n: Int) -> Int {\n    n + 1\n}\nfn main() -> Int {\n    let o: Option<Int> = Some(4)\n    match o {\n        Some(v) => v(v)\n        None => 0\n    }\n}\n";
     assert_eq!(run(src), Value::Int(5));
 }
+
+#[test]
+fn a_call_that_reaches_the_top_level_function_through_a_local_name_checks_its_arity() {
+    // The type checker skips arity for a name that is also a local; the call still goes to the
+    // top-level `size`, so a wrong argument count must not compile (it used to drop the 99).
+    let err = rejected("fn size(x: Int) -> Int {\n    x * 2\n}\nfn main() -> Int {\n    let size: Int = 3\n    size(size, 99)\n}\n");
+    assert!(
+        err.contains("function 'size' expects 1 argument, got 2"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_function_parameter_shadows_a_capability_builtin_of_the_same_name() {
+    // The parameter must be called, not the `random_int` built-in.
+    let src = "fn seven(a: Int, b: Int) -> Int {\n    7\n}\nfn apply(random_int: Fn(Int, Int) -> Int) -> Int !{random} {\n    random_int(1, 1000000)\n}\nfn main() -> Int {\n    apply(seven)\n}\n";
+    assert_eq!(run(src), Value::Int(7));
+}

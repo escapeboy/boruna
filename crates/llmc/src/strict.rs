@@ -29,6 +29,8 @@ pub enum Issue {
     LetAnnotation {
         func: String,
         name: String,
+        /// Which `let` of `name` in `func` this is, counting from 1 in source order.
+        occurrence: usize,
         declared: String,
         actual: String,
     },
@@ -52,7 +54,12 @@ pub enum Issue {
         actual: String,
     },
     /// `while <condition of type actual>`, which is not `Bool`.
-    WhileCondition { func: String, actual: String },
+    WhileCondition {
+        func: String,
+        /// Which `while` in `func` this is, counting from 1 in source order.
+        occurrence: usize,
+        actual: String,
+    },
     /// `name = ...` where `name` was bound by `binding` (never `Mut`).
     AssignImmutable {
         func: String,
@@ -152,6 +159,8 @@ pub fn check(program: &Program) -> Vec<Issue> {
                 issues: &mut issues,
                 calls: HashMap::new(),
                 assigns: HashMap::new(),
+                lets: HashMap::new(),
+                whiles: 0,
             };
             let mut env: Env = HashMap::new();
             for p in &f.params {
@@ -180,8 +189,6 @@ pub fn check(program: &Program) -> Vec<Issue> {
     issues
 }
 
-/// A user function's signature: per-parameter concrete type (None when the parameter type is
-/// not a plain named type) and the concrete return type.
 /// What the pass knows about a local name in scope.
 #[derive(Clone)]
 enum Local {
@@ -213,6 +220,8 @@ fn local_of(ty: Option<&TypeExpr>) -> Local {
 
 type Env = HashMap<String, Local>;
 
+/// A user function's signature: per-parameter concrete type (None when the parameter type is
+/// not a plain named type) and the concrete return type.
 type FnSigs<'a> = HashMap<&'a str, (Vec<Option<String>>, Option<String>)>;
 
 /// The concrete name of a type expression, or `None` for generic constructors
@@ -228,9 +237,12 @@ struct TypePass<'a, 'b> {
     func: &'a str,
     sigs: &'a FnSigs<'b>,
     issues: &'a mut Vec<Issue>,
-    /// Calls per callee and assignments per name seen so far, to tell repeated ones apart.
+    /// Calls per callee, assignments and `let`s per name, and `while`s seen so far, to tell
+    /// repeated ones apart.
     calls: HashMap<String, usize>,
     assigns: HashMap<String, usize>,
+    lets: HashMap<String, usize>,
+    whiles: usize,
 }
 
 fn bump(counts: &mut HashMap<String, usize>, key: &str) -> usize {
@@ -251,6 +263,8 @@ impl TypePass<'_, '_> {
             Stmt::Let {
                 name, ty, value, ..
             } => {
+                // Counted before the initializer: in the source, this `let` comes first.
+                let occurrence = bump(&mut self.lets, name);
                 self.expr(value, env);
                 let inferred = self.infer(value, env);
                 if let Some(TypeExpr::Named(declared)) = ty {
@@ -259,6 +273,7 @@ impl TypePass<'_, '_> {
                             self.issues.push(Issue::LetAnnotation {
                                 func: self.func.to_string(),
                                 name: name.clone(),
+                                occurrence,
                                 declared: declared.clone(),
                                 actual,
                             });
@@ -295,11 +310,14 @@ impl TypePass<'_, '_> {
             Stmt::Expr(e) | Stmt::Return(Some(e)) => self.expr(e, env),
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
             Stmt::While { condition, body } => {
+                self.whiles += 1;
+                let occurrence = self.whiles;
                 self.expr(condition, env);
                 if let Some(actual) = self.infer(condition, env) {
                     if actual != "Bool" {
                         self.issues.push(Issue::WhileCondition {
                             func: self.func.to_string(),
+                            occurrence,
                             actual,
                         });
                     }

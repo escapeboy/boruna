@@ -20,6 +20,10 @@ struct Emitter {
     module: Module,
     /// Map from function name to function index.
     fn_map: HashMap<String, u32>,
+    /// Parameter count per function name. The type checker skips its arity check when the
+    /// callee name is also a local, but such a call still reaches the top-level function unless
+    /// the local has a `Fn` type, so the count is checked here.
+    fn_arity: HashMap<String, usize>,
     /// Map from type name to type index.
     type_map: HashMap<String, u32>,
 }
@@ -79,6 +83,7 @@ impl Emitter {
         Emitter {
             module: Module::new(name),
             fn_map: HashMap::new(),
+            fn_arity: HashMap::new(),
             type_map: HashMap::new(),
         }
     }
@@ -112,6 +117,7 @@ impl Emitter {
                 Item::Function(f) => {
                     let idx = self.fn_map.len() as u32;
                     self.fn_map.insert(f.name.clone(), idx);
+                    self.fn_arity.insert(f.name.clone(), f.params.len());
                 }
                 _ => {}
             }
@@ -730,7 +736,10 @@ impl Emitter {
                         // arguments in order, then a gateway call. The type checker has already
                         // required the function to declare the capability, so it is in
                         // `fe.capabilities` and the VM's per-function check passes.
+                        // A local declared with a `Fn` type of the same name is called instead,
+                        // as for top-level functions below.
                         n if !self.fn_map.contains_key(n)
+                            && !(fe.locals.contains_key(n) && fe.fn_locals.contains(n))
                             && crate::typeck::CAPABILITY_BUILTINS
                                 .iter()
                                 .any(|(b, _, arity)| *b == n && *arity == args.len()) =>
@@ -765,6 +774,14 @@ impl Emitter {
                         .get(name)
                         .filter(|_| !(fe.locals.contains_key(name) && fe.fn_locals.contains(name)))
                     {
+                        let arity = self.fn_arity[name];
+                        if args.len() != arity {
+                            return Err(CompileError::Type(format!(
+                                "function '{name}' expects {arity} argument{}, got {}",
+                                if arity == 1 { "" } else { "s" },
+                                args.len()
+                            )));
+                        }
                         let argc =
                             count_as_u8(args.len(), &format!("call to `{name}`"), "arguments")?;
                         for arg in args {
