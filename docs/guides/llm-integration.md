@@ -47,6 +47,46 @@ boruna workflow run my_workflow --policy policy.json --live --providers provider
   resumed or scheduled steps call the providers. `workflow eval --live` calls each side's
   providers (see the [model evaluation guide](model-eval.md)).
 
+### Local programs (`kind: "command"`)
+
+A `command` provider runs a program on your machine for each call, such as the command-line tool
+that comes with a Claude, ChatGPT or Gemini subscription. No API key is needed; the program uses
+its own login.
+
+```json
+{
+  "providers": {
+    "claude": { "kind": "command",
+                "command": ["claude", "-p", "--tools", "", "--strict-mcp-config",
+                            "--no-session-persistence", "--model", "{model}"] },
+    "codex":  { "kind": "command",
+                "command": ["codex", "exec", "--sandbox", "read-only",
+                            "--skip-git-repo-check", "--ephemeral", "-"] },
+    "gemini": { "kind": "command",
+                "command": ["gemini", "--approval-mode", "plan", "-m", "{model}", "-p", ""] }
+  }
+}
+```
+
+- `llm_call(p, "claude/sonnet")` runs the `claude` entry with `{model}` replaced by `sonnet`. The
+  program is started directly, without a shell. The prompt is written to its stdin; its stdout,
+  without trailing whitespace, is the reply.
+- A non-zero exit fails the call with the exit code and the end of stderr (e.g. "not logged in").
+- `timeout_ms` (default 300000) kills a program that runs too long; `max_output_bytes` (default
+  4 MiB) refuses a larger reply. `api_key_env`, `base_url` and `region` are not accepted.
+- Works in every build: it does not need the `http` feature.
+- Recording and replay work as for the other providers: a replay uses the recorded reply and does
+  not start the program.
+- **These tools are agents.** With their defaults they can edit files and run commands, and
+  Boruna's policy cannot see or stop what the program does. Switch their tools off, as above:
+  `claude --tools ""`, `codex --sandbox read-only`, `gemini --approval-mode plan`. Check the
+  flags of your tool's version.
+- Whoever can edit `providers.json` can make Boruna run any program as you. Treat the file like
+  a script.
+- Codex with a ChatGPT account accepts only the models its config allows, so the example passes
+  no model and uses the account's default. On Windows, npm-installed tools are `.cmd` files:
+  write `"claude.cmd"`.
+
 This document explains why, what the contract looks like, and how to wire up handlers for common providers (OpenAI, Anthropic, vLLM, Ollama).
 
 ## Why BYOH?

@@ -39,6 +39,12 @@ Include in your report:
 
 **Out of scope**: example files, documentation, third-party dependencies.
 
+**Trust boundary for `providers.json`.** The provider configuration chooses where prompts go and,
+with `kind: "command"`, which program runs for each `llm.call`. Anyone who can edit that file can
+run programs as the user who runs Boruna. Boruna's capability policy gates the `llm.call` itself
+but cannot constrain what an external program does once started. This is by design, not a
+vulnerability; report cases where Boruna runs a program that the configuration did not name.
+
 ## Backport Policy
 
 Security fixes are released as a new patch or minor release of the current major line.

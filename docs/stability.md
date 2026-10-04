@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **4.1.0**. It is a local engine and CLI. Since 3.0.0
+Boruna is at version **4.2.0**. It is a local engine and CLI. Since 3.0.0
 there is no server component.
 
 Only the latest major line (4.x) is supported. 1.x, 2.x and 3.x are end

@@ -2695,13 +2695,17 @@ fn make_gateway(
         #[cfg(not(feature = "http"))]
         {
             eprintln!(
-                "warning: --live requires the `http` feature for net.fetch and llm.call; \
-                 those use the mock handler"
+                "warning: --live requires the `http` feature for net.fetch and HTTP LLM \
+                 providers; those use the mock handler"
             );
-            let handler = live_system(
-                &policy,
-                Box::new(boruna_vm::capability_gateway::MockHandler),
-            );
+            // `command` providers need no network client, so they still run.
+            let mock: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> =
+                Box::new(boruna_vm::capability_gateway::MockHandler);
+            let handler: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> = match llm {
+                Some(p) => Box::new(p.build_router(mock)?),
+                None => mock,
+            };
+            let handler = live_system(&policy, handler);
             return Ok(CapabilityGateway::with_handler(policy, handler));
         }
     }

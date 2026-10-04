@@ -3320,11 +3320,25 @@ impl WorkflowRunner {
             }
             #[cfg(not(feature = "http"))]
             {
-                let _ = llm_providers;
                 eprintln!(
-                    "warning: --live requires the `http` feature; falling back to mock handler"
+                    "warning: --live requires the `http` feature for net.fetch and HTTP LLM \
+                     providers; those use the mock handler"
                 );
-                Box::new(boruna_vm::capability_gateway::MockHandler)
+                // `command` providers need no network client, so they still run.
+                let mock: Box<dyn boruna_vm::capability_gateway::CapabilityHandler> =
+                    Box::new(boruna_vm::capability_gateway::MockHandler);
+                match llm_providers {
+                    Some(providers) => Box::new(providers.build_router(mock).map_err(|e| {
+                        (
+                            WorkflowRunError::StepFailed(
+                                step_id.to_string(),
+                                format!("LLM providers: {e}"),
+                            ),
+                            error_class::IO_ERROR,
+                        )
+                    })?),
+                    None => mock,
+                }
             }
         } else {
             Box::new(boruna_vm::capability_gateway::MockHandler)
