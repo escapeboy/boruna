@@ -61,6 +61,11 @@ when one existed, not the function passed in. 4.0 calls the parameter. This appl
 local declared with a `Fn` type; a local of any other type with the same name still leaves the
 call to the top-level function, as before.
 
+**A local named like a capability built-in.** Any local named `fs_delete`, `net_fetch`,
+`random_int` or like another capability built-in is called instead of the built-in, whether it
+was declared with a type, a plain `let` or a match pattern. If the local is not a function the
+run stops with "expected function reference". In 3.x such a call reached the built-in.
+
 ## 3. New words that cannot be names any more
 
 `break` and `continue` are keywords. A variable, parameter or function with one of these

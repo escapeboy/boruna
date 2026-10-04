@@ -166,6 +166,8 @@ fn main() -> Int {
 - If your program (or a library it imports) defines a function with the same name, that function
   is used instead of the built-in. `std-llm` does this: its `llm_call(req, tag)` builds a
   framework effect.
+- A local of the same name (a parameter, a `let` or a match binding) is called instead of the
+  built-in. A local that is not a function stops the run as not callable.
 
 ## Files, clock and random numbers
 

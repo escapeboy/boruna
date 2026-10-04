@@ -725,10 +725,12 @@ impl Emitter {
                         // arguments in order, then a gateway call. The type checker has already
                         // required the function to declare the capability, so it is in
                         // `fe.capabilities` and the VM's per-function check passes.
-                        // A local declared with a `Fn` type of the same name is called instead,
-                        // as for top-level functions below.
+                        // Any local of the same name, typed or not, is called instead: a function
+                        // value bound with a plain `let` or a match pattern must not fall through
+                        // to a side effect (`let fs_delete = keep` must not delete a file). A
+                        // non-function local then fails at run time as not callable.
                         n if !self.fn_map.contains_key(n)
-                            && !(fe.locals.contains_key(n) && fe.fn_locals.contains(n))
+                            && !fe.locals.contains_key(n)
                             && crate::typeck::CAPABILITY_BUILTINS
                                 .iter()
                                 .any(|(b, _, arity)| *b == n && *arity == args.len()) =>

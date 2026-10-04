@@ -5,13 +5,13 @@ compatible within a major line, how features are deprecated and removed,
 and how security fixes are released.
 
 The short version: **only the latest major line is supported.** Today that
-is **4.x**. The current release is 4.0.0 (2026-10-03).
+is **4.x**. The current release is 4.0.0 (2026-10-04).
 
 ## A. Support windows
 
 | Line | Status | First release | Support |
 |------|--------|---------------|---------|
-| 4.x | **Supported** | 2026-10-03 ([v4.0.0](../CHANGELOG.md)) | Bug fixes and security fixes in new 4.y releases |
+| 4.x | **Supported** | 2026-10-04 ([v4.0.0](../CHANGELOG.md)) | Bug fixes and security fixes in new 4.y releases |
 | 3.x | End of life since 2026-10-03 | 2026-07-18 (v3.0.0) | None |
 | 2.x | End of life since 2026-07-18 | 2026-07-17 (v2.0.0) | None |
 | 1.x | End of life since 2026-07-18 | 2026-04-28 (v1.0.0) | None |
@@ -29,7 +29,7 @@ Rules:
 ### If you are on 1.x, 2.x or 3.x
 
 1.x and 2.x reached end of life when 3.0.0 shipped on 2026-07-18, and 3.x
-when 4.0.0 shipped on 2026-10-03. They get no further releases, including
+when 4.0.0 shipped on 2026-10-04. They get no further releases, including
 security fixes. Upgrade to the latest 4.x release.
 
 What changed on the way:

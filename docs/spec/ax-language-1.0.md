@@ -799,7 +799,7 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
 - **1.3** (2026-10-03) — Additive (§1.2). Capability built-ins `fs_read`, `fs_write`, `time_now`
   and `random_int` (§5a). Negative integer literal patterns (§3.5). Tooling warns (E009) on an
   assignment of a different type and on a non-`Bool` `while` condition (§4.5).
-- **2.0** (2026-10-03, Boruna 4.0) — Breaking. E009 (type mismatch the checker can name) and E010
+- **2.0** (2026-10-04, Boruna 4.0) — Breaking. E009 (type mismatch the checker can name) and E010
   (reassigning a binding that is not `mut`, a parameter or a `for` variable) are compile errors
   (§4.5). `break` and `continue` are keywords and statements (§2.4, §4.5). Bindings declared in a
   block, loop body or `match` arm end there, as the 1.x text already required (§4.5). Built-ins

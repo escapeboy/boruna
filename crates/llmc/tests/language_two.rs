@@ -166,3 +166,12 @@ fn a_function_parameter_shadows_a_capability_builtin_of_the_same_name() {
     let src = "fn seven(a: Int, b: Int) -> Int {\n    7\n}\nfn apply(random_int: Fn(Int, Int) -> Int) -> Int !{random} {\n    random_int(1, 1000000)\n}\nfn main() -> Int {\n    apply(seven)\n}\n";
     assert_eq!(run(src), Value::Int(7));
 }
+
+#[test]
+fn an_untyped_local_shadows_a_capability_builtin_of_the_same_name() {
+    // A function value bound by `let` or a match pattern, without a type, is called too.
+    let let_src = "fn seven(a: Int, b: Int) -> Int {\n    7\n}\nfn main() -> Int !{random} {\n    let random_int = seven\n    random_int(1, 1000000)\n}\n";
+    assert_eq!(run(let_src), Value::Int(7));
+    let match_src = "fn seven(a: Int, b: Int) -> Int {\n    7\n}\nfn main() -> Int !{random} {\n    match Some(seven) {\n        Some(random_int) => random_int(1, 1000000),\n        _ => 0,\n    }\n}\n";
+    assert_eq!(run(match_src), Value::Int(7));
+}

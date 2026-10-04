@@ -6,7 +6,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [4.0.0] — 2026-10-03
+## [4.0.0] — 2026-10-04
 
 `.ax` language 2.0. The type and `mut` checks that were warnings in 3.x are compile errors,
 loops get `break` and `continue`, and three long-standing code generation bugs are fixed. 3.x is
@@ -38,9 +38,12 @@ end of life. Read [Upgrading to 4.0](docs/guides/upgrading-to-4.md) first.
   `fs_policy.max_list_entries` names (default 10 000).
 
 ### Changed
+- A local named like a capability built-in (`fs_delete`, `random_int`, `net_fetch`, ...) is
+  called instead of the built-in, whether or not it has a type. `let fs_delete = keep` calls
+  `keep`; a local that is not a function fails as not callable and never reaches the gateway.
 - A call with the wrong number of arguments is a compile error even when the function's name is
   also a local (the type checker skipped that case).
-- Compiling costs more: the strict pass and block scoping add about 13–22% executed
+- Compiling costs more: the strict pass and block scoping add about 14–25% executed
   instructions to the compiler benchmarks (CI instruction counts, `compile_source`). Running
   programs costs the same.
 - The compiler emits different bytecode for `if`, block expressions, loops and `match` (block
