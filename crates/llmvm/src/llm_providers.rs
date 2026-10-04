@@ -275,12 +275,8 @@ mod command {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            // Own process group, so a timeout can stop the program and anything it started.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                cmd.process_group(0);
-            }
+            // Same process group as boruna (not a new one): Ctrl-C at the terminal reaches the
+            // program too, and a program that touches the terminal is not stopped by SIGTTOU.
             let mut child = cmd
                 .spawn()
                 .map_err(|e| format!("provider {}: cannot run {program}: {e}", self.name))?;
@@ -347,7 +343,7 @@ mod command {
             // which a process it left running could otherwise hold open indefinitely.
             let deadline = Instant::now() + self.timeout;
             let timed_out = |child: &mut std::process::Child| {
-                kill_tree(child);
+                stop(child);
                 format!(
                     "provider {}: {program} did not finish within {} ms",
                     self.name,
@@ -360,7 +356,7 @@ mod command {
                     Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
                     Ok(None) => std::thread::sleep(Duration::from_millis(20)),
                     Err(e) => {
-                        kill_tree(&mut child);
+                        stop(&mut child);
                         return Err(format!(
                             "provider {}: waiting for {program}: {e}",
                             self.name
@@ -405,13 +401,9 @@ mod command {
         }
     }
 
-    /// Stop the program and, on Unix, everything in its process group.
-    fn kill_tree(child: &mut std::process::Child) {
-        #[cfg(unix)]
-        // SAFETY: signals the process group created for this child (pgid == child pid).
-        unsafe {
-            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-        }
+    /// Stop the program. Processes it started in the background are not tracked; the call
+    /// still returns at its deadline because output is only awaited until then.
+    fn stop(child: &mut std::process::Child) {
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -1379,21 +1371,16 @@ mod command_tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(3));
     }
 
-    // The timeout covers output held open by a process the program left behind, and kills it.
+    // The timeout covers output held open by a process the program left behind.
     #[cfg(unix)]
     #[test]
     fn timeout_covers_leftover_processes_holding_the_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("survived");
-        let script = format!("(sleep 3; touch '{}') & echo hi", marker.display());
         let start = std::time::Instant::now();
-        let err = handler(&["sh", "-c", &script], 500, 1024)
+        let err = handler(&["sh", "-c", "(sleep 3) & echo hi"], 500, 1024)
             .run("p", "m")
             .unwrap_err();
         assert!(err.contains("did not finish within 500 ms"), "{err}");
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
-        std::thread::sleep(std::time::Duration::from_secs(4));
-        assert!(!marker.exists(), "the leftover process was not killed");
     }
 
     // C5: a reply over the size limit is refused.

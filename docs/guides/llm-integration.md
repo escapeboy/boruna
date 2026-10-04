@@ -76,6 +76,9 @@ its own login.
   is refused: otherwise `llm_call(p, "claude/--dangerously-skip-permissions")` would pass a flag
   to the tool.
 - A program may exit without reading the whole prompt; that is not an error.
+- The timeout covers the whole call, including output that a leftover background process keeps
+  open. On timeout Boruna stops the program it started; processes that program started in the
+  background are not tracked and may keep running. Ctrl-C reaches the program as usual.
 - `timeout_ms` (default 300000) kills a program that runs too long; `max_output_bytes` (default
   4 MiB) refuses a larger reply. `api_key_env`, `base_url` and `region` are not accepted.
 - Works in every build: it does not need the `http` feature.
