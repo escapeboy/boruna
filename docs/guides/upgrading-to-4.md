@@ -18,7 +18,7 @@ boruna lang check path/to/file.ax
 | Code | What it rejects | How to fix it |
 |---|---|---|
 | `E010` | Reassigning a `let` declared without `mut` | `boruna lang repair path/to/file.ax` adds `mut` for you |
-| `E010` | Reassigning a function parameter or a `for` variable | Copy it first: `let mut n_acc = n`, then assign to `n_acc` |
+| `E010` | Reassigning a function parameter, a `for` variable or a name bound by a `match` pattern (`Some(v) => { v = 1 }`) | Copy it first: `let mut n_acc = n`, then assign to `n_acc` |
 | `E009` | `let x: Int = "text"`: the annotation and the value disagree | Fix the annotation or the value |
 | `E009` | `f("text")` where `f` takes an `Int` | Pass a value of the declared type |
 | `E009` | `x = "text"` where `x` is an `Int` | Assign a value of the variable's type, or use a new binding |
@@ -74,6 +74,12 @@ arguments. A custom handler that ignores extra arguments would treat an append a
 and a delete as writing an empty file, so check the argument count. The same applies to
 `fs_list` on `fs.read` (`[dir, "list"]`). The built-in handlers already do this.
 
+## 5. Deleting files needs a policy setting
+
+`fs_delete` is refused unless the policy's `fs_policy` sets `"allow_delete": true`. Allowing
+`fs.write` lets a program create and change files under its roots, but not delete them.
+`fs_list` returns at most `fs_policy.max_list_entries` names (10 000 unless set).
+
 ## What you get in return
 
 - `break` and `continue` in `while` and `for` loops. They work as statements in the loop body
@@ -81,7 +87,7 @@ and a delete as writing an empty file, so check the argument count. The same app
   error.
 - File operations for `--live` runs: `fs_list`, `fs_append` and `fs_delete`, next to
   `fs_read` and `fs_write`. They are limited to the policy's `fs_policy.allowed_roots`, like
-  the others.
+  the others, and deleting also needs `fs_policy.allow_delete`.
 - `boruna ... | head` exits quietly instead of printing a panic when the reader closes the pipe.
 
 The full list is in the [changelog](../../CHANGELOG.md).

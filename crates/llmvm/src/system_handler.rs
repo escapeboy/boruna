@@ -163,7 +163,12 @@ impl SystemHandler {
     /// holding it has to be inside the roots.
     fn fs_delete(&self, args: &[Value]) -> Result<Value, String> {
         let path = string_arg(args, 0, "fs_delete", "path")?;
-        let (_, roots) = self.roots("fs.write")?;
+        let (policy, roots) = self.roots("fs.write")?;
+        if !policy.allow_delete {
+            return Err(format!(
+                "fs_delete denied: the policy does not set fs_policy.allow_delete (deleting '{path}')"
+            ));
+        }
         let (parent, name) = Self::split_target("fs_delete", path)?;
         let target = parent.join(name);
         Self::check_inside("fs.write", &target, &roots, path)?;
@@ -182,7 +187,7 @@ impl SystemHandler {
     /// Names of the entries in a folder, sorted, not recursive.
     fn fs_list(&self, args: &[Value]) -> Result<Value, String> {
         let path = string_arg(args, 0, "fs_list", "path")?;
-        let (_, roots) = self.roots("fs.read")?;
+        let (policy, roots) = self.roots("fs.read")?;
         let resolved = std::fs::canonicalize(path)
             .map_err(|e| format!("fs_list: cannot open '{path}': {e}"))?;
         Self::check_inside("fs.read", &resolved, &roots, path)?;
@@ -191,6 +196,12 @@ impl SystemHandler {
             .map_err(|e| format!("fs_list: cannot list '{path}': {e}"))?
         {
             let entry = entry.map_err(|e| format!("fs_list: cannot list '{path}': {e}"))?;
+            if names.len() == policy.max_list_entries {
+                return Err(format!(
+                    "fs_list: '{path}' has more than fs_policy.max_list_entries ({}) entries",
+                    policy.max_list_entries
+                ));
+            }
             names.push(entry.file_name().to_string_lossy().into_owned());
         }
         names.sort();
@@ -279,6 +290,8 @@ mod tests {
             Some(FsPolicy {
                 allowed_roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 max_read_bytes: 64,
+                allow_delete: true,
+                max_list_entries: 3,
             }),
             Box::new(MockHandler),
         )
@@ -450,6 +463,42 @@ mod tests {
             .unwrap();
         assert!(std::fs::symlink_metadata(&link).is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+    }
+
+    #[test]
+    fn delete_needs_allow_delete_in_the_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let f = root.path().join("keep.txt");
+        std::fs::write(&f, "x").unwrap();
+        let mut h = SystemHandler::new(
+            Some(FsPolicy {
+                allowed_roots: vec![root.path().display().to_string()],
+                max_read_bytes: 64,
+                allow_delete: false,
+                max_list_entries: 3,
+            }),
+            Box::new(MockHandler),
+        );
+        let err = h
+            .handle(&Capability::FsWrite, &[p(&f), s(""), s("delete")])
+            .unwrap_err();
+        assert!(err.contains("fs_policy.allow_delete"), "{err}");
+        assert!(f.exists());
+        // Writing is still allowed.
+        h.handle(&Capability::FsWrite, &[p(&f), s("y")]).unwrap();
+    }
+
+    #[test]
+    fn list_over_max_list_entries_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        for n in ["a", "b", "c", "d"] {
+            std::fs::write(root.path().join(n), "x").unwrap();
+        }
+        let mut h = handler(&[root.path()]);
+        let err = h
+            .handle(&Capability::FsRead, &[p(root.path()), s("list")])
+            .unwrap_err();
+        assert!(err.contains("max_list_entries (3)"), "{err}");
     }
 
     #[test]

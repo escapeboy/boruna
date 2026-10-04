@@ -79,9 +79,19 @@ fn parameters_and_loop_variables_warn_without_an_automatic_fix() {
 }
 
 #[test]
-fn a_name_bound_by_a_match_pattern_is_not_reported() {
-    let src = "fn main() -> Int {\n    let mut t: Int = 0\n    let x: Int = 1\n    match Some(5) {\n        Some(x) => {\n            x = x + 1\n            t = x\n        },\n        None => {\n            t = 0\n        },\n    }\n    t\n}\n";
-    assert!(e010(src).is_empty());
+fn a_reassigned_match_pattern_name_is_reported_without_a_fix() {
+    // The pattern's `x` is a new binding for the arm, not the outer `let x`: reassigning it is
+    // E010, and the fix must not add `mut` to the unrelated outer `let`.
+    let src = "fn main() -> Int {\n    let mut t: Int = 0\n    let x: Int = 1\n    match Some(5) {\n        Some(x) => {\n            x = x + 1\n            t = x\n        },\n        None => {\n            t = 0\n        },\n    }\n    t + x\n}\n";
+    let d = e010(src);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(
+        d[0].message.contains("which a `match` pattern binds"),
+        "{}",
+        d[0].message
+    );
+    assert!(d[0].suggested_patches.is_empty());
+    assert_eq!(d[0].location.as_ref().unwrap().line, 6);
 }
 
 #[test]

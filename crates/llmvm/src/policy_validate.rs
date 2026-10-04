@@ -56,7 +56,12 @@ const POLICY_TOP_LEVEL_FIELDS: &[&str] = &[
 ];
 
 /// Allow-listed field names on an `fs_policy` object.
-const FS_POLICY_FIELDS: &[&str] = &["allowed_roots", "max_read_bytes"];
+const FS_POLICY_FIELDS: &[&str] = &[
+    "allowed_roots",
+    "max_read_bytes",
+    "allow_delete",
+    "max_list_entries",
+];
 
 /// Allow-listed field names on a `net_policy` object.
 const NET_POLICY_FIELDS: &[&str] = &[
@@ -291,6 +296,14 @@ struct FsPolicyFileV1 {
     allowed_roots: Vec<String>,
     #[serde(default = "default_max_response")]
     max_read_bytes: usize,
+    #[serde(default)]
+    allow_delete: bool,
+    #[serde(default = "default_max_list_entries")]
+    max_list_entries: usize,
+}
+
+fn default_max_list_entries() -> usize {
+    crate::capability_gateway::DEFAULT_MAX_LIST_ENTRIES
 }
 
 impl FsPolicyFileV1 {
@@ -313,9 +326,17 @@ impl FsPolicyFileV1 {
                 reason: "must be > 0".to_string(),
             });
         }
+        if self.max_list_entries == 0 {
+            return Err(PolicyParseError::InvalidFsPolicy {
+                field: "max_list_entries",
+                reason: "must be > 0".to_string(),
+            });
+        }
         Ok(FsPolicy {
             allowed_roots: self.allowed_roots,
             max_read_bytes: self.max_read_bytes,
+            allow_delete: self.allow_delete,
+            max_list_entries: self.max_list_entries,
         })
     }
 }
@@ -941,6 +962,40 @@ mod tests {
         assert_eq!(
             err_kind(r#"{"fs_policy": {"allowed_roots": ["a"], "write_only": true}}"#),
             "policy.unknown_field"
+        );
+    }
+
+    #[test]
+    fn fs_policy_allow_delete_and_list_limit() {
+        let p = parse(
+            r#"{"fs_policy": {"allowed_roots": ["a"], "allow_delete": true, "max_list_entries": 5}}"#,
+        )
+        .unwrap();
+        let fs = p.fs_policy.unwrap();
+        assert!(fs.allow_delete);
+        assert_eq!(fs.max_list_entries, 5);
+        let d = parse(r#"{"fs_policy": {"allowed_roots": ["a"]}}"#)
+            .unwrap()
+            .fs_policy
+            .unwrap();
+        assert!(!d.allow_delete);
+        assert_eq!(d.max_list_entries, 10_000);
+        assert_eq!(
+            err_kind(r#"{"fs_policy": {"allowed_roots": ["a"], "max_list_entries": 0}}"#),
+            "policy.invalid_fs_policy"
+        );
+    }
+
+    #[test]
+    fn a_3_8_fs_policy_serializes_as_before() {
+        // The new fields stay out of the serialized form at their defaults, so a policy written
+        // for 3.8 keeps its hash.
+        let json =
+            serde_json::to_string(&parse(r#"{"fs_policy": {"allowed_roots": ["a"]}}"#).unwrap())
+                .unwrap();
+        assert!(
+            json.contains(r#""fs_policy":{"allowed_roots":["a"],"max_read_bytes":10485760}"#),
+            "{json}"
         );
     }
 

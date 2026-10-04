@@ -461,8 +461,8 @@ x : T (declared mut) ∈ Γ      Γ ⊢ e : T
 
 - The assigned value MUST have the binding's type. Since 2.0 an assignment whose value has a
   known, different type is compile error **E009** (a warning in 1.3).
-- Rebinding a binding declared without `mut`, a function parameter or a `for` loop variable is
-  compile error **E010** since 2.0 (a warning in 1.x, because 1.0 programs relied on it).
+- Rebinding a binding declared without `mut`, a function parameter, a `for` loop variable or a
+  name bound by a `match` pattern is compile error **E010** since 2.0 (a warning in 1.x, because 1.0 programs relied on it).
   `boruna lang repair` adds `mut` to a `let` automatically.
 - An assignment inside a nested block (`if`, `match` arm, loop body) rebinds the binding from the
   enclosing scope. A `let` inside a block, a loop body or a `match` arm, and a name bound by a
@@ -555,7 +555,7 @@ These built-ins perform side effects through the capability gateway (§6.5).
 | `random_int` | `(Int, Int) -> Int` | `random` | `(lo, hi)`; uniform in `[lo, hi]`, both ends included. `lo > hi` is a runtime error. |
 | `fs_list` | `(String) -> List<String>` | `fs.read` | Names of the entries in a folder, sorted, not recursive (2.0). |
 | `fs_append` | `(String, String) -> Bool` | `fs.write` | `(path, content)`; appends, creating the file if needed (2.0). |
-| `fs_delete` | `(String) -> Bool` | `fs.write` | Deletes a file (not a folder). A symlink is removed, never its target (2.0). |
+| `fs_delete` | `(String) -> Bool` | `fs.write` | Deletes a file (not a folder). A symlink is removed, never its target. The reference host also requires `fs_policy.allow_delete` (2.0). |
 
 - A function whose body calls one of these MUST declare the listed capability in its annotation
   (§6.1); otherwise the program is rejected at compile time.

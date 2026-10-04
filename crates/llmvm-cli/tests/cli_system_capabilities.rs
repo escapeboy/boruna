@@ -29,7 +29,7 @@ fn policy(dir: &Path, root: &Path) -> std::path::PathBuf {
     let f = dir.join("policy.json");
     let json = serde_json::json!({
         "default_allow": true,
-        "fs_policy": {"allowed_roots": [root.to_str().unwrap()]}
+        "fs_policy": {"allowed_roots": [root.to_str().unwrap()], "allow_delete": true}
     });
     std::fs::write(&f, json.to_string()).unwrap();
     f

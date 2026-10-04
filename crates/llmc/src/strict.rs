@@ -21,6 +21,8 @@ pub enum Binding {
     Mut,
     Param,
     ForVar,
+    /// A name bound by a `match` pattern (`Some(v) => ...`).
+    Pattern,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +131,10 @@ impl Issue {
                 Binding::ForVar => format!(
                     "cannot reassign loop variable '{name}'; copy it into a new binding first, \
                      e.g. `let mut {name}_acc = {name}`"
+                ),
+                Binding::Pattern => format!(
+                    "cannot reassign '{name}', which a `match` pattern binds; copy it into a new \
+                     binding first, e.g. `let mut {name}_acc = {name}`"
                 ),
                 _ => format!(
                     "cannot reassign '{name}': it was declared without `mut`; declare it with \
@@ -508,11 +514,10 @@ fn mut_expr(expr: &Expr, scope: &HashMap<String, Binding>, hits: &mut Vec<(Strin
         Expr::Match { value, arms } => {
             mut_expr(value, scope, hits);
             for arm in arms {
-                // A name bound by the pattern shadows the outer binding; leave it out rather
-                // than guess how an assignment to it behaves.
+                // A name bound by the pattern is a new, non-`mut` binding for the arm (§4.5).
                 let mut inner = scope.clone();
                 for n in pattern_names(&arm.pattern) {
-                    inner.remove(&n);
+                    inner.insert(n, Binding::Pattern);
                 }
                 mut_expr(&arm.body, &inner, hits);
             }

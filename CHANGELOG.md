@@ -16,7 +16,8 @@ end of life. Read [Upgrading to 4.0](docs/guides/upgrading-to-4.md) first.
 - `.ax` language 2.0. The compiler rejects what 1.x only warned about:
   - `E009`: a type mismatch the checker can name, in a `let` annotation, a call argument, an
     assignment or a `while` condition.
-  - `E010`: reassigning a `let` declared without `mut`, a parameter or a `for` variable.
+  - `E010`: reassigning a `let` declared without `mut`, a parameter, a `for` variable or a name
+    bound by a `match` pattern.
 
   `boruna lang check` lists every case with its line in the function; `boruna lang repair` adds the missing
   `mut`. See [Upgrading to 4.0](docs/guides/upgrading-to-4.md).
@@ -31,10 +32,17 @@ end of life. Read [Upgrading to 4.0](docs/guides/upgrading-to-4.md) first.
 - `break` and `continue` in `while` and `for` loops, as statements in the loop body or in an
   `if` statement there.
 - `fs_list(dir)`, `fs_append(path, content)` and `fs_delete(path)`, limited to the policy's
-  `fs_policy.allowed_roots` under `--live` like `fs_read` / `fs_write`. Deleting a symlink
-  removes the link, never its target; folders are not deleted.
+  `fs_policy.allowed_roots` under `--live` like `fs_read` / `fs_write`. Deleting needs
+  `"allow_delete": true` in `fs_policy` (allowing `fs.write` is not enough); a symlink is removed,
+  never its target; folders are not deleted. `fs_list` returns at most
+  `fs_policy.max_list_entries` names (default 10 000).
 
 ### Changed
+- A call with the wrong number of arguments is a compile error even when the function's name is
+  also a local (the type checker skipped that case).
+- Compiling costs more: the strict pass and block scoping add about 13–22% executed
+  instructions to the compiler benchmarks (CI instruction counts, `compile_source`). Running
+  programs costs the same.
 - The compiler emits different bytecode for `if`, block expressions, loops and `match` (block
   scoping and the fixes below), so module hashes of most programs change.
 
@@ -43,8 +51,8 @@ end of life. Read [Upgrading to 4.0](docs/guides/upgrading-to-4.md) first.
   was false. Both branches now always leave one value.
 - The trailing expression of a `for` body was left on the stack on every iteration; a long
   loop hit "stack overflow".
-- A parameter holding a function, named like a top-level function, called the top-level
-  function instead of the value passed in.
+- A parameter holding a function, named like a top-level function or a built-in, called the
+  top-level function or built-in instead of the value passed in.
 - `boruna ... | head` panicked with "failed printing to stdout: Broken pipe" when the reader
   closed the pipe; it now exits quietly (Unix).
 

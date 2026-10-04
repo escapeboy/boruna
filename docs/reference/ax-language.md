@@ -178,9 +178,9 @@ capability, the policy decides, and each result is recorded so `boruna replay` r
 | `fs_write(path, content)` | `fs.write` | `true` once the file is written |
 | `time_now()` | `time.now` | Unix time in milliseconds |
 | `random_int(lo, hi)` | `random` | a uniform Int in `[lo, hi]`, both ends included |
-| `fs_list(dir)` | `fs.read` | the names in a folder (`List<String>`), sorted, not recursive |
+| `fs_list(dir)` | `fs.read` | the names in a folder (`List<String>`), sorted, not recursive; at most `fs_policy.max_list_entries` (default 10 000) |
 | `fs_append(path, content)` | `fs.write` | `true`; appends, creating the file if needed |
-| `fs_delete(path)` | `fs.write` | `true`; deletes a file (not a folder); a symlink is removed, not its target |
+| `fs_delete(path)` | `fs.write` | `true`; deletes a file (not a folder); a symlink is removed, not its target. Needs `"allow_delete": true` in `fs_policy` |
 
 ```ax
 fn stamp() -> Int !{time.now} {

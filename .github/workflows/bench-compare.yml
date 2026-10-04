@@ -15,6 +15,8 @@ name: Bench compare
 on:
   pull_request:
     branches: [master, main]
+    # `labeled` / `unlabeled` re-run the gate when `perf-accepted` is added or removed.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -226,6 +228,9 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A deliberate cost (a new compiler pass, say) is accepted by labelling the PR
+          # `perf-accepted`. The numbers are still measured and printed.
+          PERF_ACCEPTED: ${{ contains(github.event.pull_request.labels.*.name, 'perf-accepted') }}
         run: |
           set -euo pipefail
           # The runner binary must match the gungraun library version of the checkout.
@@ -236,15 +241,35 @@ jobs:
               cargo install gungraun-runner --version "$version" --locked
             fi
           }
-          # Fail if the harness ran but measured nothing (it once did, and passed green).
+          # Runs the benches; returns 1 when the harness measured nothing or any benchmark
+          # counted 0 instructions (that measures nothing, and comparing against it reports
+          # every benchmark as "+inf%"). Other failures (exit 3 = over the limit) pass through.
           bench() {
-            cargo bench --locked -p boruna-benches --bench instructions -- "$@" 2>&1 | tee bench.log
-            grep -q '^Gungraun result:' bench.log || { echo "::error::no instruction benchmarks were measured"; exit 1; }
-            # A benchmark that counts 0 instructions measured nothing; comparing against it
-            # reports every head benchmark as "+inf%".
+            local status=0
+            cargo bench --locked -p boruna-benches --bench instructions -- "$@" > bench.log 2>&1 \
+              || status=$?
+            cat bench.log
+            grep -q '^Gungraun result:' bench.log || return 1
             if sed 's/\x1b\[[0-9;]*m//g' bench.log | grep -Eq '^ *Instructions: +0\|'; then
-              echo "::error::an instruction benchmark measured 0 instructions"; exit 1
+              return 1
             fi
+            return $status
+          }
+          # The head must always measure; then the limit decides, unless the PR accepts it.
+          compare_head() {
+            local status=0
+            bench "$@" || status=$?
+            case $status in
+              0) ;;
+              1) echo "::error::the head build measured no instructions"; exit 1 ;;
+              3) if [ "$PERF_ACCEPTED" = "true" ]; then
+                   echo "::warning::instruction count rose by more than 3%; accepted by the perf-accepted label"
+                 else
+                   echo "::error::a benchmark executes more than 3% more instructions than the base (label the PR perf-accepted if that is intended)"
+                   exit 1
+                 fi ;;
+              *) exit $status ;;
+            esac
           }
 
           # Results cached with `target` from earlier runs must not mix with this run's.
@@ -254,14 +279,23 @@ jobs:
           git checkout "origin/$BASE_REF"
           if [ -f benches/benches/instructions.rs ]; then
             install_runner
-            bench --save-baseline=base
-            git checkout "$HEAD_SHA"
-            install_runner
-            # Exit code 3 = at least one benchmark executed > 3% more instructions.
-            bench --baseline=base --callgrind-limits='ir=3%'
+            if bench --save-baseline=base; then
+              git checkout "$HEAD_SHA"
+              install_runner
+              compare_head --baseline=base --callgrind-limits='ir=3%'
+            else
+              # Seen on x86_64: one build of the base counted 0 instructions for every benchmark
+              # (the same build, master at 3.8.0, also counted 0 as the head of PR #108, where the
+              # old gate passed it as "-100%"). The cause is not known. Without a base there is nothing to compare against.
+              echo "::warning::the base build measured no instructions; comparison skipped, head measured only"
+              rm -rf target/gungraun
+              git checkout "$HEAD_SHA"
+              install_runner
+              compare_head
+            fi
           else
             echo "Base has no instruction benchmarks yet; recording head only (no comparison)."
             git checkout "$HEAD_SHA"
             install_runner
-            bench
+            compare_head
           fi

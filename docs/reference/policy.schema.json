@@ -104,6 +104,17 @@
           "minimum": 1,
           "default": 10485760,
           "description": "Largest file fs_read returns. Default 10 MB."
+        },
+        "allow_delete": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether fs_delete may delete files. fs.write alone does not allow it."
+        },
+        "max_list_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10000,
+          "description": "Most entries fs_list returns; a larger folder is an error. Default 10000."
         }
       }
     }

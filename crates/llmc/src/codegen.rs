@@ -398,17 +398,6 @@ impl Emitter {
     }
 
     fn emit_expr(&mut self, expr: &Expr, fe: &mut FnEmitter) -> Result<(), CompileError> {
-        // Names bound inside a `match` arm end with the arm (language spec, block scoping).
-        if matches!(expr, Expr::Match { .. }) {
-            let saved = fe.scope();
-            let result = self.emit_expr_inner(expr, fe);
-            fe.restore(saved);
-            return result;
-        }
-        self.emit_expr_inner(expr, fe)
-    }
-
-    fn emit_expr_inner(&mut self, expr: &Expr, fe: &mut FnEmitter) -> Result<(), CompileError> {
         match expr {
             Expr::IntLit(n) => {
                 let idx = self.module.add_const(Value::Int(*n));
@@ -836,6 +825,7 @@ impl Emitter {
                 fe.code[end_jmp] = Op::Jmp(end_target);
             }
             Expr::Match { value, arms } => {
+                // Each arm starts from, and the whole match ends with, the scope outside it.
                 let match_scope = fe.scope();
                 // String and integer literal patterns compile to an if-else chain of
                 // `Eq` comparisons. `Op::Match` cannot handle them: it dispatches on a
@@ -991,6 +981,8 @@ impl Emitter {
                     }
                     fe.match_tables[table_idx as usize] = bc_arms;
                 }
+                // Names bound inside an arm end with the arm (block scoping).
+                fe.restore(match_scope);
             }
             Expr::Record {
                 type_name,
