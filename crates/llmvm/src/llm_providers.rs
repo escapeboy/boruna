@@ -1200,7 +1200,6 @@ mod tests {
 mod command_tests {
     use super::*;
     use crate::capability_gateway::MockHandler;
-    use boruna_bytecode::{Capability, Value};
 
     fn handler(argv: &[&str], timeout_ms: u64, max_output: u64) -> command::CommandHandler {
         command::CommandHandler {
@@ -1279,6 +1278,7 @@ mod command_tests {
     #[cfg(unix)]
     #[test]
     fn prompt_goes_in_on_stdin_and_reply_comes_from_stdout() {
+        use boruna_bytecode::{Capability, Value};
         let cfg = LlmProviders::from_json(
             r#"{"providers":{"echo":{"kind":"command","command":["cat"]}}}"#,
         )
