@@ -5,7 +5,7 @@ compatible within a major line, how features are deprecated and removed,
 and how security fixes are released.
 
 The short version: **only the latest major line is supported.** Today that
-is **4.x**. The current release is 4.1.0 (2026-10-04).
+is **4.x**. The current release is 4.2.0 (2026-10-04).
 
 ## A. Support windows
 
@@ -72,7 +72,7 @@ allowed. Removals, renames and type changes are not.
 
 ### Release version and format versions are separate
 
-The Boruna release version (4.1.0) is not the version of the language or
+The Boruna release version (4.2.0) is not the version of the language or
 of the file formats. Each has its own version:
 
 | Surface | Current version | Defined in |

@@ -29,6 +29,7 @@ Workspace version is `3.5.0`. What shipped since v3.0.0 (see the [CHANGELOG](../
 - **3.4.0 (2026-10-03)** — `--version` on all four binaries; release binaries for macOS Intel and Windows (x64 and Arm); native CI on macOS (arm64, Intel), Windows (x64, Arm) and Linux arm64; Windows fixes (stack overflow, CRLF sources, rooted patch paths, trigger tokens).
 - **4.0.0 (2026-10-04)** — `.ax` language 2.0: `E009` / `E010` are compile errors, `break` / `continue`, block-scoped bindings, `fs_list` / `fs_append` / `fs_delete`; 3.x end of life.
 - **4.1.0 (2026-10-04)** — `workflow approve` / `reject` record the approver's name and reason in the audit log (bundle format 2.0 when used); `+` joins two strings as the spec says.
+- **4.2.0 (2026-10-04)** — LLM provider kind `command`: `llm_call` through a local command-line tool (`claude`, `codex`, `gemini`), prompt on stdin, reply from stdout; works without the `http` feature.
 - **3.5.0 (2026-10-03)** — `install.sh` / `install.ps1` one-line installers; diagnostic `E010` (warning: reassigning a binding declared without `mut`); language version `1.1`; `match` fixes (`Some`/`Ok`/`Err` patterns, integer literal patterns, nested `match`, no-arm fallthrough).
 
 Versions 1.5.0 through 2.0.0 are listed in the [CHANGELOG](../CHANGELOG.md).

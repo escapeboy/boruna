@@ -14,10 +14,16 @@
 //!     "anthropic": { "kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" },
 //!     "local":     { "kind": "ollama",    "base_url": "http://localhost:11434" },
 //!     "vllm":      { "kind": "openai_compat", "base_url": "http://gpu-box:8000/v1" },
-//!     "bedrock":   { "kind": "bedrock",   "region": "us-east-1" }
+//!     "bedrock":   { "kind": "bedrock",   "region": "us-east-1" },
+//!     "claude":    { "kind": "command",
+//!                    "command": ["claude", "-p", "--tools", "", "--model", "{model}"] }
 //!   }
 //! }
 //! ```
+//!
+//! A `command` provider runs a local program for each call (no shell): the prompt goes to its
+//! stdin, its stdout is the reply, and `{model}` in an argument is replaced by the model. It
+//! needs no `http` feature. Whoever can edit `providers.json` can run programs as the user.
 //!
 //! The provider name is what `.ax` code writes before the slash: with the config above,
 //! `llm_call(p, "local/llama3.1")` goes to Ollama with model `llama3.1`.
@@ -46,6 +52,8 @@ pub enum ProviderKind {
     Ollama,
     /// AWS Bedrock Converse API, signed with SigV4.
     Bedrock,
+    /// A local program (e.g. a CLI such as `claude -p`): prompt on stdin, reply on stdout.
+    Command,
 }
 
 /// One provider's settings.
@@ -68,9 +76,15 @@ pub struct ProviderConfig {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f64>,
-    /// Per-request timeout in milliseconds (default 120000).
+    /// Per-request timeout in milliseconds (default 120000; 300000 for `command`).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// `command` only: the program and its arguments. `{model}` is replaced by the model.
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    /// `command` only: largest reply accepted, in bytes (default 4 MiB).
+    #[serde(default)]
+    pub max_output_bytes: Option<u64>,
 }
 
 /// The `providers` map of a `providers.json`.
@@ -96,6 +110,29 @@ impl LlmProviders {
             if p.kind == ProviderKind::OpenaiCompat && p.base_url.is_none() {
                 return Err(format!("provider {name:?} (openai_compat) needs base_url"));
             }
+            if p.kind == ProviderKind::Command {
+                match &p.command {
+                    Some(argv) if argv.first().is_some_and(|prog| !prog.is_empty()) => {}
+                    _ => {
+                        return Err(format!(
+                            "provider {name:?} (command) needs a non-empty \"command\" list"
+                        ))
+                    }
+                }
+                for (field, set) in [
+                    ("api_key_env", p.api_key_env.is_some()),
+                    ("base_url", p.base_url.is_some()),
+                    ("region", p.region.is_some()),
+                ] {
+                    if set {
+                        return Err(format!("provider {name:?} (command) does not take {field}"));
+                    }
+                }
+            } else if p.command.is_some() || p.max_output_bytes.is_some() {
+                return Err(format!(
+                    "provider {name:?}: command and max_output_bytes are only for kind \"command\""
+                ));
+            }
         }
         Ok(cfg)
     }
@@ -115,6 +152,9 @@ impl LlmProviders {
                 if let Some(r) = &p.region {
                     s.push_str(&format!(", region={r}"));
                 }
+                if let Some(prog) = p.command.as_ref().and_then(|c| c.first()) {
+                    s.push_str(&format!(", program={prog}"));
+                }
                 s
             })
             .collect::<Vec<_>>()
@@ -131,18 +171,262 @@ impl LlmProviders {
     ) -> Result<LlmRouterHandler, String> {
         let mut handlers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
         for (name, cfg) in &self.providers {
-            handlers.insert(name.clone(), http::handler_for(name, cfg)?);
+            let handler = if cfg.kind == ProviderKind::Command {
+                command::handler_for(name, cfg)
+            } else {
+                http::handler_for(name, cfg)?
+            };
+            handlers.insert(name.clone(), handler);
         }
         Ok(LlmRouterHandler::new(handlers, fallback))
     }
 
-    /// Without the `http` feature there is no network client: building a router fails.
+    /// Without the `http` feature there is no network client: only `command` providers work.
     #[cfg(not(feature = "http"))]
     pub fn build_router(
         &self,
-        _fallback: Box<dyn CapabilityHandler>,
+        fallback: Box<dyn CapabilityHandler>,
     ) -> Result<LlmRouterHandler, String> {
-        Err("LLM providers need a build with the `http` feature".into())
+        let mut handlers: BTreeMap<String, Box<dyn CapabilityHandler>> = BTreeMap::new();
+        for (name, cfg) in &self.providers {
+            if cfg.kind != ProviderKind::Command {
+                return Err(format!(
+                    "provider {name:?} ({:?}) needs a build with the `http` feature",
+                    cfg.kind
+                ));
+            }
+            handlers.insert(name.clone(), command::handler_for(name, cfg));
+        }
+        Ok(LlmRouterHandler::new(handlers, fallback))
+    }
+}
+
+/// `kind: "command"`: run a local program per call. No shell; prompt on stdin, reply on stdout.
+mod command {
+    use super::ProviderConfig;
+    use crate::capability_gateway::CapabilityHandler;
+    use boruna_bytecode::{Capability, Value};
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const DEFAULT_TIMEOUT_MS: u64 = 300_000;
+    const DEFAULT_MAX_OUTPUT: u64 = 4 * 1024 * 1024;
+    const STDERR_TAIL: usize = 500;
+
+    pub(super) fn handler_for(name: &str, cfg: &ProviderConfig) -> Box<dyn CapabilityHandler> {
+        Box::new(CommandHandler {
+            name: name.to_string(),
+            argv: cfg.command.clone().unwrap_or_default(),
+            timeout: Duration::from_millis(cfg.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
+            max_output: cfg.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT),
+        })
+    }
+
+    pub(super) struct CommandHandler {
+        pub(super) name: String,
+        pub(super) argv: Vec<String>,
+        pub(super) timeout: Duration,
+        pub(super) max_output: u64,
+    }
+
+    impl CapabilityHandler for CommandHandler {
+        fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
+            if !matches!(cap, Capability::LlmCall) {
+                return Err(format!("provider {}: only handles llm.call", self.name));
+            }
+            let prompt = match args.first() {
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => format!("{other}"),
+                None => return Err("llm.call needs a prompt (args[0])".into()),
+            };
+            let model = match args.get(1) {
+                Some(Value::String(s)) => s
+                    .split_once('/')
+                    .map(|(_, m)| m.to_string())
+                    .unwrap_or_else(|| s.clone()),
+                _ => return Err("llm.call needs a model (args[1])".into()),
+            };
+            self.run(&prompt, &model).map(Value::String)
+        }
+    }
+
+    impl CommandHandler {
+        pub(super) fn run(&self, prompt: &str, model: &str) -> Result<String, String> {
+            // The model comes from `.ax` code. Substituted into a CLI's arguments, a value such
+            // as `--dangerously-skip-permissions` would be read as a flag and could switch the
+            // tool's own tools back on, so refuse anything flag-like or with control characters.
+            if model.starts_with('-') || model.chars().any(char::is_control) {
+                return Err(format!(
+                    "provider {}: model {model:?} is not allowed for a command provider",
+                    self.name
+                ));
+            }
+            let argv: Vec<String> = self
+                .argv
+                .iter()
+                .map(|a| a.replace("{model}", model))
+                .collect();
+            let (program, rest) = argv
+                .split_first()
+                .ok_or_else(|| format!("provider {}: empty command", self.name))?;
+            let mut cmd = Command::new(program);
+            cmd.args(rest)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            // Same process group as boruna (not a new one): Ctrl-C at the terminal reaches the
+            // program too, and a program that touches the terminal is not stopped by SIGTTOU.
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("provider {}: cannot run {program}: {e}", self.name))?;
+
+            // Feed stdin and drain both outputs on their own threads, so neither side can
+            // block the other on a full pipe.
+            let mut stdin = child.stdin.take().expect("piped");
+            let input = prompt.as_bytes().to_vec();
+            // The CLI restores the default SIGPIPE action (so `| head` exits quietly), which
+            // would kill the whole process when a program exits without reading all of its
+            // stdin. Make that write fail with EPIPE instead: macOS has a per-pipe flag;
+            // on Linux SIGPIPE for a pipe write goes to the writing thread, so blocking it there
+            // and consuming the pending signal is enough.
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                use std::os::unix::io::AsRawFd;
+                // <sys/fcntl.h>: F_SETNOSIGPIPE (not exported by every libc crate version).
+                const F_SETNOSIGPIPE: libc::c_int = 73;
+                // SAFETY: fcntl on a pipe descriptor we own; F_SETNOSIGPIPE only sets a flag.
+                unsafe {
+                    libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1);
+                }
+            }
+            // Not joined: a process that keeps the pipe open without reading must not hold the
+            // call past its timeout. The thread ends when the pipe closes.
+            std::thread::spawn(move || {
+                #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+                // SAFETY: signal-mask calls for the current thread on a zeroed sigset_t.
+                let set = unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGPIPE);
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                    set
+                };
+                // A program that exits without reading all of stdin is not an error here.
+                let result = stdin.write_all(&input);
+                #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+                if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe) {
+                    let zero = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    // SAFETY: takes the pending, blocked SIGPIPE off this thread.
+                    unsafe {
+                        libc::sigtimedwait(&set, std::ptr::null_mut(), &zero);
+                    }
+                }
+                drop(result);
+            });
+            let limit = self.max_output;
+            let (out_tx, out_rx) = std::sync::mpsc::channel();
+            let stdout = child.stdout.take().expect("piped");
+            std::thread::spawn(move || {
+                let _ = out_tx.send(read_capped(stdout, limit));
+            });
+            let (err_tx, err_rx) = std::sync::mpsc::channel();
+            let stderr = child.stderr.take().expect("piped");
+            std::thread::spawn(move || {
+                let _ = err_tx.send(read_capped(stderr, 64 * 1024));
+            });
+
+            // The timeout covers the whole call: the program's exit and the end of its output,
+            // which a process it left running could otherwise hold open indefinitely.
+            let deadline = Instant::now() + self.timeout;
+            let timed_out = |child: &mut std::process::Child| {
+                stop(child);
+                format!(
+                    "provider {}: {program} did not finish within {} ms",
+                    self.name,
+                    self.timeout.as_millis()
+                )
+            };
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break status,
+                    Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(e) => {
+                        stop(&mut child);
+                        return Err(format!(
+                            "provider {}: waiting for {program}: {e}",
+                            self.name
+                        ));
+                    }
+                }
+            };
+            let remaining = |deadline: Instant| deadline.saturating_duration_since(Instant::now());
+            let Ok((out, out_truncated)) = out_rx.recv_timeout(remaining(deadline)) else {
+                return Err(timed_out(&mut child));
+            };
+            let Ok((err, _)) = err_rx.recv_timeout(remaining(deadline)) else {
+                return Err(timed_out(&mut child));
+            };
+
+            if !status.success() {
+                let err = String::from_utf8_lossy(&err);
+                let tail: String = {
+                    let t = err.trim_end();
+                    let start = t
+                        .char_indices()
+                        .rev()
+                        .nth(STDERR_TAIL - 1)
+                        .map_or(0, |(i, _)| i);
+                    t[start..].to_string()
+                };
+                let code = status
+                    .code()
+                    .map_or_else(|| "a signal".to_string(), |c| format!("code {c}"));
+                return Err(format!(
+                    "provider {}: {program} exited with {code}: {tail}",
+                    self.name
+                ));
+            }
+            if out_truncated {
+                return Err(format!(
+                    "provider {}: {program} wrote more than {limit} bytes",
+                    self.name
+                ));
+            }
+            Ok(String::from_utf8_lossy(&out).trim_end().to_string())
+        }
+    }
+
+    /// Stop the program. Processes it started in the background are not tracked; the call
+    /// still returns at its deadline because output is only awaited until then.
+    fn stop(child: &mut std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// Read until EOF, keeping at most `limit` bytes; the flag says whether more arrived.
+    /// Keeps draining past the limit so the child never blocks on a full pipe.
+    fn read_capped(mut r: impl Read, limit: u64) -> (Vec<u8>, bool) {
+        let mut kept = Vec::new();
+        let mut over = false;
+        let mut buf = [0u8; 8192];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = (limit as usize).saturating_sub(kept.len());
+                    if n > room {
+                        over = true;
+                    }
+                    kept.extend_from_slice(&buf[..n.min(room)]);
+                }
+            }
+        }
+        (kept, over)
     }
 }
 
@@ -307,6 +591,11 @@ mod http {
                     let resp = self.post_json(&url, &[], &body)?;
                     string_at(&resp, &["message", "content"]).ok_or_else(|| self.bad_shape(&resp))
                 }
+                // Routed to `command::handler_for` by `build_router`; never reaches here.
+                ProviderKind::Command => Err(format!(
+                    "provider {}: command providers do not use HTTP",
+                    self.name
+                )),
                 ProviderKind::Bedrock => {
                     let creds = self.aws.as_ref().expect("checked when built");
                     let base = c.base_url.clone().unwrap_or_else(|| {
@@ -904,5 +1193,203 @@ mod tests {
             .handle(&Capability::NetFetch, &[Value::String("u".into())])
             .unwrap();
         assert!(matches!(v, Value::String(s) if s.contains("\"mock\": true")));
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use crate::capability_gateway::MockHandler;
+
+    fn handler(argv: &[&str], timeout_ms: u64, max_output: u64) -> command::CommandHandler {
+        command::CommandHandler {
+            name: "t".into(),
+            argv: argv.iter().map(|s| s.to_string()).collect(),
+            timeout: std::time::Duration::from_millis(timeout_ms),
+            max_output,
+        }
+    }
+
+    // V1-V3: what a command provider may and may not contain.
+    #[test]
+    fn command_config_is_validated() {
+        let ok = r#"{"providers":{"c":{"kind":"command","command":["cat"],"timeout_ms":1000}}}"#;
+        assert!(LlmProviders::from_json(ok).is_ok());
+        for bad in [
+            r#"{"providers":{"c":{"kind":"command"}}}"#,
+            r#"{"providers":{"c":{"kind":"command","command":[]}}}"#,
+            r#"{"providers":{"c":{"kind":"command","command":[""]}}}"#,
+            r#"{"providers":{"c":{"kind":"command","command":["cat"],"api_key_env":"K"}}}"#,
+            r#"{"providers":{"c":{"kind":"command","command":["cat"],"base_url":"http://x"}}}"#,
+            r#"{"providers":{"c":{"kind":"command","command":["cat"],"region":"r"}}}"#,
+            r#"{"providers":{"c":{"kind":"openai","api_key_env":"K","command":["cat"]}}}"#,
+            r#"{"providers":{"c":{"kind":"ollama","max_output_bytes":10}}}"#,
+        ] {
+            assert!(LlmProviders::from_json(bad).is_err(), "accepted: {bad}");
+        }
+    }
+
+    // V4: the log line names the program only, never the arguments.
+    #[test]
+    fn describe_names_the_program() {
+        let cfg = LlmProviders::from_json(
+            r#"{"providers":{"c":{"kind":"command","command":["claude","-p","--secret-flag"]}}}"#,
+        )
+        .unwrap();
+        let d = cfg.describe();
+        assert!(d.contains("program=claude"), "{d}");
+        assert!(!d.contains("--secret-flag"), "{d}");
+    }
+
+    // R1: a command-only config builds a router in every build.
+    #[test]
+    fn command_only_config_builds_a_router() {
+        let cfg =
+            LlmProviders::from_json(r#"{"providers":{"c":{"kind":"command","command":["cat"]}}}"#)
+                .unwrap();
+        assert!(cfg.build_router(Box::new(MockHandler)).is_ok());
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn non_http_build_rejects_http_providers() {
+        let cfg = LlmProviders::from_json(
+            r#"{"providers":{"c":{"kind":"command","command":["cat"]},"o":{"kind":"ollama"}}}"#,
+        )
+        .unwrap();
+        let Err(err) = cfg.build_router(Box::new(MockHandler)) else {
+            panic!("a non-command provider must need the http feature");
+        };
+        assert!(err.contains("http"), "{err}");
+    }
+
+    #[test]
+    fn missing_program_is_a_clear_error() {
+        let err = handler(&["boruna-no-such-program-xyz"], 5_000, 1024)
+            .run("p", "m")
+            .unwrap_err();
+        assert!(
+            err.contains("cannot run boruna-no-such-program-xyz"),
+            "{err}"
+        );
+    }
+
+    // C1, C7, C8 and routing through the router by provider name.
+    #[cfg(unix)]
+    #[test]
+    fn prompt_goes_in_on_stdin_and_reply_comes_from_stdout() {
+        use boruna_bytecode::{Capability, Value};
+        let cfg = LlmProviders::from_json(
+            r#"{"providers":{"echo":{"kind":"command","command":["cat"]}}}"#,
+        )
+        .unwrap();
+        let mut router = cfg.build_router(Box::new(MockHandler)).unwrap();
+        let v = router
+            .handle(
+                &Capability::LlmCall,
+                &[
+                    Value::String("hello\n\n".into()),
+                    Value::String("echo/any".into()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(v, Value::String("hello".into())); // trailing whitespace trimmed
+
+        let big = "x".repeat(2 * 1024 * 1024);
+        let out = handler(&["cat"], 30_000, 4 * 1024 * 1024)
+            .run(&big, "m")
+            .unwrap();
+        assert_eq!(out.len(), big.len());
+    }
+
+    // C2: `{model}` is replaced, also inside a longer argument.
+    #[cfg(unix)]
+    #[test]
+    fn model_placeholder_is_replaced() {
+        let h = handler(
+            &[
+                "sh",
+                "-c",
+                "printf '%s|%s' \"$1\" \"$2\"",
+                "sh",
+                "{model}",
+                "--model={model}",
+            ],
+            5_000,
+            1024,
+        );
+        assert_eq!(h.run("", "m1").unwrap(), "m1|--model=m1");
+    }
+
+    // A model from .ax code cannot smuggle a flag into the program's arguments.
+    #[test]
+    fn flag_like_models_are_refused() {
+        let h = handler(&["cat", "{model}"], 5_000, 1024);
+        for model in ["--dangerously-skip-permissions", "-p", "a\nb", "x\u{0}"] {
+            let err = h.run("p", model).unwrap_err();
+            assert!(err.contains("is not allowed"), "{model:?}: {err}");
+        }
+    }
+
+    // A program that exits without reading its stdin must not take boruna down (SIGPIPE).
+    #[cfg(unix)]
+    #[test]
+    fn program_that_ignores_stdin_does_not_kill_boruna() {
+        let big = "x".repeat(4 * 1024 * 1024);
+        let out = handler(&["sh", "-c", "echo early"], 10_000, 1024)
+            .run(&big, "m")
+            .unwrap();
+        assert_eq!(out, "early");
+    }
+
+    // C3: a failing program reports its exit code and the end of stderr.
+    #[cfg(unix)]
+    #[test]
+    fn non_zero_exit_reports_code_and_stderr() {
+        let err = handler(
+            &["sh", "-c", "echo 'not logged in' >&2; exit 3"],
+            5_000,
+            1024,
+        )
+        .run("p", "m")
+        .unwrap_err();
+        assert!(
+            err.contains("code 3") && err.contains("not logged in"),
+            "{err}"
+        );
+    }
+
+    // C4: a program that hangs is killed at the timeout.
+    #[cfg(unix)]
+    #[test]
+    fn hanging_program_is_killed_at_the_timeout() {
+        let start = std::time::Instant::now();
+        let err = handler(&["sleep", "5"], 200, 1024)
+            .run("p", "m")
+            .unwrap_err();
+        assert!(err.contains("did not finish within 200 ms"), "{err}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    // The timeout covers output held open by a process the program left behind.
+    #[cfg(unix)]
+    #[test]
+    fn timeout_covers_leftover_processes_holding_the_output() {
+        let start = std::time::Instant::now();
+        let err = handler(&["sh", "-c", "(sleep 3) & echo hi"], 500, 1024)
+            .run("p", "m")
+            .unwrap_err();
+        assert!(err.contains("did not finish within 500 ms"), "{err}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    // C5: a reply over the size limit is refused.
+    #[cfg(unix)]
+    #[test]
+    fn oversized_reply_is_refused() {
+        let err = handler(&["sh", "-c", "head -c 5000 /dev/zero"], 5_000, 1000)
+            .run("p", "m")
+            .unwrap_err();
+        assert!(err.contains("more than 1000 bytes"), "{err}");
     }
 }
