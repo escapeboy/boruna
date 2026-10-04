@@ -44,6 +44,9 @@ with `kind: "command"`, which program runs for each `llm.call`. Anyone who can e
 run programs as the user who runs Boruna. Boruna's capability policy gates the `llm.call` itself
 but cannot constrain what an external program does once started. This is by design, not a
 vulnerability; report cases where Boruna runs a program that the configuration did not name.
+`.ax` code chooses the model, which is substituted for `{model}` in the program's arguments;
+Boruna refuses models that start with `-` or contain control characters so that code cannot add
+flags. Report any way around that.
 
 ## Backport Policy
 

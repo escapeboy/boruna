@@ -16,7 +16,8 @@ subscription, so no API key is needed.
   `codex exec`, with the prompt on stdin and the reply from stdout. No shell, `{model}` in the
   arguments, `timeout_ms` (default 300 s) and `max_output_bytes` (default 4 MiB). It needs no
   API key and no `http` feature, so a subscription's command-line tool can answer `llm_call`.
-  Replies are recorded and replayed like any provider's. The tools are agents: the guide shows
+  Replies are recorded and replayed like any provider's. A model starting with `-` (or with
+  control characters) is refused, so `.ax` code cannot pass a flag to the tool. The tools are agents: the guide shows
   how to switch their tools off, and `SECURITY.md` explains that `providers.json` can now run
   programs.
 

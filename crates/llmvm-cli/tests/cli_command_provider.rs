@@ -176,3 +176,30 @@ fn a_failing_program_fails_the_call_with_its_stderr() {
         "{all}"
     );
 }
+
+// The CLI restores the default SIGPIPE action; a program that exits without reading a large
+// prompt must not kill boruna (exit 141). Runs the real binary, unlike the unit test.
+#[test]
+fn program_that_ignores_a_large_prompt_does_not_kill_boruna() {
+    let dir = tempfile::tempdir().unwrap();
+    let providers = dir.path().join("providers.json");
+    std::fs::write(
+        &providers,
+        r#"{"providers":{"q":{"kind":"command","command":["sh","-c","echo early"]}}}"#,
+    )
+    .unwrap();
+    let program = dir.path().join("big.ax");
+    std::fs::write(
+        &program,
+        "fn big(n: Int) -> String {\n    let mut s = \"0123456789abcdef\"\n    let mut i = 0\n    while i < n {\n        s = s + s\n        i = i + 1\n    }\n    s\n}\nfn main() -> String !{llm.call} {\n    llm_call(big(18), \"q/m\")\n}\n",
+    )
+    .unwrap();
+    let out = boruna(&["run", p(&program), "--live", "--providers", p(&providers)]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("early"));
+}

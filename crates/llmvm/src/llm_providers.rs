@@ -253,6 +253,15 @@ mod command {
 
     impl CommandHandler {
         pub(super) fn run(&self, prompt: &str, model: &str) -> Result<String, String> {
+            // The model comes from `.ax` code. Substituted into a CLI's arguments, a value such
+            // as `--dangerously-skip-permissions` would be read as a flag and could switch the
+            // tool's own tools back on, so refuse anything flag-like or with control characters.
+            if model.starts_with('-') || model.chars().any(char::is_control) {
+                return Err(format!(
+                    "provider {}: model {model:?} is not allowed for a command provider",
+                    self.name
+                ));
+            }
             let argv: Vec<String> = self
                 .argv
                 .iter()
@@ -261,11 +270,18 @@ mod command {
             let (program, rest) = argv
                 .split_first()
                 .ok_or_else(|| format!("provider {}: empty command", self.name))?;
-            let mut child = Command::new(program)
-                .args(rest)
+            let mut cmd = Command::new(program);
+            cmd.args(rest)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
+                .stderr(Stdio::piped());
+            // Own process group, so a timeout can stop the program and anything it started.
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                cmd.process_group(0);
+            }
+            let mut child = cmd
                 .spawn()
                 .map_err(|e| format!("provider {}: cannot run {program}: {e}", self.name))?;
 
@@ -273,41 +289,92 @@ mod command {
             // block the other on a full pipe.
             let mut stdin = child.stdin.take().expect("piped");
             let input = prompt.as_bytes().to_vec();
-            let writer = std::thread::spawn(move || {
+            // The CLI restores the default SIGPIPE action (so `| head` exits quietly), which
+            // would kill the whole process when a program exits without reading all of its
+            // stdin. Make that write fail with EPIPE instead: macOS has a per-pipe flag;
+            // on Linux SIGPIPE for a pipe write goes to the writing thread, so blocking it there
+            // and consuming the pending signal is enough.
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                use std::os::unix::io::AsRawFd;
+                // <sys/fcntl.h>: F_SETNOSIGPIPE (not exported by every libc crate version).
+                const F_SETNOSIGPIPE: libc::c_int = 73;
+                // SAFETY: fcntl on a pipe descriptor we own; F_SETNOSIGPIPE only sets a flag.
+                unsafe {
+                    libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1);
+                }
+            }
+            // Not joined: a process that keeps the pipe open without reading must not hold the
+            // call past its timeout. The thread ends when the pipe closes.
+            std::thread::spawn(move || {
+                #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+                // SAFETY: signal-mask calls for the current thread on a zeroed sigset_t.
+                let set = unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGPIPE);
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                    set
+                };
                 // A program that exits without reading all of stdin is not an error here.
-                let _ = stdin.write_all(&input);
+                let result = stdin.write_all(&input);
+                #[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+                if matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe) {
+                    let zero = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    // SAFETY: takes the pending, blocked SIGPIPE off this thread.
+                    unsafe {
+                        libc::sigtimedwait(&set, std::ptr::null_mut(), &zero);
+                    }
+                }
+                drop(result);
             });
             let limit = self.max_output;
+            let (out_tx, out_rx) = std::sync::mpsc::channel();
             let stdout = child.stdout.take().expect("piped");
-            let out_reader = std::thread::spawn(move || read_capped(stdout, limit));
+            std::thread::spawn(move || {
+                let _ = out_tx.send(read_capped(stdout, limit));
+            });
+            let (err_tx, err_rx) = std::sync::mpsc::channel();
             let stderr = child.stderr.take().expect("piped");
-            let err_reader = std::thread::spawn(move || read_capped(stderr, 64 * 1024));
+            std::thread::spawn(move || {
+                let _ = err_tx.send(read_capped(stderr, 64 * 1024));
+            });
 
-            let start = Instant::now();
+            // The timeout covers the whole call: the program's exit and the end of its output,
+            // which a process it left running could otherwise hold open indefinitely.
+            let deadline = Instant::now() + self.timeout;
+            let timed_out = |child: &mut std::process::Child| {
+                kill_tree(child);
+                format!(
+                    "provider {}: {program} did not finish within {} ms",
+                    self.name,
+                    self.timeout.as_millis()
+                )
+            };
             let status = loop {
                 match child.try_wait() {
                     Ok(Some(status)) => break status,
-                    Ok(None) if start.elapsed() >= self.timeout => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(format!(
-                            "provider {}: {program} did not finish within {} ms",
-                            self.name,
-                            self.timeout.as_millis()
-                        ));
-                    }
+                    Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
                     Ok(None) => std::thread::sleep(Duration::from_millis(20)),
                     Err(e) => {
+                        kill_tree(&mut child);
                         return Err(format!(
                             "provider {}: waiting for {program}: {e}",
                             self.name
-                        ))
+                        ));
                     }
                 }
             };
-            let _ = writer.join();
-            let (out, out_truncated) = out_reader.join().unwrap_or_default();
-            let (err, _) = err_reader.join().unwrap_or_default();
+            let remaining = |deadline: Instant| deadline.saturating_duration_since(Instant::now());
+            let Ok((out, out_truncated)) = out_rx.recv_timeout(remaining(deadline)) else {
+                return Err(timed_out(&mut child));
+            };
+            let Ok((err, _)) = err_rx.recv_timeout(remaining(deadline)) else {
+                return Err(timed_out(&mut child));
+            };
 
             if !status.success() {
                 let err = String::from_utf8_lossy(&err);
@@ -336,6 +403,17 @@ mod command {
             }
             Ok(String::from_utf8_lossy(&out).trim_end().to_string())
         }
+    }
+
+    /// Stop the program and, on Unix, everything in its process group.
+    fn kill_tree(child: &mut std::process::Child) {
+        #[cfg(unix)]
+        // SAFETY: signals the process group created for this child (pgid == child pid).
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// Read until EOF, keeping at most `limit` bytes; the flag says whether more arrived.
@@ -1251,6 +1329,27 @@ mod command_tests {
         assert_eq!(h.run("", "m1").unwrap(), "m1|--model=m1");
     }
 
+    // A model from .ax code cannot smuggle a flag into the program's arguments.
+    #[test]
+    fn flag_like_models_are_refused() {
+        let h = handler(&["cat", "{model}"], 5_000, 1024);
+        for model in ["--dangerously-skip-permissions", "-p", "a\nb", "x\u{0}"] {
+            let err = h.run("p", model).unwrap_err();
+            assert!(err.contains("is not allowed"), "{model:?}: {err}");
+        }
+    }
+
+    // A program that exits without reading its stdin must not take boruna down (SIGPIPE).
+    #[cfg(unix)]
+    #[test]
+    fn program_that_ignores_stdin_does_not_kill_boruna() {
+        let big = "x".repeat(4 * 1024 * 1024);
+        let out = handler(&["sh", "-c", "echo early"], 10_000, 1024)
+            .run(&big, "m")
+            .unwrap();
+        assert_eq!(out, "early");
+    }
+
     // C3: a failing program reports its exit code and the end of stderr.
     #[cfg(unix)]
     #[test]
@@ -1278,6 +1377,23 @@ mod command_tests {
             .unwrap_err();
         assert!(err.contains("did not finish within 200 ms"), "{err}");
         assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    // The timeout covers output held open by a process the program left behind, and kills it.
+    #[cfg(unix)]
+    #[test]
+    fn timeout_covers_leftover_processes_holding_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("(sleep 3; touch '{}') & echo hi", marker.display());
+        let start = std::time::Instant::now();
+        let err = handler(&["sh", "-c", &script], 500, 1024)
+            .run("p", "m")
+            .unwrap_err();
+        assert!(err.contains("did not finish within 500 ms"), "{err}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        assert!(!marker.exists(), "the leftover process was not killed");
     }
 
     // C5: a reply over the size limit is refused.

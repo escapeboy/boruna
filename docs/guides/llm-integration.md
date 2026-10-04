@@ -72,6 +72,10 @@ its own login.
   program is started directly, without a shell. The prompt is written to its stdin; its stdout,
   without trailing whitespace, is the reply.
 - A non-zero exit fails the call with the exit code and the end of stderr (e.g. "not logged in").
+- The model comes from `.ax` code, so a model that starts with `-` or contains control characters
+  is refused: otherwise `llm_call(p, "claude/--dangerously-skip-permissions")` would pass a flag
+  to the tool.
+- A program may exit without reading the whole prompt; that is not an error.
 - `timeout_ms` (default 300000) kills a program that runs too long; `max_output_bytes` (default
   4 MiB) refuses a larger reply. `api_key_env`, `base_url` and `region` are not accepted.
 - Works in every build: it does not need the `http` feature.

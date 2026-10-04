@@ -481,6 +481,7 @@ name = "boruna-vm"
 version = "4.2.0"
 dependencies = [
  "boruna-bytecode",
+ "libc",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
