@@ -4,7 +4,6 @@ use std::path::Path;
 use crate::audit::encryption::{EncryptionError, Envelope, KEY_LEN};
 use crate::audit::evidence::{BundleJson, BundleManifest, ManifestSignature};
 use crate::audit::log::AuditLog;
-use crate::audit::BUNDLE_FORMAT_VERSION;
 
 /// Errors raised by the bundle reader gate that callers may want to
 /// match on programmatically (vs. the free-form strings in
@@ -64,10 +63,11 @@ impl VerifyResult {
 /// Implements §1 ("reject at parse, don't silently override"):
 /// - Legacy bundles (pre-1.0, no `bundle.json`) → reject with a clear
 ///   migration hint pointing at `boruna migrate evidence-bundle` (W5-C).
-/// - Future-major bundles (`2.x`) → reject — the reader can't safely
+/// - Unknown-major bundles → reject — the reader can't safely
 ///   interpret an unknown major.
-/// - Same-major bundles (`1.x`) → accept (forward-compat: unknown
-///   fields are ignored).
+/// - Known majors (`SUPPORTED_BUNDLE_MAJORS`: `1.x`, and `2.x` from 4.1
+///   for audit logs with approval details) → accept (forward-compat
+///   within a major: unknown fields are ignored).
 pub fn check_bundle_format(bundle_dir: &Path) -> Result<BundleJson, EvidenceError> {
     let bundle_path = bundle_dir.join("bundle.json");
     let raw = match std::fs::read_to_string(&bundle_path) {
@@ -75,7 +75,7 @@ pub fn check_bundle_format(bundle_dir: &Path) -> Result<BundleJson, EvidenceErro
         Err(_) => {
             return Err(EvidenceError::UnsupportedFormat {
                 found: "missing bundle.json (legacy bundle from pre-1.0 release; use `boruna migrate evidence-bundle` to upgrade)".to_string(),
-                expected: BUNDLE_FORMAT_VERSION.to_string(),
+                expected: supported_majors(),
             });
         }
     };
@@ -84,19 +84,27 @@ pub fn check_bundle_format(bundle_dir: &Path) -> Result<BundleJson, EvidenceErro
         Err(e) => {
             return Err(EvidenceError::UnsupportedFormat {
                 found: format!("invalid bundle.json: {e}"),
-                expected: BUNDLE_FORMAT_VERSION.to_string(),
+                expected: supported_majors(),
             });
         }
     };
     let major = parsed.format_version.split('.').next().unwrap_or("");
-    let expected_major = BUNDLE_FORMAT_VERSION.split('.').next().unwrap_or("1");
-    if major.is_empty() || major != expected_major {
+    if !crate::audit::SUPPORTED_BUNDLE_MAJORS.contains(&major) {
         return Err(EvidenceError::UnsupportedFormat {
             found: parsed.format_version.clone(),
-            expected: format!("{expected_major}.x"),
+            expected: supported_majors(),
         });
     }
     Ok(parsed)
+}
+
+/// `1.x or 2.x`, for error messages.
+fn supported_majors() -> String {
+    crate::audit::SUPPORTED_BUNDLE_MAJORS
+        .iter()
+        .map(|m| format!("{m}.x"))
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 /// Options controlling bundle verification.
@@ -733,6 +741,52 @@ mod tests {
     }
 
     #[test]
+    fn approval_details_make_a_2_0_bundle_that_verifies() {
+        // A reason on an approval (or a name on a rejection) is a 4.1 field: the bundle is
+        // written as 2.0 so a 4.0 reader refuses it as unsupported, not as tampered.
+        for (event, expect) in [
+            (
+                AuditEvent::ApprovalGranted {
+                    step_id: "g".into(),
+                    approver: "Ann".into(),
+                    reason: "ok".into(),
+                },
+                "2.0",
+            ),
+            (
+                AuditEvent::ApprovalDenied {
+                    step_id: "g".into(),
+                    reason: "no".into(),
+                    approver: "Ann".into(),
+                },
+                "2.0",
+            ),
+            (
+                // A name alone on an approval existed in 4.0: stays 1.1.
+                AuditEvent::ApprovalGranted {
+                    step_id: "g".into(),
+                    approver: "Ann".into(),
+                    reason: String::new(),
+                },
+                "1.1",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut builder = EvidenceBundleBuilder::new(dir.path(), "run-ad", "ad").unwrap();
+            builder.add_workflow_def(r#"{"name":"test"}"#).unwrap();
+            builder.add_policy(r#"{"default_allow":true}"#).unwrap();
+            let mut audit = AuditLog::new();
+            audit.append(event);
+            builder.finalize(&audit).unwrap();
+            let bundle_dir = dir.path().join("run-ad");
+            let parsed = check_bundle_format(&bundle_dir).unwrap();
+            assert_eq!(parsed.format_version, expect);
+            let result = verify_bundle(&bundle_dir);
+            assert!(result.valid, "errors: {:?}", result.errors);
+        }
+    }
+
+    #[test]
     fn test_verify_valid_bundle() {
         let dir = tempfile::tempdir().unwrap();
         build_valid_bundle(dir.path());
@@ -759,6 +813,7 @@ mod tests {
         audit.append(AuditEvent::ApprovalGranted {
             step_id: "s1".into(),
             approver: "alice.privacy@example.com".into(),
+            reason: String::new(),
         });
         audit.append(AuditEvent::WorkflowCompleted {
             result_hash: "res".into(),
@@ -859,6 +914,7 @@ mod tests {
         audit.append(AuditEvent::ApprovalGranted {
             step_id: "s1".into(),
             approver: "bob@example.com".into(),
+            reason: String::new(),
         });
         builder.finalize(&audit).unwrap();
         let bundle_dir = dir.path().join("run-redact-enc");
@@ -1048,22 +1104,22 @@ mod tests {
 
     #[test]
     fn verify_rejects_future_major_version() {
-        // A 2.x bundle MUST be rejected — major-version bumps are
-        // breaking by spec.
+        // An unknown major MUST be rejected — major-version bumps are
+        // breaking by spec. (2.x is known from 4.1.)
         let dir = tempfile::tempdir().unwrap();
         build_valid_bundle(dir.path());
         let bundle_dir = dir.path().join("run-verify-001");
         let bundle_path = bundle_dir.join("bundle.json");
         let raw = std::fs::read_to_string(&bundle_path).unwrap();
         let mut parsed: BundleJson = serde_json::from_str(&raw).unwrap();
-        parsed.format_version = "2.0".to_string();
+        parsed.format_version = "3.0".to_string();
         std::fs::write(&bundle_path, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
 
         let result = verify_bundle(&bundle_dir);
         assert!(!result.valid);
         let joined = result.errors.join(" ");
         assert!(
-            joined.contains("unsupported evidence bundle format_version") && joined.contains("2.0"),
+            joined.contains("unsupported evidence bundle format_version") && joined.contains("3.0"),
             "expected unsupported-format error, got: {:?}",
             result.errors
         );

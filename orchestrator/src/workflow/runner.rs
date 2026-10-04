@@ -262,9 +262,12 @@ struct ApprovalDecision {
     /// Unix epoch ms of when the operator ran `approve`/`reject`.
     /// Wall-clock-keyed; not in any hash chain.
     decided_at_ms: i64,
-    /// Optional rejection reason. None for approvals.
+    /// Optional reason. Before 4.1 only rejections carried one.
     #[serde(default)]
     reason: Option<String>,
+    /// Self-declared approver name (`--approver`, 4.1). Not authenticated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approver: Option<String>,
 }
 
 /// Approval-gate decision kind. Public so the CLI handler can pass it
@@ -4344,8 +4347,22 @@ pub fn record_approval_decision(
     decision: ApprovalKind,
     reason: Option<String>,
 ) -> Result<(), WorkflowRunError> {
+    record_approval_decision_as(data_dir, run_id, step_id, decision, reason, None)
+}
+
+/// [`record_approval_decision`] with the approver's self-declared name (4.1). The name and
+/// reason are written into the run's audit chain (`ApprovalGranted` / `ApprovalDenied`).
+#[cfg(feature = "persist-sqlite")]
+pub fn record_approval_decision_as(
+    data_dir: &Path,
+    run_id: &str,
+    step_id: &str,
+    decision: ApprovalKind,
+    reason: Option<String>,
+    approver: Option<String>,
+) -> Result<(), WorkflowRunError> {
     let store = open_store(data_dir)?;
-    record_approval_decision_in_store(&store, run_id, step_id, decision, reason)
+    record_approval_decision_in_store_as(&store, run_id, step_id, decision, reason, approver)
 }
 
 /// Return the per-gate token stashed for a step's approval gate (minted at
@@ -4394,6 +4411,19 @@ pub fn record_approval_decision_in_store(
     step_id: &str,
     decision: ApprovalKind,
     reason: Option<String>,
+) -> Result<(), WorkflowRunError> {
+    record_approval_decision_in_store_as(store, run_id, step_id, decision, reason, None)
+}
+
+/// Store-scoped variant of [`record_approval_decision_as`].
+#[cfg(feature = "persist-sqlite")]
+pub fn record_approval_decision_in_store_as(
+    store: &RunCheckpointStore,
+    run_id: &str,
+    step_id: &str,
+    decision: ApprovalKind,
+    reason: Option<String>,
+    approver: Option<String>,
 ) -> Result<(), WorkflowRunError> {
     // Bounded CAS retry budget. Happy path is 1 iteration; second iteration
     // fires only on a race. After the second re-read, either we surface
@@ -4468,6 +4498,7 @@ pub fn record_approval_decision_in_store(
                 decision,
                 decided_at_ms: now_unix_ms(),
                 reason: reason.clone(),
+                approver: approver.clone(),
             },
         );
 
@@ -4479,19 +4510,17 @@ pub fn record_approval_decision_in_store(
         // contract (sha256 of sequence || prev_hash || event_json).
         let mut audit = crate::audit::AuditLog::from_entries(metadata.audit_log.clone());
         let audit_event = match decision {
+            // The approver name is self-declared (`--approver`), not authenticated. Without
+            // it the field stays empty, as before 4.1.
             ApprovalKind::Approved => crate::audit::AuditEvent::ApprovalGranted {
                 step_id: step_id.to_string(),
-                // Approver identity is operator-supplied via the CLI;
-                // 0.4-S9 surfaces an empty string until a future
-                // identity sprint wires real auth. The field is
-                // captured in the hash chain regardless so a future
-                // upgrade can fill it in without re-keying past
-                // entries.
-                approver: String::new(),
+                approver: approver.clone().unwrap_or_default(),
+                reason: reason.clone().unwrap_or_default(),
             },
             ApprovalKind::Rejected => crate::audit::AuditEvent::ApprovalDenied {
                 step_id: step_id.to_string(),
                 reason: reason.clone().unwrap_or_default(),
+                approver: approver.clone().unwrap_or_default(),
             },
         };
         audit.append(audit_event);
@@ -4813,6 +4842,8 @@ pub struct ApprovalView {
     /// Unix epoch ms — operational only; not in any audit hash.
     pub decided_at_ms: i64,
     pub reason: Option<String>,
+    /// Self-declared approver name (4.1); `None` when not given.
+    pub approver: Option<String>,
 }
 
 /// Operator-facing detail view of one workflow run. Returned by
@@ -4877,6 +4908,7 @@ pub fn show_run(data_dir: &Path, run_id: &str) -> Result<RunDetail, WorkflowRunE
                         decision: d.decision,
                         decided_at_ms: d.decided_at_ms,
                         reason: d.reason,
+                        approver: d.approver,
                     })
                     .collect::<Vec<_>>(),
                 None,
@@ -10737,6 +10769,64 @@ mod tests {
         }
 
         #[test]
+        fn named_approval_and_rejection_record_approver_and_reason() {
+            let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
+            let options = RunOptions {
+                policy: Some(Policy::allow_all()),
+                record: false,
+                workflow_dir: wf_dir.path().to_string_lossy().to_string(),
+                live: false,
+                concurrency: 1,
+                submit_only: false,
+                llm_providers: None,
+            };
+            for decision in [ApprovalKind::Approved, ApprovalKind::Rejected] {
+                let data_dir = tempfile::tempdir().unwrap();
+                let r = WorkflowRunner::run_persistent(&def, &options, data_dir.path()).unwrap();
+                record_approval_decision_as(
+                    data_dir.path(),
+                    &r.run_id,
+                    "human_review",
+                    decision,
+                    Some("checked the totals".to_string()),
+                    Some("Alice Ivanova".to_string()),
+                )
+                .unwrap();
+
+                let log = read_audit_log(data_dir.path(), &r.run_id);
+                log.verify().expect("hash chain must verify");
+                let found = log.entries().iter().any(|e| match &e.event {
+                    AuditEvent::ApprovalGranted {
+                        step_id,
+                        approver,
+                        reason,
+                    }
+                    | AuditEvent::ApprovalDenied {
+                        step_id,
+                        reason,
+                        approver,
+                    } => {
+                        step_id == "human_review"
+                            && approver == "Alice Ivanova"
+                            && reason == "checked the totals"
+                    }
+                    _ => false,
+                });
+                assert!(
+                    found,
+                    "{decision:?}: approver and reason must be in the chain"
+                );
+
+                let view = show_run(data_dir.path(), &r.run_id).unwrap();
+                assert_eq!(view.approvals[0].approver.as_deref(), Some("Alice Ivanova"));
+                assert_eq!(
+                    view.approvals[0].reason.as_deref(),
+                    Some("checked the totals")
+                );
+            }
+        }
+
+        #[test]
         fn approval_reject_appends_audit_event_with_reason() {
             let (def, wf_dir) = approval_gate::workflow_with_approval_gate();
             let data_dir = tempfile::tempdir().unwrap();
@@ -10767,9 +10857,9 @@ mod tests {
                 .entries()
                 .iter()
                 .find_map(|e| match &e.event {
-                    AuditEvent::ApprovalDenied { step_id, reason } => {
-                        Some((step_id.clone(), reason.clone()))
-                    }
+                    AuditEvent::ApprovalDenied {
+                        step_id, reason, ..
+                    } => Some((step_id.clone(), reason.clone())),
                     _ => None,
                 })
                 .expect("ApprovalDenied event must be present");
@@ -11315,9 +11405,9 @@ mod tests {
                 .entries()
                 .iter()
                 .find_map(|e| match &e.event {
-                    AuditEvent::ApprovalDenied { step_id, reason } => {
-                        Some((step_id.clone(), reason.clone()))
-                    }
+                    AuditEvent::ApprovalDenied {
+                        step_id, reason, ..
+                    } => Some((step_id.clone(), reason.clone())),
                     _ => None,
                 })
                 .expect("ApprovalDenied event must be in bundled chain");

@@ -368,7 +368,11 @@ impl EvidenceBundleBuilder {
         components.sort();
 
         let bundle_json = BundleJson {
-            format_version: BUNDLE_FORMAT_VERSION.to_string(),
+            format_version: if audit_log.uses_approval_details() {
+                crate::audit::BUNDLE_FORMAT_VERSION_APPROVAL_DETAILS.to_string()
+            } else {
+                BUNDLE_FORMAT_VERSION.to_string()
+            },
             boruna_version: env!("CARGO_PKG_VERSION").to_string(),
             created_at: completed_at.clone(),
             run_id: self.run_id.clone(),

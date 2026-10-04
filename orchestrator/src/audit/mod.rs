@@ -42,3 +42,13 @@ pub use verify::*;
 /// raw event JSON) and commitment-form (1.1) audit logs — the form is
 /// detected per entry by the presence of `content_sha256`.
 pub const BUNDLE_FORMAT_VERSION: &str = "1.1";
+
+/// Format of a bundle whose audit log carries the 4.1 approval fields (`reason` on
+/// `ApprovalGranted`, `approver` on `ApprovalDenied`). A 4.0 reader drops those fields and
+/// would recompute different entry hashes, reporting a genuine bundle as tampered. A new
+/// major makes it refuse the bundle as unsupported instead. Bundles without the fields stay
+/// `1.1`, readable by 4.0.
+pub const BUNDLE_FORMAT_VERSION_APPROVAL_DETAILS: &str = "2.0";
+
+/// Format majors this reader verifies.
+pub const SUPPORTED_BUNDLE_MAJORS: &[&str] = &["1", "2"];

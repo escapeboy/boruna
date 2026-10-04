@@ -128,14 +128,28 @@ fn event_to_action_and_vars(ev: &AuditEvent) -> (&'static str, BTreeMap<String, 
             vars.insert("role".into(), ItfValue::Str(role.clone()));
             ("ApprovalRequested", vars)
         }
-        AuditEvent::ApprovalGranted { step_id, approver } => {
+        AuditEvent::ApprovalGranted {
+            step_id,
+            approver,
+            reason,
+        } => {
             vars.insert("step_id".into(), ItfValue::Str(step_id.clone()));
             vars.insert("approver".into(), ItfValue::Str(approver.clone()));
+            if !reason.is_empty() {
+                vars.insert("reason".into(), ItfValue::Str(reason.clone()));
+            }
             ("ApprovalGranted", vars)
         }
-        AuditEvent::ApprovalDenied { step_id, reason } => {
+        AuditEvent::ApprovalDenied {
+            step_id,
+            reason,
+            approver,
+        } => {
             vars.insert("step_id".into(), ItfValue::Str(step_id.clone()));
             vars.insert("reason".into(), ItfValue::Str(reason.clone()));
+            if !approver.is_empty() {
+                vars.insert("approver".into(), ItfValue::Str(approver.clone()));
+            }
             ("ApprovalDenied", vars)
         }
         AuditEvent::ExternalTriggerReceived {
@@ -214,6 +228,7 @@ mod tests {
         log.append(AuditEvent::ApprovalDenied {
             step_id: "s1".into(),
             reason: "policy".into(),
+            approver: String::new(),
         });
         let doc = audit_log_to_itf(&log, "boruna-test");
         assert_eq!(doc.meta.status, ItfStatus::Violation);
@@ -286,6 +301,7 @@ mod tests {
             AuditEvent::ApprovalGranted {
                 step_id: "s".into(),
                 approver: "a".into(),
+                reason: String::new(),
             },
             AuditEvent::PolicyEvaluated {
                 step_id: "s".into(),
