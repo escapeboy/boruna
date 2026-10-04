@@ -29,7 +29,7 @@ fn policy(dir: &Path, root: &Path) -> std::path::PathBuf {
     let f = dir.join("policy.json");
     let json = serde_json::json!({
         "default_allow": true,
-        "fs_policy": {"allowed_roots": [root.to_str().unwrap()]}
+        "fs_policy": {"allowed_roots": [root.to_str().unwrap()], "allow_delete": true}
     });
     std::fs::write(&f, json.to_string()).unwrap();
     f
@@ -158,4 +158,55 @@ fn workflow_steps_get_real_files_under_live() {
     assert!(out.status.success(), "{}", text(&out));
     assert!(text(&out).contains("Completed"), "{}", text(&out));
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "step output");
+}
+
+#[test]
+fn live_list_append_and_delete() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("work");
+    std::fs::create_dir(&root).unwrap();
+    let dir = p(&root).replace('\\', "\\\\");
+    let prog = tmp.path().join("ops.ax");
+    std::fs::write(
+        &prog,
+        format!(
+            "fn add(p: String, s: String) -> Bool !{{fs.write}} {{\n    fs_append(p, s)\n}}\nfn rm(p: String) -> Bool !{{fs.write}} {{\n    fs_delete(p)\n}}\nfn ls(d: String) -> List<String> !{{fs.read}} {{\n    fs_list(d)\n}}\nfn main() -> Int {{\n    let a: Bool = add(\"{dir}/a.txt\", \"one\")\n    let b: Bool = add(\"{dir}/b.txt\", \"two\")\n    let c: Bool = rm(\"{dir}/a.txt\")\n    __builtin_list_len(ls(\"{dir}\"))\n}}\n"
+        ),
+    )
+    .unwrap();
+    let pol = policy(tmp.path(), &root);
+    let out = boruna(&["run", p(&prog), "--policy", p(&pol), "--live"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).lines().next(),
+        Some("1")
+    );
+    assert!(!root.join("a.txt").exists());
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "two");
+}
+
+/// `boruna ... | head` must not panic when the reader closes the pipe early.
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_pipe_ends_the_process_quietly() {
+    use std::process::Stdio;
+    let tmp = tempfile::tempdir().unwrap();
+    let prog = tmp.path().join("slow.ax");
+    // Enough work that the pipe is closed before the result is printed.
+    std::fs::write(
+        &prog,
+        "fn main() -> Int {\n    let mut i: Int = 0\n    while i < 300000 {\n        i = i + 1\n    }\n    i\n}\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_boruna"))
+        .args(["run", p(&prog), "--max-steps", "100000000"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(!stderr.contains("Broken pipe"), "{stderr}");
 }

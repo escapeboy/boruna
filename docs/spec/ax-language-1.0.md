@@ -6,7 +6,7 @@ last_revised: 2026-04-28
 audience: language implementers, compiler authors, security auditors
 ---
 
-# `.ax` Language Specification — Version 1.3
+# `.ax` Language Specification — Version 2.0
 
 This document is the **formal specification** of the `.ax` source language. It is the authoritative reference for any independent implementation of an `.ax` parser, type checker, or compiler.
 
@@ -18,20 +18,21 @@ The reference implementation lives in `crates/llmc/` (lexer, parser, typechecker
 
 ### 1.1 Version identifier
 
-The current language version is **`1.3`**. Implementations MUST expose this value programmatically. Each 1.x version is the previous one plus the additions listed in §13; every 1.0 program is a 1.3 program.
+The current language version is **`2.0`**. Implementations MUST expose this value programmatically. Each minor version is the previous one plus the additions listed in §13. Language 2.0 is the one breaking step so far: it rejects what 1.x only warned about (E009, E010; §4.5) and makes `break` and `continue` keywords (§2.4). [Upgrading to Boruna 4.0](../guides/upgrading-to-4.md) lists what to change.
 
 In the reference implementation:
 
 ```rust
 // crates/llmc/src/lib.rs
-pub const LANGUAGE_VERSION: &str = "1.3";
+pub const LANGUAGE_VERSION: &str = "2.0";
 ```
 
-The version string is a `<major>.<minor>` decimal number. A program written against `1.x` MUST compile against any `1.y` implementation where `y >= x`.
+The version string is a `<major>.<minor>` decimal number. Within a major line, a program written against `N.x` MUST compile against any `N.y` implementation where `y >= x`.
 
-### 1.2 Backwards-compatibility commitment for 1.x
+### 1.2 Backwards-compatibility commitment within a major line
 
-Within the `1.x` line:
+The rules below held for the whole `1.x` line and hold for `2.x`. Read `1.x` / `1.y` below as
+any major line. Within one major line:
 
 1. **Additive only.** New keywords, types, opcodes, and capabilities MAY be added.
 2. **No renames.** The names `Int`, `Float`, `String`, `Bool`, `Unit`, `Option`, `Result`, `List`, `Map`, `Some`, `None`, `Ok`, `Err`, every reserved word in §2.4, and every capability in §6.2 are **frozen for 1.x**.
@@ -40,7 +41,8 @@ Within the `1.x` line:
 5. **Capability annotation set is monotonic.** A capability listed on a function signature in `1.x` remains valid in `1.y >= 1.x`. New capabilities added in later 1.y minor versions MUST be optional — programs that do not request them remain valid.
 6. **Reserved words for future use.** See §2.4. Implementations MUST tokenize them as reserved and MUST reject them outside of well-formed positions, even though they have no defined semantics in 1.0.
 
-Breaking changes (renames, removals, tightening) are deferred to `2.0` or later.
+Breaking changes (renames, removals, tightening) wait for the next major version. Language 2.0
+(Boruna 4.0) was such a step; §13 lists what it changed.
 
 ### 1.3 Conformance levels
 
@@ -88,6 +90,7 @@ Identifiers are case-sensitive. The identifier `_` (single underscore) is a **wi
 fn   let   if   else   match   type   enum   true   false
 Some None Ok  Err
 mut  while for  in                                  (added in 1.1, §4.5)
+break continue                                      (added in 2.0, §4.5)
 ```
 
 **Type names treated as reserved identifiers** (§4.1):
@@ -99,12 +102,12 @@ Int Float String Bool Unit Option Result List Map
 **Reserved-for-future-use** (a 1.0 implementation MUST tokenize these as reserved and reject them in identifier position; they have no semantics in 1.0):
 
 ```
-loop return break continue trait impl import module
+loop return trait impl import module
 where as pub priv async await yield static const ref self Self
 spawn actor receive record
 ```
 
-(`mut`, `for`, `while` and `in` moved from this list to the keywords in 1.1. Erratum in 1.1: 1.0 listed
+(`mut`, `for`, `while` and `in` moved from this list to the keywords in 1.1, `break` and `continue` in 2.0. Erratum in 1.1: 1.0 listed
 `record` as the keyword for record declarations and `type` as reserved, but the reference
 implementation has always used `type` to declare records and never accepted `record`; the two
 lists now say so. The reference
@@ -195,11 +198,13 @@ There are no anonymous tuples, function types as first-class type expressions, o
 
 ```
 Block      ::= "{" {Stmt Newline} [Expr] "}"
-Stmt       ::= LetStmt | AssignStmt | WhileStmt | ForStmt | ExprStmt
+Stmt       ::= LetStmt | AssignStmt | WhileStmt | ForStmt | BreakStmt | ContinueStmt | ExprStmt
 LetStmt    ::= "let" ["mut"] Identifier ":" Type "=" Expr
 AssignStmt ::= Identifier "=" Expr                       (1.1, §4.5)
 WhileStmt  ::= "while" Expr Block                        (1.1, §4.5)
 ForStmt    ::= "for" Identifier "in" Expr Block          (1.1, §4.5)
+BreakStmt  ::= "break"                                    (2.0, §4.5)
+ContinueStmt ::= "continue"                               (2.0, §4.5)
 ExprStmt   ::= Expr
 
 Expr       ::= If | Match | Binary | Unary | Call | RecordLit | EnumLit
@@ -454,25 +459,35 @@ x : T (declared mut) ∈ Γ      Γ ⊢ e : T
 Γ ⊢ x = e   ok
 ```
 
-- The assigned value MUST have the binding's type. Since 1.3 tooling reports an assignment whose
-  value has a known, different type as warning **E009**; it becomes a compile error in language
-  version 2.0. A program that assigns a value of another type has unspecified behaviour.
-- Rebinding a binding declared without `mut`, a function parameter or a `for` loop variable is
-  not permitted by this specification. The reference implementation still accepts it, because
-  1.0 programs (including two standard libraries) relied on it, and §1.2 forbids tightening
-  type rules within 1.x. Tooling reports it as warning **E010** with an automatic fix
-  (`boruna lang repair` adds `mut`); it becomes a compile error in language version 2.0.
+- The assigned value MUST have the binding's type. Since 2.0 an assignment whose value has a
+  known, different type is compile error **E009** (a warning in 1.3).
+- Rebinding a binding declared without `mut`, a function parameter, a `for` loop variable or a
+  name bound by a `match` pattern is compile error **E010** since 2.0 (a warning in 1.x, because 1.0 programs relied on it).
+  `boruna lang repair` adds `mut` to a `let` automatically.
 - An assignment inside a nested block (`if`, `match` arm, loop body) rebinds the binding from the
-  enclosing scope. A `let` inside a block introduces a new binding that ends with the block.
+  enclosing scope. A `let` inside a block, a loop body or a `match` arm, and a name bound by a
+  `match` pattern, introduce a new binding that ends with that block or arm. (The 1.x reference
+  implementation leaked such bindings into the enclosing scope for the rest of the function; 2.0
+  follows this rule.)
+- **E009 is local.** The checker names a type only for literals, annotated bindings, record and
+  enum constructors and calls to functions the program defines. It reports a mismatch only when
+  both sides have such a type and they differ, for `let` annotations, call arguments,
+  assignments and `while` conditions. Anything it cannot name is not rejected.
 
 **While loops.** `while cond { body }` evaluates `cond`; while it is `true` it runs `body` and
-evaluates `cond` again. `cond` MUST have type `Bool`. Since 1.3 tooling reports a condition of a known non-`Bool` type as
-warning **E009** (a compile error in language version 2.0). A `while` statement has no value.
+evaluates `cond` again. `cond` MUST have type `Bool`; a condition of a known non-`Bool` type is
+compile error **E009** since 2.0. A `while` statement has no value.
 
 **For loops.** `for v in e { body }` evaluates `e` once. `e` MUST have type `List<T>`; iterating
 anything else is a runtime error in the reference implementation. `body` runs once per element in
 list order, with `v : T` bound to the element. `v` and any `let` inside `body` are scoped to the
 body. A `for` statement has no value.
+
+**`break` and `continue`** (2.0). `break` leaves the innermost enclosing `while` or `for`;
+`continue` skips the rest of its body and goes to the next iteration (for `for`, the next
+element). Each MUST appear as a statement directly in a loop body, or in a branch of an `if`
+statement that is itself in such a position. A `break` or `continue` outside any loop, or inside
+an expression, a block expression or a `match` arm, is a compile error.
 
 **Termination.** Loops do not change the determinism model (§7): the same inputs run the same
 iterations. A loop that never ends is stopped by the VM's step limit (`--step-limit`), which
@@ -525,7 +540,7 @@ All built-ins are pure (no capability annotation). Their semantics are defined b
 
 All list built-ins are non-mutating; the original list is unchanged. This is consistent with the immutability requirement in §7.2.
 
-### Capability built-ins (added in 1.2; files, clock and random numbers in 1.3)
+### Capability built-ins (added in 1.2; files, clock and random numbers in 1.3 and 2.0)
 
 These built-ins perform side effects through the capability gateway (§6.5).
 
@@ -538,12 +553,19 @@ These built-ins perform side effects through the capability gateway (§6.5).
 | `fs_write` | `(String, String) -> Bool` | `fs.write` | `(path, content)`; writes the file and returns `true`. Failure is a runtime error. |
 | `time_now` | `() -> Int` | `time.now` | Unix time in milliseconds. |
 | `random_int` | `(Int, Int) -> Int` | `random` | `(lo, hi)`; uniform in `[lo, hi]`, both ends included. `lo > hi` is a runtime error. |
+| `fs_list` | `(String) -> List<String>` | `fs.read` | Names of the entries in a folder, sorted, not recursive (2.0). |
+| `fs_append` | `(String, String) -> Bool` | `fs.write` | `(path, content)`; appends, creating the file if needed (2.0). |
+| `fs_delete` | `(String) -> Bool` | `fs.write` | Deletes a file (not a folder). A symlink is removed, never its target. The reference host also requires `fs_policy.allow_delete` (2.0). |
 
 - A function whose body calls one of these MUST declare the listed capability in its annotation
   (§6.1); otherwise the program is rejected at compile time.
 - A function the program defines, itself or through an imported library, takes precedence over a
   built-in of the same name (e.g. `std-llm` defines its own `llm_call(req, tag) -> Effect`). This
   keeps every program that compiled before 1.2 compiling.
+- `fs_list`, `fs_append` and `fs_delete` share `fs.read` / `fs.write` with `fs_read` and
+  `fs_write`. The reference implementation tells them apart by appending an operation name to the
+  arguments it hands the host (`[dir, "list"]`, `[path, content, "append"]`,
+  `[path, "", "delete"]`); recorded event logs show these arguments.
 - Each call is a capability call: the runtime policy is consulted and the call and its result are
   recorded in the event log, so a recorded run replays with the same results (§7.3).
 - What produces the result is the host's capability handler. The reference CLI uses a
@@ -777,3 +799,8 @@ The reference implementation surfaces errors at three layers — lexer, parser, 
 - **1.3** (2026-10-03) — Additive (§1.2). Capability built-ins `fs_read`, `fs_write`, `time_now`
   and `random_int` (§5a). Negative integer literal patterns (§3.5). Tooling warns (E009) on an
   assignment of a different type and on a non-`Bool` `while` condition (§4.5).
+- **2.0** (2026-10-04, Boruna 4.0) — Breaking. E009 (type mismatch the checker can name) and E010
+  (reassigning a binding that is not `mut`, a parameter or a `for` variable) are compile errors
+  (§4.5). `break` and `continue` are keywords and statements (§2.4, §4.5). Bindings declared in a
+  block, loop body or `match` arm end there, as the 1.x text already required (§4.5). Built-ins
+  `fs_list`, `fs_append`, `fs_delete` (§5a).

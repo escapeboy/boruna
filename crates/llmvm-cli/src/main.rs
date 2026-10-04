@@ -1279,6 +1279,41 @@ fn real_main() {
 const MAIN_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() {
+    // Rust ignores SIGPIPE, so `boruna ... | head` panicked with "failed printing to stdout:
+    // Broken pipe" once the reader closed the pipe. Restore the default: the process ends
+    // quietly, as other command-line tools do.
+    // The signal is also unblocked: a blocked SIGPIPE is inherited from the parent process
+    // and would turn the write back into an EPIPE error.
+    #[cfg(unix)]
+    // SAFETY: called once at startup, before any other thread exists; SIG_DFL is a valid
+    // disposition for SIGPIPE, and the signal set is initialised before it is used.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGPIPE);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+    // Second line of defence: if a write to stdout still fails because the reader is gone,
+    // `println!` panics. Exit quietly with the shell's broken-pipe status instead of printing
+    // a panic. Windows reports a closed pipe as os error 232 ("The pipe is being closed") or
+    // 109; that path is not covered by a test.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        let closed_pipe = ["Broken pipe", "os error 232", "os error 109"]
+            .iter()
+            .any(|m| msg.contains(m));
+        if msg.starts_with("failed printing to stdout") && closed_pipe {
+            std::process::exit(141);
+        }
+        default_hook(info);
+    }));
     let worker = std::thread::Builder::new()
         .name("boruna-main".into())
         .stack_size(MAIN_STACK_BYTES)

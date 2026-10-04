@@ -48,9 +48,9 @@ total = total + 5
 ```
 
 Rebinding changes what the name refers to; values themselves (records, lists, maps) are never
-modified in place. Reassigning a binding declared without `mut` still compiles, but
-`boruna lang check` reports warning `E010` and `boruna lang repair` adds the missing `mut`. It will
-be a compile error in language version 2.0.
+modified in place. Reassigning a binding declared without `mut`, a parameter or a `for`
+variable is compile error `E010`; `boruna lang repair` adds the missing `mut` to a `let`.
+Assigning a value of a different type (`x = "a"` for an `Int` `x`) is compile error `E009`.
 
 ## Loops
 
@@ -75,8 +75,32 @@ fn factorial(n: Int) -> Int {
 ```
 
 `for` iterates a `List` in order; the loop variable and any `let` inside the body are scoped to
-the body. A loop that never ends is stopped by the step limit (`--step-limit`) with a runtime
-error. Recursion still works and is often the clearer choice.
+the body. A `while` condition must be a `Bool` (`E009` otherwise). A loop that never ends is
+stopped by the step limit (`--step-limit`) with a runtime error. Recursion still works and is
+often the clearer choice.
+
+`break` leaves the innermost loop and `continue` goes to its next iteration. Write them as a
+statement in the loop body or inside an `if` there:
+
+```ax
+fn first_negative(items: List<Int>) -> Int {
+    let mut found: Int = 0
+    for x in items {
+        if x >= 0 {
+            continue
+        }
+        found = x
+        break
+    }
+    found
+}
+
+fn main() -> Int {
+    first_negative([3, 0, -4, -9])
+}
+```
+
+Inside an expression or a `match` arm they are a compile error.
 
 No semicolons. Each statement is on its own line.
 
@@ -142,10 +166,12 @@ fn main() -> Int {
 - If your program (or a library it imports) defines a function with the same name, that function
   is used instead of the built-in. `std-llm` does this: its `llm_call(req, tag)` builds a
   framework effect.
+- A local of the same name (a parameter, a `let` or a match binding) is called instead of the
+  built-in. A local that is not a function stops the run as not callable.
 
 ## Files, clock and random numbers
 
-Four more built-ins (language 1.3) work the same way: the calling function declares the
+These built-ins (language 1.3, `fs_list` / `fs_append` / `fs_delete` in 2.0) work the same way: the calling function declares the
 capability, the policy decides, and each result is recorded so `boruna replay` returns it again.
 
 | Built-in | Capability | Returns |
@@ -154,6 +180,9 @@ capability, the policy decides, and each result is recorded so `boruna replay` r
 | `fs_write(path, content)` | `fs.write` | `true` once the file is written |
 | `time_now()` | `time.now` | Unix time in milliseconds |
 | `random_int(lo, hi)` | `random` | a uniform Int in `[lo, hi]`, both ends included |
+| `fs_list(dir)` | `fs.read` | the names in a folder (`List<String>`), sorted, not recursive; at most `fs_policy.max_list_entries` (default 10 000) |
+| `fs_append(path, content)` | `fs.write` | `true`; appends, creating the file if needed |
+| `fs_delete(path)` | `fs.write` | `true`; deletes a file (not a folder); a symlink is removed, not its target. Needs `"allow_delete": true` in `fs_policy` |
 
 ```ax
 fn stamp() -> Int !{time.now} {
@@ -467,8 +496,8 @@ These built-ins are also wrapped in `std-json` (via `int_to_string`, `json_escap
 ## What .ax is not
 
 `.ax` is deliberately minimal. It does not have:
-- Mutable variables (use record spread for state transitions)
-- Loops (use recursion or standard library functions)
+- In-place mutation of records, lists or maps (use record spread; `let mut` only rebinds names)
+- `loop`, labelled `break`, or iteration over anything but a `List`
 - Exceptions (use `Result<T, E>`)
 - Implicit side effects (every effect must be declared)
 - Generics (types are concrete at definition time)

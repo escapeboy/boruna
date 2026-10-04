@@ -82,7 +82,7 @@ pub const REGISTRY: &[DiagnosticCodeInfo] = &[
         name: "assign-to-immutable",
         summary:
             "A binding declared without `mut` (or a parameter or loop variable) is reassigned. \
-                  A warning today; an error in language version 2.0.",
+                  An error since language version 2.0 (a warning in 1.x).",
         category: "type",
     },
 ];

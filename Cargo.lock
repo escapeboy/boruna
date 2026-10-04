@@ -301,7 +301,7 @@ checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
 name = "boruna-benches"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-bytecode"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-cli"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -334,6 +334,7 @@ dependencies = [
  "boruna-tooling",
  "boruna-vm",
  "clap",
+ "libc",
  "notify",
  "serde",
  "serde_json",
@@ -344,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-compiler"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-vm",
@@ -358,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-effect"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "serde",
@@ -369,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-framework"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -382,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-lsp"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-compiler",
  "boruna-tooling",
@@ -394,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-mcp"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -415,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-orchestrator"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -447,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-pkg"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -460,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-tooling"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "boruna-compiler",
@@ -477,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "boruna-vm"
-version = "3.8.0"
+version = "4.0.0"
 dependencies = [
  "boruna-bytecode",
  "opentelemetry",

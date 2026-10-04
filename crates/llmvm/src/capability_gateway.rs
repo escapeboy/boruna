@@ -76,6 +76,27 @@ pub struct FsPolicy {
     /// Largest file `fs.read` returns, in bytes (default 10 MiB).
     #[serde(default = "default_max_response")]
     pub max_read_bytes: usize,
+    /// Whether `fs_delete` may delete files (default false). `fs.write` alone does not allow
+    /// it. Serialized only when true, so policies that do not use it keep their hash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_delete: bool,
+    /// Most entries `fs_list` returns (default 10 000); a larger folder is an error.
+    /// Serialized only when it differs from the default.
+    #[serde(
+        default = "default_max_list_entries",
+        skip_serializing_if = "is_default_max_list_entries"
+    )]
+    pub max_list_entries: usize,
+}
+
+pub const DEFAULT_MAX_LIST_ENTRIES: usize = 10_000;
+
+fn default_max_list_entries() -> usize {
+    DEFAULT_MAX_LIST_ENTRIES
+}
+
+fn is_default_max_list_entries(n: &usize) -> bool {
+    *n == DEFAULT_MAX_LIST_ENTRIES
 }
 
 /// Policy configuration for the capability gateway.
@@ -189,6 +210,9 @@ impl CapabilityHandler for MockHandler {
                 Ok(Value::String(format!(
                     "{{\"mock\": true, \"url\": \"{url}\"}}"
                 )))
+            }
+            Capability::FsRead if matches!(args, [_, Value::String(op)] if op == "list") => {
+                Ok(Value::List(vec![]))
             }
             Capability::FsRead => {
                 let path = match args.first() {

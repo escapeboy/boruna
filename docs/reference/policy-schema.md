@@ -40,7 +40,9 @@ This page documents the object form. The machine-readable schema lives at [`poli
   // is refused. A path must resolve (.. and symlinks included) inside one of the roots.
   "fs_policy": {
     "allowed_roots":  ["./data", "/srv/reports"],  // required, non-empty; relative to the working dir
-    "max_read_bytes": 10485760                     // default 10 MB
+    "max_read_bytes": 10485760,                    // default 10 MB
+    "allow_delete": false,                         // default false: fs_delete is refused
+    "max_list_entries": 10000                      // default 10 000: larger folders are refused
   }
 }
 ```
@@ -136,7 +138,7 @@ The strict validator emits these stable strings (project convention #2 — locke
 | `policy.unknown_field` | Unknown field at any level (top-level, `net_policy`, `fs_policy`, or inside a rule) |
 | `policy.invalid_capability` | A rule key is not a recognized canonical capability name |
 | `policy.invalid_net_policy` | `net_policy` value out of range or unknown method |
-| `policy.invalid_fs_policy` | `fs_policy` has no roots, an empty root, or `max_read_bytes` of 0 |
+| `policy.invalid_fs_policy` | `fs_policy` has no roots, an empty root, or `max_read_bytes` / `max_list_entries` of 0 |
 
 The `boruna_run` MCP tool **also** emits the legacy `error_kind: "invalid_policy"` for non-object input (string typos, arrays, numbers). The new `policy.*` kinds apply to object-form payloads only — they are additive over `invalid_policy`, not a replacement.
 

@@ -100,21 +100,27 @@ impl SystemHandler {
             .map_err(|_| format!("fs_read: '{path}' is not UTF-8 text"))
     }
 
-    fn fs_write(&self, args: &[Value]) -> Result<Value, String> {
-        let path = string_arg(args, 0, "fs_write", "path")?;
-        let content = string_arg(args, 1, "fs_write", "content")?;
-        let (_, roots) = self.roots("fs.write")?;
+    /// The folder of `path`, resolved, plus its final file name. The folder must exist; the file
+    /// need not.
+    fn split_target(func: &str, path: &str) -> Result<(PathBuf, std::ffi::OsString), String> {
         let p = Path::new(path);
         let name = match p.components().next_back() {
             Some(Component::Normal(n)) => n.to_owned(),
-            _ => return Err(format!("fs_write: '{path}' does not end in a file name")),
+            _ => return Err(format!("{func}: '{path}' does not end in a file name")),
         };
         let parent = match p.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             _ => PathBuf::from("."),
         };
         let parent = std::fs::canonicalize(&parent)
-            .map_err(|e| format!("fs_write: folder of '{path}' does not exist: {e}"))?;
+            .map_err(|e| format!("{func}: folder of '{path}' does not exist: {e}"))?;
+        Ok((parent, name))
+    }
+
+    /// Where a write to `path` really lands, checked against the roots.
+    fn write_target(&self, func: &str, path: &str) -> Result<PathBuf, String> {
+        let (_, roots) = self.roots("fs.write")?;
+        let (parent, name) = Self::split_target(func, path)?;
         let mut target = parent.join(name);
         // The write follows a symlink, so check where it really points. A link to a missing
         // file cannot be resolved and is refused: writing through it would create the file
@@ -124,12 +130,82 @@ impl SystemHandler {
             .unwrap_or(false);
         if is_link {
             target = std::fs::canonicalize(&target)
-                .map_err(|_| format!("fs_write denied: '{path}' is a symlink to a missing file"))?;
+                .map_err(|_| format!("{func} denied: '{path}' is a symlink to a missing file"))?;
         }
         Self::check_inside("fs.write", &target, &roots, path)?;
+        Ok(target)
+    }
+
+    fn fs_write(&self, args: &[Value]) -> Result<Value, String> {
+        let path = string_arg(args, 0, "fs_write", "path")?;
+        let content = string_arg(args, 1, "fs_write", "content")?;
+        let target = self.write_target("fs_write", path)?;
         std::fs::write(&target, content)
             .map_err(|e| format!("fs_write: cannot write '{path}': {e}"))?;
         Ok(Value::Bool(true))
+    }
+
+    fn fs_append(&self, args: &[Value]) -> Result<Value, String> {
+        let path = string_arg(args, 0, "fs_append", "path")?;
+        let content = string_arg(args, 1, "fs_append", "content")?;
+        let target = self.write_target("fs_append", path)?;
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target)
+            .and_then(|mut f| f.write_all(content.as_bytes()))
+            .map_err(|e| format!("fs_append: cannot write '{path}': {e}"))?;
+        Ok(Value::Bool(true))
+    }
+
+    /// Delete a file. A symlink is removed itself, never its target, so only the folder
+    /// holding it has to be inside the roots.
+    fn fs_delete(&self, args: &[Value]) -> Result<Value, String> {
+        let path = string_arg(args, 0, "fs_delete", "path")?;
+        let (policy, roots) = self.roots("fs.write")?;
+        if !policy.allow_delete {
+            return Err(format!(
+                "fs_delete denied: the policy does not set fs_policy.allow_delete (deleting '{path}')"
+            ));
+        }
+        let (parent, name) = Self::split_target("fs_delete", path)?;
+        let target = parent.join(name);
+        Self::check_inside("fs.write", &target, &roots, path)?;
+        let meta = std::fs::symlink_metadata(&target)
+            .map_err(|e| format!("fs_delete: cannot find '{path}': {e}"))?;
+        if meta.is_dir() {
+            return Err(format!(
+                "fs_delete: '{path}' is a folder; only files are deleted"
+            ));
+        }
+        std::fs::remove_file(&target)
+            .map_err(|e| format!("fs_delete: cannot delete '{path}': {e}"))?;
+        Ok(Value::Bool(true))
+    }
+
+    /// Names of the entries in a folder, sorted, not recursive.
+    fn fs_list(&self, args: &[Value]) -> Result<Value, String> {
+        let path = string_arg(args, 0, "fs_list", "path")?;
+        let (policy, roots) = self.roots("fs.read")?;
+        let resolved = std::fs::canonicalize(path)
+            .map_err(|e| format!("fs_list: cannot open '{path}': {e}"))?;
+        Self::check_inside("fs.read", &resolved, &roots, path)?;
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&resolved)
+            .map_err(|e| format!("fs_list: cannot list '{path}': {e}"))?
+        {
+            let entry = entry.map_err(|e| format!("fs_list: cannot list '{path}': {e}"))?;
+            if names.len() == policy.max_list_entries {
+                return Err(format!(
+                    "fs_list: '{path}' has more than fs_policy.max_list_entries ({}) entries",
+                    policy.max_list_entries
+                ));
+            }
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(Value::List(names.into_iter().map(Value::String).collect()))
     }
 }
 
@@ -179,8 +255,20 @@ fn random_int(lo: i64, hi: i64) -> Result<Value, String> {
 impl CapabilityHandler for SystemHandler {
     fn handle(&mut self, cap: &Capability, args: &[Value]) -> Result<Value, String> {
         match cap {
-            Capability::FsRead => self.fs_read(args),
-            Capability::FsWrite => self.fs_write(args),
+            // The compiler appends an operation name for the calls that share a capability:
+            // `fs_list(dir)` is `[dir, "list"]`, `fs_append(p, s)` is `[p, s, "append"]` and
+            // `fs_delete(p)` is `[p, "", "delete"]`. The plain forms have fewer arguments.
+            Capability::FsRead => match args {
+                [_] => self.fs_read(args),
+                [_, Value::String(op)] if op == "list" => self.fs_list(args),
+                _ => Err("fs.read: unknown operation".to_string()),
+            },
+            Capability::FsWrite => match args {
+                [_, _] => self.fs_write(args),
+                [_, _, Value::String(op)] if op == "append" => self.fs_append(args),
+                [_, _, Value::String(op)] if op == "delete" => self.fs_delete(args),
+                _ => Err("fs.write: unknown operation".to_string()),
+            },
             Capability::TimeNow => now_ms(),
             Capability::Random => match args {
                 [Value::Int(lo), Value::Int(hi)] => random_int(*lo, *hi),
@@ -202,6 +290,8 @@ mod tests {
             Some(FsPolicy {
                 allowed_roots: roots.iter().map(|p| p.display().to_string()).collect(),
                 max_read_bytes: 64,
+                allow_delete: true,
+                max_list_entries: 3,
             }),
             Box::new(MockHandler),
         )
@@ -302,6 +392,124 @@ mod tests {
         h.handle(&Capability::FsWrite, &[p(&link), s("new")])
             .unwrap();
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+    }
+
+    #[test]
+    fn list_append_and_delete_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        let mut h = handler(&[root.path()]);
+        let f = root.path().join("log.txt");
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        h.handle(&Capability::FsWrite, &[p(&f), s("a"), s("append")])
+            .unwrap();
+        h.handle(&Capability::FsWrite, &[p(&f), s("b"), s("append")])
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ab");
+        assert_eq!(
+            h.handle(&Capability::FsRead, &[p(root.path()), s("list")])
+                .unwrap(),
+            Value::List(vec![s("log.txt"), s("sub")])
+        );
+        h.handle(&Capability::FsWrite, &[p(&f), s(""), s("delete")])
+            .unwrap();
+        assert!(!f.exists());
+        // Folders are not deleted.
+        let err = h
+            .handle(
+                &Capability::FsWrite,
+                &[p(&root.path().join("sub")), s(""), s("delete")],
+            )
+            .unwrap_err();
+        assert!(err.contains("is a folder"), "{err}");
+    }
+
+    #[test]
+    fn list_append_and_delete_outside_the_root_are_denied() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let victim = other.path().join("keep.txt");
+        std::fs::write(&victim, "x").unwrap();
+        let mut h = handler(&[root.path()]);
+        assert!(h
+            .handle(&Capability::FsRead, &[p(other.path()), s("list")])
+            .is_err());
+        assert!(h
+            .handle(&Capability::FsWrite, &[p(&victim), s("y"), s("append")])
+            .is_err());
+        let escape = root
+            .path()
+            .join("..")
+            .join(other.path().file_name().unwrap());
+        assert!(h
+            .handle(
+                &Capability::FsWrite,
+                &[p(&escape.join("keep.txt")), s(""), s("delete")]
+            )
+            .is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_a_symlink_removes_the_link_not_its_target() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("keep.txt");
+        std::fs::write(&target, "x").unwrap();
+        let link = root.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut h = handler(&[root.path()]);
+        h.handle(&Capability::FsWrite, &[p(&link), s(""), s("delete")])
+            .unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+    }
+
+    #[test]
+    fn delete_needs_allow_delete_in_the_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let f = root.path().join("keep.txt");
+        std::fs::write(&f, "x").unwrap();
+        let mut h = SystemHandler::new(
+            Some(FsPolicy {
+                allowed_roots: vec![root.path().display().to_string()],
+                max_read_bytes: 64,
+                allow_delete: false,
+                max_list_entries: 3,
+            }),
+            Box::new(MockHandler),
+        );
+        let err = h
+            .handle(&Capability::FsWrite, &[p(&f), s(""), s("delete")])
+            .unwrap_err();
+        assert!(err.contains("fs_policy.allow_delete"), "{err}");
+        assert!(f.exists());
+        // Writing is still allowed.
+        h.handle(&Capability::FsWrite, &[p(&f), s("y")]).unwrap();
+    }
+
+    #[test]
+    fn list_over_max_list_entries_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        for n in ["a", "b", "c", "d"] {
+            std::fs::write(root.path().join(n), "x").unwrap();
+        }
+        let mut h = handler(&[root.path()]);
+        let err = h
+            .handle(&Capability::FsRead, &[p(root.path()), s("list")])
+            .unwrap_err();
+        assert!(err.contains("max_list_entries (3)"), "{err}");
+    }
+
+    #[test]
+    fn unknown_operation_tags_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let mut h = handler(&[root.path()]);
+        let f = root.path().join("a.txt");
+        assert!(h
+            .handle(&Capability::FsWrite, &[p(&f), s("x"), s("truncate")])
+            .is_err());
+        assert!(h.handle(&Capability::FsRead, &[p(&f), s("stat")]).is_err());
     }
 
     #[test]

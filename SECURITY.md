@@ -6,7 +6,8 @@ Only the latest major line is supported, and security fixes ship in its latest r
 
 | Version | Supported |
 |---------|-----------|
-| 3.x     | ✓ (latest release) |
+| 4.x     | ✓ (latest release) |
+| 3.x     | ✗ end of life since 2026-10-03 |
 | 2.x     | ✗ end of life since 2026-07-18 |
 | 1.x     | ✗ end of life since 2026-07-18 |
 | 0.x     | ✗ |

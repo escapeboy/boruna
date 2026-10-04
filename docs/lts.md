@@ -5,13 +5,14 @@ compatible within a major line, how features are deprecated and removed,
 and how security fixes are released.
 
 The short version: **only the latest major line is supported.** Today that
-is **3.x**. The current release is 3.5.0 (2026-10-03).
+is **4.x**. The current release is 4.0.0 (2026-10-04).
 
 ## A. Support windows
 
 | Line | Status | First release | Support |
 |------|--------|---------------|---------|
-| 3.x | **Supported** | 2026-07-18 ([v3.0.0](../CHANGELOG.md)) | Bug fixes and security fixes in new 3.y releases |
+| 4.x | **Supported** | 2026-10-04 ([v4.0.0](../CHANGELOG.md)) | Bug fixes and security fixes in new 4.y releases |
+| 3.x | End of life since 2026-10-03 | 2026-07-18 (v3.0.0) | None |
 | 2.x | End of life since 2026-07-18 | 2026-07-17 (v2.0.0) | None |
 | 1.x | End of life since 2026-07-18 | 2026-04-28 (v1.0.0) | None |
 | 0.x | End of life since 2026-04-28 | 2026-02-21 (v0.1.0) | None |
@@ -20,16 +21,16 @@ Rules:
 
 - Only the latest major line receives fixes.
 - Within that line, fixes ship in the next minor or patch release of the
-  line. There are no backports to older minor releases. If you run 3.2 and
-  a fix ships in 3.5.1, the fix is in 3.5.1, not in a 3.2.x release.
+  line. There are no backports to older minor releases. If you run 4.0 and
+  a fix ships in 4.2.1, the fix is in 4.2.1, not in a 4.0.x release.
 - When a new major line ships, the previous major line is end of life on
   the same day (see section G).
 
-### If you are on 1.x or 2.x
+### If you are on 1.x, 2.x or 3.x
 
-1.x and 2.x reached end of life when 3.0.0 shipped on 2026-07-18. They get
-no further releases, including security fixes. Upgrade to the latest 3.x
-release.
+1.x and 2.x reached end of life when 3.0.0 shipped on 2026-07-18, and 3.x
+when 4.0.0 shipped on 2026-10-04. They get no further releases, including
+security fixes. Upgrade to the latest 4.x release.
 
 What changed on the way:
 
@@ -45,10 +46,17 @@ What changed on the way:
   handled locally with `boruna workflow approve/reject/trigger` and
   `boruna workflow resume`. If you used any of the removed parts, there is
   no replacement in 3.x.
+- **4.0.0** moved the `.ax` language to 2.0: type mismatches the checker
+  can name (`E009`) and reassigning a binding that is not `mut` (`E010`)
+  are compile errors, `break` and `continue` are keywords, and bindings
+  declared in a block or `match` arm end there. See
+  [Upgrading to 4.0](./guides/upgrading-to-4.md).
 
-`.ax` programs, `workflow.json` files and evidence bundles written for 1.x
-or 2.x do not need conversion: the language, workflow schema and bundle
-format versions did not change major version (see section B).
+`workflow.json` files, policies and evidence bundles from any earlier line
+need no conversion: their format versions did not change major version (see
+section B). `.ax` programs may need the small fixes listed in the 4.0
+upgrade guide; `boruna lang check` finds every place and `boruna lang
+repair` fixes the missing `mut` automatically.
 
 [`docs/guides/migration.md`](./guides/migration.md) and `boruna migrate`
 only cover artifacts from before 1.0 (bundles without `bundle.json`,
@@ -58,44 +66,44 @@ upgrade.
 ## B. What stays compatible within the current major line
 
 Within the current major line, the surfaces below do not break. A program,
-workflow, bundle or integration that works on one 3.y release works on
-every later 3.y release. Additions (new fields, new flags, new values) are
+workflow, bundle or integration that works on one 4.y release works on
+every later 4.y release. Additions (new fields, new flags, new values) are
 allowed. Removals, renames and type changes are not.
 
 ### Release version and format versions are separate
 
-The Boruna release version (3.5.0) is not the version of the language or
+The Boruna release version (4.0.0) is not the version of the language or
 of the file formats. Each has its own version:
 
 | Surface | Current version | Defined in |
 |---------|-----------------|------------|
-| `.ax` language | 1.1 | `boruna_compiler::LANGUAGE_VERSION` |
+| `.ax` language | 2.0 | `boruna_compiler::LANGUAGE_VERSION` |
 | Bytecode | 1.1 | `boruna_bytecode::BYTECODE_VERSION` |
 | Evidence bundle format | 1.1 | `boruna_orchestrator::BUNDLE_FORMAT_VERSION` |
 | Workflow DAG schema | 1 | `boruna_orchestrator::WORKFLOW_DAG_SCHEMA_VERSION` |
 | MCP tool responses | `protocol_version: 1` | `boruna-mcp` |
 
-These versions move by their own rules. Boruna 2.0.0 and 3.0.0 did not
-bump any of them to a new major. A breaking change to one of them (for
-example language 2.0) would ship only in a new Boruna major release.
+These versions move by their own rules. A breaking change to one of them
+ships only in a new Boruna major release: Boruna 4.0.0 moved the language
+to 2.0. Boruna 2.0.0 and 3.0.0 did not bump any of them to a new major.
 
 ### B.1 Language
 
 The `.ax` language follows the rule in
 [`spec/ax-language-1.0.md`](./spec/ax-language-1.0.md) §1.2: within
-language 1.x, changes are additive only. No renames, no removed builtins,
-no tightened type rules. A program that compiles under language 1.x
-compiles under every later 1.y. Breaking language changes wait for
-language 2.0.
+language 2.x, changes are additive only. No renames, no removed builtins,
+no tightened type rules. A program that compiles under language 2.x
+compiles under every later 2.y. Breaking language changes wait for
+language 3.0 and a new Boruna major release.
 
-New diagnostics may be added as warnings. For example, `E009` (type
-mismatch) and `E010` (reassigning a binding without `mut`) are warnings in
-language 1.x. `E010` is documented to become an error in language 2.0.
+New checks start as warnings in a minor release and become errors only in
+the next major. `E009` (type mismatch) and `E010` (reassigning a binding
+without `mut`) went this way: warnings in language 1.x, errors in 2.0.
 
 ### B.2 Workflow DAG schema
 
-Every `workflow.json` with `schema_version: 1` that validates on one 3.y
-release validates on every later 3.y. This covers the required and
+Every `workflow.json` with `schema_version: 1` that validates on one 4.y
+release validates on every later 4.y. This covers the required and
 optional fields, their types, the DAG rules (acyclic, topological order)
 and the per-step inputs and outputs. New optional fields may be added in
 minor releases (3.3.0 added `confidence_gate` on approval gates this way).
@@ -103,7 +111,7 @@ Spec: [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md).
 
 ### B.3 Evidence bundle format
 
-Every bundle with a 1.x `format_version` verifies with every 3.y reader.
+Every bundle with a 1.x `format_version` verifies with every 4.y reader.
 This covers the directory layout, the canonical JSON encoding, and the
 SHA-256 hash-chain construction. Format 1.1 (3.2.0) added per-entry
 content hashes for redaction and still reads 1.0 bundles. Spec:
@@ -131,8 +139,8 @@ release and a prior deprecation (section C).
 ### B.6 Error taxonomy
 
 `error_kind` strings in CLI errors and MCP error responses keep their
-meaning. An `error_kind` that exists in a 3.y release exists in every
-later 3.y. New values may be added in minor releases, so integrators must
+meaning. An `error_kind` that exists in a 4.y release exists in every
+later 4.y. New values may be added in minor releases, so integrators must
 tolerate values they do not recognize. List:
 [`reference/error-kinds.md`](./reference/error-kinds.md).
 
@@ -194,8 +202,8 @@ A change that breaks a surface in section B goes through these steps:
 2. **Warn at runtime.** When the deprecated path is used, print a one-line
    warning to stderr that names the feature and the replacement. The
    warning does not change the exit code.
-3. **Remove only in the next major release.** A feature deprecated in 3.y
-   is removed no earlier than 4.0.0.
+3. **Remove only in the next major release.** A feature deprecated in 4.y
+   is removed no earlier than 5.0.0.
 
 Where an upgrade can be done mechanically (a file format change, a renamed
 flag), `boruna migrate` should cover it.
@@ -206,8 +214,8 @@ layer one day after 2.0.0, with no deprecation release in between.
 ## D. Security fixes
 
 Security fixes are released only for the **latest release of the current
-major line**. A fix ships as a new patch or minor release of 3.x. There
-are no backports to older 3.y releases and no fixes for 1.x or 2.x.
+major line**. A fix ships as a new patch or minor release of 4.x. There
+are no backports to older 4.y releases and no fixes for 1.x, 2.x or 3.x.
 
 Severity follows [CVSS v4](https://www.first.org/cvss/v4-0/):
 
