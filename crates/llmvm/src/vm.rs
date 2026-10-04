@@ -691,6 +691,9 @@ impl Vm {
                     (Value::Float(x), Value::Float(y)) => Ok(Value::Float(x + y)),
                     (Value::Int(x), Value::Float(y)) => Ok(Value::Float(x as f64 + y)),
                     (Value::Float(x), Value::Int(y)) => Ok(Value::Float(x + y as f64)),
+                    // Spec §4 "String concatenation": `+` on two Strings yields a String.
+                    // Before 4.1 the type checker accepted it but the VM failed here.
+                    (Value::String(x), Value::String(y)) => Ok(Value::String(x + &y)),
                     (a, b) => Err(VmError::TypeError {
                         expected: "numeric",
                         got: if matches!(a, Value::Int(_) | Value::Float(_)) {

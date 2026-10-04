@@ -6,6 +6,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.1.0] — 2026-10-04
+
+Approvals now say who decided and why, in the tamper-evident audit log.
+
+### Added
+- `boruna workflow approve` and `reject` take `--approver <name>`, and `approve` takes
+  `--reason <text>` (`reject` already had it). Both go into the run's hash-chained audit log
+  (`ApprovalGranted` / `ApprovalDenied`), `workflow show` and the compliance report. Until now the
+  approver field was always empty. The name is self-declared, not authenticated. Entries without
+  the new fields serialize exactly as in 4.0, so existing bundles keep verifying.
+
+### Changed
+- An evidence bundle whose audit log uses the new fields (a reason on an approval, a name on a
+  rejection) is written as format `2.0`; every other bundle stays `1.1`. Boruna 4.0 cannot check
+  those fields and would report such a bundle as tampered, so it now refuses it as an unsupported
+  format instead. Verify these bundles with 4.1 or later.
+- Do not resume with 4.0 a run that 4.1 approved or rejected with `--reason` / `--approver`: 4.0
+  drops the new fields when it rewrites the run, and the run's audit chain no longer verifies.
+
+### Fixed
+- `+` on two `String` values concatenates them, as the language specification says. The type
+  checker and `lang check` accepted it, but the VM failed with "expected numeric, got String".
+  No working program changes, because every such program crashed.
+
 ## [4.0.0] — 2026-10-04
 
 `.ax` language 2.0. The type and `mut` checks that were warnings in 3.x are compile errors,

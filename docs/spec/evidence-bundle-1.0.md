@@ -25,6 +25,13 @@ Compatibility rules:
 - **Different major:** the wire format is allowed to change in incompatible ways. Readers MUST refuse to interpret content from a major they don't know.
 - **Missing `bundle.json`:** the bundle is pre-1.0 (legacy). Readers MUST reject and surface a hint pointing the user at `boruna migrate evidence-bundle` (planned, sprint W5-C).
 
+**Format 2.0 (Boruna 4.1).** A bundle whose audit log carries the approval details added in 4.1
+(a `reason` on `ApprovalGranted`, an `approver` on `ApprovalDenied`) is written as `"2.0"`. A 1.x
+reader drops those fields, recomputes different entry hashes and would report a genuine bundle as
+tampered, so the major changes and that reader refuses it as unsupported instead. Bundles without
+those fields are still written as `"1.1"`. The Boruna 4.1 reader accepts both `1.x` and `2.x`; the
+layout is otherwise identical.
+
 This applies §1 of the project conventions: "reject at parse, don't silently override". A reader that silently accepts an unknown major would let a future bundle's content be misinterpreted as the format the reader expects.
 
 ## 2. `bundle.json` schema
@@ -122,7 +129,7 @@ A `2.0` break — for example, switching from JSON to a binary-framed format —
 Bundles produced by Boruna v0.5.0 and earlier do NOT carry `bundle.json`. The reader rejects them with:
 
 ```
-unsupported evidence bundle format_version: found `missing bundle.json (legacy bundle from pre-1.0 release; use `boruna migrate evidence-bundle` to upgrade)`, expected major `1`
+unsupported evidence bundle format_version: found `missing bundle.json (legacy bundle from pre-1.0 release; use `boruna migrate evidence-bundle` to upgrade)`, expected major `1.x or 2.x`
 ```
 
 The `boruna migrate evidence-bundle` tool is planned for sprint W5-C. Until it ships, legacy bundles must be re-recorded against a current binary.

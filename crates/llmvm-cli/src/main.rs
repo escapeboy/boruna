@@ -673,6 +673,13 @@ enum WorkflowCommand {
         run_id: String,
         /// Step id of the approval gate to approve.
         step_id: String,
+        /// Name of the person approving, recorded in the audit chain. Self-declared, not
+        /// authenticated.
+        #[arg(long)]
+        approver: Option<String>,
+        /// Why the step is approved, recorded in the audit chain.
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
@@ -686,6 +693,10 @@ enum WorkflowCommand {
         /// resumed run's step error_msg.
         #[arg(long)]
         reason: Option<String>,
+        /// Name of the person rejecting, recorded in the audit chain. Self-declared, not
+        /// authenticated.
+        #[arg(long)]
+        approver: Option<String>,
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
@@ -3308,18 +3319,21 @@ fn run_workflow(
         WorkflowCommand::Approve {
             run_id,
             step_id,
+            approver,
+            reason,
             data_dir,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                use boruna_orchestrator::workflow::{record_approval_decision_as, ApprovalKind};
                 let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                record_approval_decision(
+                record_approval_decision_as(
                     &resolved,
                     &run_id,
                     &step_id,
                     ApprovalKind::Approved,
-                    None,
+                    reason,
+                    approver,
                 )
                 .map_err(|e| format!("{e}"))?;
                 println!("approval recorded for step '{step_id}' in run '{run_id}'.");
@@ -3330,7 +3344,7 @@ fn run_workflow(
             }
             #[cfg(not(feature = "persist-sqlite"))]
             {
-                let _ = (run_id, step_id, data_dir);
+                let _ = (run_id, step_id, approver, reason, data_dir);
                 return Err("`workflow approve` requires the `persist-sqlite` feature".into());
             }
         }
@@ -3338,18 +3352,20 @@ fn run_workflow(
             run_id,
             step_id,
             reason,
+            approver,
             data_dir,
         } => {
             #[cfg(feature = "persist-sqlite")]
             {
-                use boruna_orchestrator::workflow::{record_approval_decision, ApprovalKind};
+                use boruna_orchestrator::workflow::{record_approval_decision_as, ApprovalKind};
                 let resolved = resolve_data_dir(data_dir.as_ref(), env_arg);
-                record_approval_decision(
+                record_approval_decision_as(
                     &resolved,
                     &run_id,
                     &step_id,
                     ApprovalKind::Rejected,
                     reason,
+                    approver,
                 )
                 .map_err(|e| format!("{e}"))?;
                 println!("rejection recorded for step '{step_id}' in run '{run_id}'.");
@@ -3360,7 +3376,7 @@ fn run_workflow(
             }
             #[cfg(not(feature = "persist-sqlite"))]
             {
-                let _ = (run_id, step_id, reason, data_dir);
+                let _ = (run_id, step_id, reason, approver, data_dir);
                 return Err("`workflow reject` requires the `persist-sqlite` feature".into());
             }
         }
@@ -3457,6 +3473,7 @@ fn run_workflow(
                                 },
                                 "decided_at_ms": a.decided_at_ms,
                                 "reason": a.reason,
+                                "approver": a.approver,
                             })
                         })
                         .collect();
@@ -3536,8 +3553,8 @@ fn run_workflow(
                         println!("  (none)");
                     } else {
                         println!(
-                            "  {:<24} {:<10} {:<14} REASON",
-                            "STEP_ID", "DECISION", "DECIDED_AT"
+                            "  {:<24} {:<10} {:<14} {:<16} REASON",
+                            "STEP_ID", "DECISION", "DECIDED_AT", "APPROVER"
                         );
                         for a in &detail.approvals {
                             let decision = match a.decision {
@@ -3545,10 +3562,11 @@ fn run_workflow(
                                 boruna_orchestrator::workflow::ApprovalKind::Rejected => "rejected",
                             };
                             println!(
-                                "  {:<24} {:<10} {:<14} {}",
+                                "  {:<24} {:<10} {:<14} {:<16} {}",
                                 a.step_id,
                                 decision,
                                 a.decided_at_ms,
+                                a.approver.as_deref().unwrap_or(""),
                                 a.reason.as_deref().unwrap_or(""),
                             );
                         }

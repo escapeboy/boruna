@@ -1,6 +1,6 @@
 # Stability and Maturity
 
-Boruna is at version **4.0.0**. It is a local engine and CLI. Since 3.0.0
+Boruna is at version **4.1.0**. It is a local engine and CLI. Since 3.0.0
 there is no server component.
 
 Only the latest major line (4.x) is supported. 1.x, 2.x and 3.x are end
@@ -38,7 +38,9 @@ Not suitable for:
   Spec: [`spec/workflow-dag-1.0.md`](./spec/workflow-dag-1.0.md).
 - **Evidence bundle format 1.1**: hash-chained audit log, `bundle.json`,
   optional AES-256-GCM encryption, verifiable redaction. Reads 1.0
-  bundles. Spec: [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md).
+  bundles. From 4.1, a bundle whose approvals carry a reason (or whose
+  rejections carry a name) is format 2.0, which 4.0 refuses as unsupported;
+  4.1 reads 1.x and 2.x. Spec: [`spec/evidence-bundle-1.0.md`](./spec/evidence-bundle-1.0.md).
 - **Capability set**: additions only within the major line.
 - **CLI commands**: `run`, `compile`, `workflow validate/run/approve/reject/trigger/resume`,
   `evidence inspect/verify/gc-blobs/rotate-kek`, `migrate`, `new`,

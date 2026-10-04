@@ -157,10 +157,17 @@ pub enum AuditEvent {
     ApprovalGranted {
         step_id: String,
         approver: String,
+        /// Added in 4.1. Omitted when empty, so entries written by 4.0 serialize (and hash)
+        /// exactly as before.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reason: String,
     },
     ApprovalDenied {
         step_id: String,
         reason: String,
+        /// Added in 4.1; omitted when empty, as for `ApprovalGranted::reason`.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        approver: String,
     },
     /// External-trigger gate advanced via `boruna workflow trigger`
     /// (sprint `0.4-S9`). `payload_hash` is the SHA-256 of the
@@ -297,6 +304,16 @@ impl AuditLog {
     /// Returns the preserved `content_sha256` on success. Errors if the
     /// index is out of range, the entry is legacy-format, already
     /// redacted, or the named field is absent.
+    /// Whether any entry uses the approval fields added in 4.1 (`reason` on
+    /// `ApprovalGranted`, `approver` on `ApprovalDenied`), which a 4.0 reader cannot verify.
+    pub fn uses_approval_details(&self) -> bool {
+        self.entries.iter().any(|e| match &e.event {
+            AuditEvent::ApprovalGranted { reason, .. } => !reason.is_empty(),
+            AuditEvent::ApprovalDenied { approver, .. } => !approver.is_empty(),
+            _ => false,
+        })
+    }
+
     pub fn redact_entry(
         &mut self,
         index: usize,
@@ -609,6 +626,7 @@ mod tests {
         log.append(AuditEvent::ApprovalGranted {
             step_id: "s1".into(),
             approver: "alice@example.com".into(),
+            reason: String::new(),
         });
         log.append(AuditEvent::WorkflowCompleted {
             result_hash: "res".into(),
@@ -690,7 +708,9 @@ mod tests {
 
         // The PII (approver email) is gone; strings blanked to sentinel.
         match &e.event {
-            AuditEvent::ApprovalGranted { step_id, approver } => {
+            AuditEvent::ApprovalGranted {
+                step_id, approver, ..
+            } => {
                 assert_eq!(step_id, REDACTION_SENTINEL);
                 assert_eq!(approver, REDACTION_SENTINEL);
                 assert!(!approver.contains("alice"));
@@ -706,7 +726,9 @@ mod tests {
         log.redact_entry(1, Some("approver"), None).unwrap();
         assert!(log.verify().is_ok());
         match &log.entries()[1].event {
-            AuditEvent::ApprovalGranted { step_id, approver } => {
+            AuditEvent::ApprovalGranted {
+                step_id, approver, ..
+            } => {
                 assert_eq!(step_id, "s1"); // untouched
                 assert_eq!(approver, REDACTION_SENTINEL); // blanked
             }
@@ -772,6 +794,7 @@ mod tests {
         log.entries[1].event = AuditEvent::ApprovalGranted {
             step_id: "s1".into(),
             approver: "attacker".into(),
+            reason: String::new(),
         };
         assert_eq!(log.verify().unwrap_err(), 1);
     }
@@ -833,5 +856,29 @@ mod tests {
         // Only gate decisions are protected.
         assert!(log.redact_entry(1, None, None).is_ok());
         assert!(log.verify().is_ok());
+    }
+
+    #[test]
+    fn approval_events_without_the_4_1_fields_serialize_as_in_4_0() {
+        // 4.0 wrote exactly these bytes; the entry hash depends on them.
+        let granted = AuditEvent::ApprovalGranted {
+            step_id: "s".into(),
+            approver: String::new(),
+            reason: String::new(),
+        };
+        let denied = AuditEvent::ApprovalDenied {
+            step_id: "s".into(),
+            reason: "no".into(),
+            approver: String::new(),
+        };
+        let granted_json = r#"{"ApprovalGranted":{"step_id":"s","approver":""}}"#;
+        let denied_json = r#"{"ApprovalDenied":{"step_id":"s","reason":"no"}}"#;
+        assert_eq!(serde_json::to_string(&granted).unwrap(), granted_json);
+        assert_eq!(serde_json::to_string(&denied).unwrap(), denied_json);
+        // And 4.0 entries read back and re-serialize unchanged.
+        for json in [granted_json, denied_json] {
+            let event: AuditEvent = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&event).unwrap(), json);
+        }
     }
 }

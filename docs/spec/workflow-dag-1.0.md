@@ -258,7 +258,9 @@ A step's `kind` discriminates which fields are required:
   return value is stored as the canonical `result` output and is
   available to downstream steps via `<step_id>.result`.
 - **`kind: "approval_gate"`** — pause the run until an operator
-  records an approval/rejection via `boruna workflow approve`.
+  records an approval/rejection via `boruna workflow approve` / `reject`.
+  `--approver <name>` and `--reason <text>` (4.1) are written into the
+  `ApprovalGranted` / `ApprovalDenied` audit entry; the name is self-declared.
   Requires `required_role`. Optional `condition` is informational.
   Optional `confidence_gate` lets the gate complete without a human when
   a calibrated confidence score is high enough (see

@@ -193,13 +193,27 @@ fn read_audit_facts(
                     "step `{step_id}`: approval requested from role `{role}`"
                 ));
             }
-            AuditEvent::ApprovalGranted { step_id, approver } => {
-                approvals.push(format!(
-                    "step `{step_id}`: approval GRANTED by `{approver}`"
-                ));
+            AuditEvent::ApprovalGranted {
+                step_id,
+                approver,
+                reason,
+            } => {
+                let mut line = format!("step `{step_id}`: approval GRANTED by `{approver}`");
+                if !reason.is_empty() {
+                    line.push_str(&format!(" ({reason})"));
+                }
+                approvals.push(line);
             }
-            AuditEvent::ApprovalDenied { step_id, reason } => {
-                approvals.push(format!("step `{step_id}`: approval DENIED ({reason})"));
+            AuditEvent::ApprovalDenied {
+                step_id,
+                reason,
+                approver,
+            } => {
+                let mut line = format!("step `{step_id}`: approval DENIED ({reason})");
+                if !approver.is_empty() {
+                    line.push_str(&format!(" by `{approver}`"));
+                }
+                approvals.push(line);
             }
             _ => {}
         }
@@ -904,6 +918,7 @@ mod tests {
         audit.append(AuditEvent::ApprovalGranted {
             step_id: "review".into(),
             approver: "alice".into(),
+            reason: String::new(),
         });
         builder.finalize(&audit).unwrap();
         let bundle_dir = dir.path().join("run-report-appr");

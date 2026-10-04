@@ -175,3 +175,10 @@ fn an_untyped_local_shadows_a_capability_builtin_of_the_same_name() {
     let match_src = "fn seven(a: Int, b: Int) -> Int {\n    7\n}\nfn main() -> Int !{random} {\n    match Some(seven) {\n        Some(random_int) => random_int(1, 1000000),\n        _ => 0,\n    }\n}\n";
     assert_eq!(run(match_src), Value::Int(7));
 }
+
+#[test]
+fn plus_concatenates_two_strings() {
+    // Spec: `+` on two Strings yields a String (4.0 accepted it, then failed at run time).
+    let src = "fn main() -> String {\n    let who = \"world\"\n    \"hello, \" + who + \"!\"\n}\n";
+    assert_eq!(run(src), Value::String("hello, world!".into()));
+}
