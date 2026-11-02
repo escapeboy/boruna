@@ -16,6 +16,8 @@ env:
 
 jobs:
   test:
+    # Pull requests from forks never run on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test
     runs-on: self-hosted
     steps:
@@ -269,6 +271,8 @@ jobs:
         run: python3 scripts/check-doc-examples.py --boruna target/release/boruna
 
   release-musl:
+    # Pull requests from forks never run on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # The release builds the Linux binaries with `cross` for musl, with the `http` feature
     # (rustls + ring). Build exactly that here so a problem shows up on the PR, not at tag time.
     name: Release build (musl, http)
@@ -294,6 +298,8 @@ jobs:
         run: cross build --release --locked --target "$TARGET" --bin boruna --features boruna-cli/http
 
   clippy:
+    # Pull requests from forks never run on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Clippy
     runs-on: self-hosted
     steps:
@@ -321,6 +327,8 @@ jobs:
         run: cargo clippy --workspace --features boruna-vm/http --all-targets -- -D warnings
 
   fmt:
+    # Pull requests from forks never run on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Format
     runs-on: self-hosted
     steps:
